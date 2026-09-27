@@ -1,7 +1,7 @@
 # HTTP API
 
 `laya-serve` exposes Laya over the TypeSafe Jev `/v1/systemone` wire protocol. A client written
-against Jev -- `hs-jev`, `typesafe-sdk`, or your own -- can point its base URL at this server and
+against Jev -- `hs-jev`, `typesafe-sdk`, [`marcreichel/laya-php`](https://github.com/marcreichel/laya-php) (PHP / Laravel), or your own -- can point its base URL at this server and
 keep working: Laya's `predict()` output is already schema-compatible, and the server adds only the
 HTTP surface: one decision route, a health probe, an optional bearer check and request limits.
 

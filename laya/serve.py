@@ -3,7 +3,7 @@
 Laya's ``predict()`` output is already schema-compatible with the Jev decision
 API -- ``choice`` / ``score`` / ``noul`` answers and a ``{input_tokens,
 output_tokens}`` usage block -- so a client written against Jev (for example the
-`hs-jev` Haskell client) can point its ``baseUrl`` at this server and keep
+`hs-jev` Haskell client or `marcreichel/laya-php` PHP SDK) can point its ``baseUrl`` at this server and keep
 working unchanged. All this module adds is the HTTP surface Laya itself does not
 ship: a ``POST /v1/systemone`` route, an optional bearer check, and a health
 probe.

@@ -473,7 +473,7 @@ The hint only decides *English or not*: a code whose primary subtag is `en`, `en
 wire protocol as TypeSafe's hosted Jev API. Laya's answer payload is already
 schema-identical to what Jev returns (`choice`/`score`/`noul` answers and a
 `{input_tokens, output_tokens}` usage block), so an existing Jev client — e.g.
-the [`hs-jev`](https://github.com/getmissionctrl/hs-jev) Haskell client — just
+the [`hs-jev`](https://github.com/getmissionctrl/hs-jev) Haskell client or the [`marcreichel/laya-php`](https://github.com/marcreichel/laya-php) PHP / Laravel SDK — just
 needs its `baseUrl` repointed; nothing else changes.
 
 ```bash
