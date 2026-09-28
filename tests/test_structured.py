@@ -163,8 +163,10 @@ check("decide/details routing", details.routing, {"model": "english"})
 
 runner = FakeRunner({"a": {"type": "noul", "noul": 0.9, "confidence": 0.9}})
 out = decide(runner, "s", questions={"a": {"type": "noul", "instructions": "?"}})
+# The pass-through is the raw answer, and it now carries the gate's state: no `min_confidence`
+# was passed, so every answer reports `not_configured` rather than reporting nothing.
 check("decide/questions pass-through returns answers", out,
-      {"a": {"type": "noul", "noul": 0.9, "confidence": 0.9}})
+      {"a": {"type": "noul", "noul": 0.9, "confidence": 0.9, "abstention": "not_configured"}})
 
 check_raises("decide/requires schema or questions", ValueError, lambda: decide(runner, "s"))
 check_raises("decide/rejects both", ValueError, lambda: decide(runner, "s", schema=SCHEMA, questions={}))
@@ -280,7 +282,8 @@ check("batch/details routing", details[0].routing, {"model": "english"})
 # questions= is the raw-answers pass-through, exactly like decide()
 raw = decide_batch(FakeBatchRunner({"a": {"x": {"type": "noul", "noul": 0.9, "confidence": 0.9}}}),
                    ["a"], questions={"x": {"type": "noul", "instructions": "?"}})
-check("batch/questions pass-through", raw, [{"x": {"type": "noul", "noul": 0.9, "confidence": 0.9}}])
+check("batch/questions pass-through", raw,
+      [{"x": {"type": "noul", "noul": 0.9, "confidence": 0.9, "abstention": "not_configured"}}])
 
 
 class FakeRouterLike:
