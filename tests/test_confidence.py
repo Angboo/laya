@@ -324,8 +324,18 @@ check_true("export/flag_low_confidence is in dir()", "flag_low_confidence" in di
 check_true("export/apply_confidence_gate is importable from laya", hasattr(laya, "apply_confidence_gate"))
 check_true("export/apply_confidence_gate is in __all__", "apply_confidence_gate" in laya.__all__)
 check_true("export/apply_confidence_gate is in dir()", "apply_confidence_gate" in dir(laya))
-for _name in ("GATE_NOT_CONFIGURED", "GATE_PASSED", "GATE_ABSTAINED", "GATE_UNEVALUATED", "GATE_STATES"):
-    check_true("export/%s is importable from laya" % _name, hasattr(laya, _name))
+check_true("export/GATE_STATES is importable from laya", hasattr(laya, "GATE_STATES"))
+check_true("export/GATE_STATES is in __all__", "GATE_STATES" in laya.__all__)
+check_true("export/GATE_STATES is in dir()", "GATE_STATES" in dir(laya))
+# The four values are reached through GATE_STATES rather than exported one by one: iterating the
+# vocabulary is the whole use, and every `laya.__all__` name has to earn a documented entry
+# (`tests/test_packaging.py` enforces that).
+import laya.confidence as _confidence  # noqa: E402
+
+check("export/GATE_STATES is the vocabulary a caller iterates", list(GATE_STATES),
+      [_confidence.GATE_NOT_CONFIGURED, _confidence.GATE_PASSED,
+       _confidence.GATE_ABSTAINED, _confidence.GATE_UNEVALUATED])
+check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GATE_STATES)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
