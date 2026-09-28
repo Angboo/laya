@@ -83,6 +83,20 @@ check_param("Router.__init__", Router.__init__, "agent_kwargs", None)
 # ...and the per-checkpoint digests that `revisions` has always had a sibling need for
 check_param("Router.__init__", Router.__init__, "sha256_digests", None)
 
+# What the constructor does NOT raise over is part of its contract too: a shared
+# `agent_kwargs["expected_sha256"]` overlapping a per-checkpoint `sha256_digests` entry on one file
+# name is the ordinary shape, not a contradiction -- `model.safetensors` is the one name every
+# checkpoint uses for a different file. Refusing it here would reject a shared pin plus a
+# per-checkpoint override, and `laya.serve` maps a ValueError out of a load to a 422 about a
+# misconfiguration no request caused.
+_OVERLAP = "Router.__init__/a shared pin overlapping a per-checkpoint one constructs"
+try:
+    Router(sha256_digests={"english": {"model.safetensors": "b" * 64}},
+           agent_kwargs={"expected_sha256": {"model.safetensors": "c" * 64}})
+    check_true(_OVERLAP, True, "constructed")
+except ValueError as exc:
+    check_true(_OVERLAP, False, "raised instead of constructing: %s" % exc)
+
 # load() forwards Agent's own construction options, so none of them is reachable only
 # through the class; tests/test_download.py asserts that against both signatures.
 check_param("load", load, "compile", False)
