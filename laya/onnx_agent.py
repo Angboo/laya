@@ -24,6 +24,8 @@ from laya.common import (
     render_options,
     resolve_lang_temperatures,
     serialize_state,
+    window_batch_cap,
+    window_budget,
     temp_bucket,
     unpermute_probs,
     TEMP_MIN,
@@ -453,7 +455,16 @@ class ONNXAgent(HookRegistry):
             raise ValueError("predict_long: only aggregate='auto' is supported")
         max_len = self.cfg.get("max_len", 512)
         head_max_len = self.cfg.get("head_max_len", 192)
-        budget = window if (window and window > 0) else max(64, max_len - head_max_len - 8)
+        # The same cap the torch `Agent.predict_long` applies, for the same reason: a window wider
+        # than the room these questions leave is re-truncated by `build_sequence` on the way into
+        # `predict_batch`, so its tail reaches no model while `answer["window"]` reports the whole
+        # span -- and once the room falls below the default stride the windows stop overlapping and
+        # leave tokens no window reads at all. `README.md` and `Router.predict_long` document this
+        # contract for both agents, so both have to honour it.
+        ids = list(questions.keys())
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        budget, step_default, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
+                                                head_max_len, window=window, stride=stride)
 
         state_ids = encode_text(
             self.tok,
@@ -469,7 +480,7 @@ class ONNXAgent(HookRegistry):
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
-        step = stride if (stride and stride > 0) else max(1, budget // 2)
+        step = step_default
         windows, starts = [], []
         i, n = 0, len(state_ids)
         while i < n:
@@ -483,7 +494,11 @@ class ONNXAgent(HookRegistry):
 
         probe, evidence = _start_evidence()
         # A copy, so a start hook that mutates `ctx.states` in place cannot shift `starts`.
-        results = self.predict_batch(list(windows), questions, batch_size=batch_size, lang=lang,
+        # Bound one forward pass to what the un-capped scan would have used; see
+        # `window_batch_cap`. An explicit batch_size is honoured untouched.
+        cap = window_batch_cap(len(windows), budget, max(64, max_len - head_max_len - 8),
+                               batch_size)
+        results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
                                      **_with_start_probe(hook_kwargs, probe))
 
         if evidence["answered"]:

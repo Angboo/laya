@@ -12,6 +12,7 @@ Run: python tests/test_onnx_long.py
 import inspect
 import os
 import sys
+import warnings
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np  # noqa: E402
 
 from laya.agent import Agent  # noqa: E402
+from laya.common import window_budget  # noqa: E402
 from laya.onnx_agent import ONNXAgent  # noqa: E402
 
 PASS, FAIL = [], []
@@ -166,9 +168,18 @@ for qid, key in (("dept", "answer_confidence"), ("urgent", "noul")):
     check_true("aggregate/%s is the strongest window on its rule" % qid,
                ans[key] == max(pw["answers"][qid][key] for pw in per_window),
                [pw["answers"][qid][key] for pw in per_window])
+    # Derived from the *effective* window, not from `max_len - head_max_len - 8`: these questions
+    # leave less room than that budget at this tiny config, so the window is capped at the room and
+    # the reported span has to describe what the model actually read. Hardcoding 64/32 here asserted
+    # a `token_end` that overstated the span by the difference.
+    _eff, _step, _room = window_budget(agent.tok, [agent._to_internal(q) for q in QUESTIONS.values()],
+                                       agent.cfg["max_len"], agent.cfg["head_max_len"])
     check("window/%s fields index the deciding span into the original state" % qid,
           (ans["window"]["count"], ans["window"]["token_start"], ans["window"]["token_end"]),
-          (len(windows), j * 32, min(j * 32 + 64, 200)))
+          (len(windows), j * _step, min(j * _step + _eff, 200)))
+    check_true("window/%s span is no wider than the room the questions leave" % qid,
+               ans["window"]["token_end"] - ans["window"]["token_start"] <= _room,
+               (ans["window"]["token_start"], ans["window"]["token_end"], _room))
 check("usage/windows counts the scanned windows", result["usage"]["windows"], len(windows))
 check("usage/input_tokens sums the window runs",
       result["usage"]["input_tokens"], sum(r["usage"]["input_tokens"] for r in per_window))
@@ -228,9 +239,18 @@ check("batch_size/chunking does not change the answer",
 
 
 # ---------------------------------------------------------------- explicit window and stride
-check("window/explicit window=96 stride=96 -> three windows",
-      _bare_onnx().predict_long(LONG_STATE, QUESTIONS, window=96, stride=96)["usage"]["windows"],
-      3)
+# window=96 is wider than the room these questions leave at max_len=64, so it is clamped -- and the
+# stride the caller paired with it is clamped to match rather than refused, since 96 was a valid step
+# for the 96 they asked for. What must hold is that the scan still covers the state.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", RuntimeWarning)
+    _explicit = _bare_onnx().predict_long(LONG_STATE, QUESTIONS, window=96, stride=96)
+_eff96, _step96, _ = window_budget(_bare_onnx().tok,
+                                   [_bare_onnx()._to_internal(q) for q in QUESTIONS.values()], 64, 32,
+                                   window=96, stride=96)
+check_true("window/explicit window=96 stride=96 is clamped and still covers the state",
+           _explicit["usage"]["windows"] >= 3 and _step96 <= _eff96,
+           (_explicit["usage"]["windows"], _eff96, _step96))
 check_raises("aggregate/anything but auto is refused", ValueError,
              lambda: _bare_onnx().predict_long(LONG_STATE, QUESTIONS, aggregate="mean"))
 

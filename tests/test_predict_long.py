@@ -6,6 +6,7 @@ window split, the per-type aggregation (noul = strongest window, choice/score = 
 window), and the per-call hook controls it forwards to whichever of those two calls runs. Numerical
 behaviour on real weights is exercised in tests/test_local_e2e.py.
 """
+import inspect
 import os
 import re
 import sys
@@ -41,11 +42,16 @@ def check_true(name, cond, detail=""):
 
 
 class _Tok:
+    # The special-token ids and `truncation` are what `laya.common.build_head` reads: predict_long
+    # assembles each question's head to measure the room it leaves for the state before it sizes a
+    # window, so a fake that cannot build a head cannot reach the scan at all.
     mask_token = "[M]"
+    cls_token_id, sep_token_id, mask_token_id = 101, 102, 103
 
-    def __call__(self, text, add_special_tokens=False):
+    def __call__(self, text, add_special_tokens=False, truncation=False, max_length=None):
         # token count == character count, so the test controls windowing by string length
-        return {"input_ids": list(range(len(text)))}
+        ids = list(range(len(text)))
+        return {"input_ids": ids[:max_length] if (truncation and max_length) else ids}
 
     def decode(self, ids):
         return "w%d_%d" % (ids[0], ids[-1]) if ids else "w"
@@ -599,6 +605,204 @@ check("docs/api.md tabulates a hook answer as zero windows",
       "| answered with `ctx.skip([result])` | `0` |" in api_para, True)
 check("docs/predict_long's docstring says the key is total",
       "always present" in (Agent.predict_long.__doc__ or ""), True)
+
+# 12. the window is sized by the room the questions leave, not by the config alone
+#
+# Every window is decoded and scored as an ordinary state, so `build_sequence` cuts one that is
+# wider than the room the question's own head leaves inside `max_len`. Sized from the config alone
+# the window was cut short on the way to the model while `answer["window"]["token_end"]` still
+# reported the whole span, and once the room fell under the stride, spans of the document were
+# read by no window at all.
+from laya.common import build_sequence, serialize_state  # noqa: E402
+
+TOK = _Tok()
+MAX_LEN, HEAD_MAX_LEN, CONFIG_BUDGET = 100, 20, 72      # make_agent's cfg, and its budget
+
+
+def head_len(qdef):
+    """The head `build_sequence` puts in front of the state, measured with no state at all."""
+    return len(build_sequence(TOK, "", Agent._to_internal(qdef), 10 ** 6, HEAD_MAX_LEN)[0]) - 1
+
+
+def room_for(qdef):
+    """The state tokens `qdef` leaves inside `max_len`, re-derived from `build_sequence`.
+
+    Deliberately not `laya.common.state_room`: the window has to fit what the sequence builder
+    really keeps, so this measures that the long way round instead of trusting the same helper the
+    code under test uses.
+    """
+    return max(0, MAX_LEN - head_len(qdef) - 1)
+
+
+def q_many(n):
+    """A choice question with `n` options, each long enough to be worth capping."""
+    return {"type": "choice", "instructions": "which one?",
+            "criteria": {"opt%02d" % i: "d" * 20 for i in range(n)}}
+
+
+def canned_for(questions, i, n):
+    """One canned answer per window, the last window the confident one."""
+    conf = 0.9 if i == n - 1 else 0.4
+    return {"answers": {qid: {"type": "choice", "choice": "opt00", "noul": conf,
+                              "confidence": conf, "answer_confidence": conf}
+                        for qid in questions},
+            "usage": {"input_tokens": 10}}
+
+
+def scan(questions, **kw):
+    """Scan LONG and return (result, the token spans of the windows handed to predict_batch)."""
+    agent = make_agent(lambda sts, q: [canned_for(q, i, len(sts)) for i in range(len(sts))])
+    result = agent.predict_long(LONG, questions, **kw)
+    handed = []
+    for text in agent._calls["batch_states"]:
+        first, last = text[1:].split("_")           # _Tok.decode renders a span as "wA_B"
+        handed.append((int(first), int(last) + 1))
+    return result, handed
+
+
+def read_spans(handed, room):
+    """What the model reads of each window: `build_sequence` keeps its first `room` tokens."""
+    return [(start, min(end, start + room)) for start, end in handed]
+
+
+def uncovered(spans, total):
+    """Token indices of `total` that no span in `spans` contains."""
+    seen = set()
+    for start, end in spans:
+        seen.update(range(start, end))
+    return sorted(set(range(total)) - seen)
+
+
+STATE_TOKENS = len(TOK(serialize_state(LONG))["input_ids"])
+
+# The premise, checked against build_sequence rather than assumed: a state is cut to the room, and
+# for a 12-option question on this config that room is under the budget the scan sized windows by.
+ROOM_12 = room_for(q_many(12))
+kept = len(build_sequence(TOK, "x" * (MAX_LEN + 50), Agent._to_internal(q_many(12)),
+                          MAX_LEN, HEAD_MAX_LEN)[0]) - head_len(q_many(12)) - 1
+check("room/build_sequence keeps exactly the room, whatever the state's length", kept, ROOM_12)
+check("room/12 options leave less room than the config budget", ROOM_12 < CONFIG_BUDGET, True)
+check("room/the questions the sections above scan with leave more room than the budget",
+      [room_for(q) >= CONFIG_BUDGET for q in Q.values()], [True, True])
+
+# 12a. a window is never wider than the room, so no window is truncated on the way in
+tight, handed = scan({"a": q_many(12)})
+check("tight/no window is wider than the room the question leaves",
+      max(end - start for start, end in handed) <= ROOM_12, True)
+check("tight/the windows still overlap",
+      all(b[0] < a[1] for a, b in zip(handed, handed[1:])), True)
+check("tight/every token of the state is read by some window",
+      uncovered(read_spans(handed, ROOM_12), STATE_TOKENS), [])
+
+# 12b. and the span reported is the span read, not the span asked for
+decided = tight["answers"]["a"]["window"]
+check("tight/token_end does not overstate what the model read",
+      decided["token_end"] - decided["token_start"] <= ROOM_12, True)
+check("tight/token_start/token_end are the deciding window's own span",
+      (decided["token_start"], decided["token_end"]), handed[decided["index"]])
+check("tight/the last window stops at the end of the state", handed[-1][1], STATE_TOKENS)
+
+# 12c. the failure that needed no wide window at all: a room under the stride left whole spans of
+# the document unread, because consecutive windows no longer touched.
+ROOM_20 = room_for(q_many(20))
+check("gap/20 options leave less room than the default stride",
+      ROOM_20 < CONFIG_BUDGET // 2, True)
+gappy, handed = scan({"a": q_many(20)})
+check("gap/the scan covers the whole state even so",
+      uncovered(read_spans(handed, ROOM_20), STATE_TOKENS), [])
+check("gap/which costs windows, and reports them", gappy["usage"]["windows"], len(handed))
+
+# 12d. two questions with different rooms share one list of windows, so the tightest one sets it
+mixed, handed = scan({"wide": q_many(2), "tight": q_many(12)})
+check("mixed/the window fits the tightest question",
+      max(end - start for start, end in handed) <= min(ROOM_12, room_for(q_many(2))), True)
+check("mixed/both questions name the same span",
+      mixed["answers"]["wide"]["window"], mixed["answers"]["tight"]["window"])
+
+# 12e. an explicit window past the room is clamped, and the caller is told
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    asked, handed = scan(Q, window=200)
+check("explicit/a window past the room is clamped to it",
+      max(end - start for start, end in handed) <= room_for(Q["dept"]), True)
+check("explicit/and the caller is warned about it",
+      [w.category.__name__ for w in caught], ["RuntimeWarning"])
+check("explicit/the warning names the room it clamped to",
+      "leave inside max_len" in str(caught[0].message) if caught else False, True)
+
+# Clamping the *default* is not the caller's doing, so it is not warned about.
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    scan({"a": q_many(12)})
+check("explicit/clamping the default window is not warned about",
+      [w.category.__name__ for w in caught], [])
+
+# 12f. a stride past the effective window is refused: the tokens between two windows would be read
+# by nothing, which is the failure this method exists to prevent.
+check_raises("stride/past the effective window is an error", ValueError,
+             lambda: scan(Q, stride=room_for(Q["dept"]) + 1))
+# A stride the caller paired with a window they asked for is NOT their error when the library then
+# reduces that window: window=90 with stride=90 is a self-consistent "no overlap, read everything".
+# Refusing it made the library's own clamp look like the caller's mistake, and forced every such
+# caller -- including `tests/test_onnx_long.py`'s window=96 stride=96 -- to be edited. It is clamped
+# to half the effective window under the same RuntimeWarning, and the scan still covers the state.
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    _clamped = scan({"a": q_many(12)}, window=90, stride=90)
+check_true("stride/a stride valid for the requested window is clamped, not refused",
+           _clamped[0]["usage"]["windows"] > 1, _clamped[0]["usage"])
+check_true("stride/and the caller is told the stride moved too",
+           any("stride=90" in str(w.message) and "reduced" in str(w.message) for w in caught),
+           [str(w.message)[:90] for w in caught])
+_room12 = room_for(q_many(12))
+check_true("stride/the clamped scan leaves no gap", all(
+    b - a <= _room12 for a, b in read_spans(_clamped[1], _room12)), _clamped[1][:3])
+# A stride past the window the caller actually asked for is still their error.
+check_raises("stride/past the window the caller asked for is still refused", ValueError,
+             lambda: scan({"a": q_many(12)}, window=40, stride=80))
+check("stride/a stride inside the window is accepted",
+      scan(Q, window=40, stride=40)[0]["usage"]["windows"] > 1, True)
+
+# 12f-bis. the ONNX path honours the same cap, because README and Router promise it for both
+try:                                                                            # noqa: E402
+    from laya.common import window_batch_cap, window_budget
+except ImportError:      # source reverted: let the checks below go red rather than abort the suite
+    def window_budget(*_a, **_k):        # type: ignore[misc]
+        return (0, 0, 0)
+
+    def window_batch_cap(*_a, **_k):     # type: ignore[misc]
+        return -1
+from laya.onnx_agent import ONNXAgent                                           # noqa: E402
+
+_onnx = ONNXAgent.__new__(ONNXAgent)
+_onnx.tok = _Tok()
+_onnx.cfg = {"max_len": MAX_LEN, "head_max_len": HEAD_MAX_LEN}
+_q_onnx = {"a": q_many(12)}   # 100 options fills this tiny harness entirely
+_eff_onnx, _step_onnx, _room_onnx = window_budget(
+    _onnx.tok, [_onnx._to_internal(_q_onnx["a"])], MAX_LEN, HEAD_MAX_LEN)
+check_true("onnx/predict_long caps the window at the room too",
+           _eff_onnx <= _room_onnx and _eff_onnx < max(64, MAX_LEN - HEAD_MAX_LEN - 8),
+           (_eff_onnx, _room_onnx))
+check_true("onnx/and its stride stays inside that window", _step_onnx <= _eff_onnx,
+           (_step_onnx, _eff_onnx))
+check_true("onnx/predict_long actually calls window_budget",
+           "window_budget(" in inspect.getsource(ONNXAgent.predict_long),
+           "the README and Router docstring promise the cap for both agents")
+
+# 12f-ter. capping the window must not turn one forward pass into an out-of-memory
+check("batch/a mild cap keeps the single shared pass", window_batch_cap(10, 43, 64), None)
+check("batch/no cap at all keeps it too", window_batch_cap(16, 312, 312), None)
+check_true("batch/a blow-up is bounded to the un-capped pass width",
+           0 < (window_batch_cap(413, 23, 312) or 0) < 413, window_batch_cap(413, 23, 312))
+check("batch/an explicit batch_size is always honoured", window_batch_cap(413, 23, 312, 8), 8)
+
+# 12g. the page that teaches the default teaches the cap as well
+window_para = README[README.index("A smaller `window` isolates"):][:900]
+check("docs/README says the window is capped at the room the questions leave",
+      "capped at the room the questions leave" in window_para, True)
+check("docs/predict_long's docstring documents the cap",
+      "capped at the room the" in (Agent.predict_long.__doc__ or ""), True)
+
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
