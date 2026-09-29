@@ -7,7 +7,8 @@ Skips cleanly (exit 0) when the mcp package is not installed, so the core
 install keeps working.
 
 Device and preload-list tests follow the laya.serve environment contract
-(LAYA_DEVICE / LAYA_PRELOAD / LAYA_MODELS / LAYA_THREADS / LAYA_AUTO_TASK).
+(LAYA_DEVICE / LAYA_PRELOAD / LAYA_MODELS / LAYA_THREADS / LAYA_AUTO_TASK /
+LAYA_DEFAULT_MODEL).
 """
 import asyncio
 import os
@@ -2065,6 +2066,119 @@ def test_auto_task_env():
                 os.environ[key] = value
 
 
+def test_default_model_env():
+    """LAYA_DEFAULT_MODEL has to reach both servers' Routers, with one meaning.
+
+    README's MCP section says these variables follow the contract at the top of laya.serve, so
+    both halves are built through the real builders -- `laya.mcp.server._ensure_router()` and
+    `laya.serve.build_router()` -- and read off the Router each one actually returns. The
+    variable itself is the routing fallback README prescribes for a mostly-non-English deployment
+    (`Router(default="multilingual")`), which until now only examples/server.py could be told.
+    The one place the two surfaces part is what an unresolvable name costs: serve refuses to
+    start, a stdio server has no startup to refuse, so MCP has to carry the same words in a
+    tool error.
+    """
+    import laya.mcp.server as mcp_mod  # the module, not the MCPServer instance
+    from laya.serve import build_router
+
+    saved = {k: os.environ.get(k)
+             for k in ("LAYA_DEFAULT_MODEL", "LAYA_PRELOAD", "LAYA_AUTO_TASK")}
+    saved_router = mcp_mod._ROUTER
+    try:
+        os.environ["LAYA_PRELOAD"] = "0"    # neither surface may build a checkpoint here
+        os.environ["LAYA_AUTO_TASK"] = "0"  # leaves the fallback the only thing moving
+
+        def build(value):
+            if value is None:
+                os.environ.pop("LAYA_DEFAULT_MODEL", None)
+            else:
+                os.environ["LAYA_DEFAULT_MODEL"] = value
+            mcp_mod._ROUTER = None  # the server caches the Router it built
+            return mcp_mod._ensure_router(), build_router()
+
+        for label, value, want in (
+                ("unset", None, "english"),
+                ("empty", "", "english"),
+                ("blank", "   ", "english"),
+                ("canonical", "multilingual", "multilingual"),
+                ("alias", "ml", "multilingual"),
+                ("padded_upper", " MULTI ", "multilingual"),
+                ("typed", "typed-decisions", "typed-decisions")):
+            try:
+                mcp_router, serve_router = build(value)
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 -- every value here is valid
+                # Named rather than fatal: a surface that raises for a name core accepts is the
+                # bug, and a suite that dies on the way to reporting it leaves the cause unsaid.
+                ok("default_model/%s_builds" % label, False,
+                   "raised %r: %s" % (type(exc).__name__, exc))
+                continue
+            ok("default_model/%s_mcp" % label, mcp_router.default == want,
+               repr(mcp_router.default))
+            # The parity the README claims: one variable, one meaning on both surfaces.
+            ok("default_model/%s_matches_serve" % label,
+               mcp_router.default == serve_router.default,
+               "mcp=%r serve=%r" % (mcp_router.default, serve_router.default))
+
+        # What the setting decides, at `route()` rather than at the attribute. `route` is
+        # documented as deciding "without loading or running anything", so nothing is downloaded.
+        stock_mcp, stock_serve = build(None)
+        nonenglish_mcp, nonenglish_serve = build("multilingual")
+        for index, state in enumerate(("12345 !!!", "Quero cancelar")):
+            ok("default_model/stock_english_%d" % index,
+               stock_mcp.route(state).model == "english" == stock_serve.route(state).model,
+               "mcp=%r serve=%r" % (stock_mcp.route(state).model, stock_serve.route(state).model))
+            ok("default_model/fallback_multilingual_%d" % index,
+               nonenglish_mcp.route(state).model == "multilingual"
+               == nonenglish_serve.route(state).model,
+               "mcp=%r serve=%r" % (nonenglish_mcp.route(state).model,
+                                    nonenglish_serve.route(state).model))
+        # A fallback, not a pin, on both surfaces.
+        ok("default_model/placed_text_unaffected",
+           nonenglish_mcp.route({"body": "Please refund the duplicate charge"}).model == "english"
+           == nonenglish_serve.route({"body": "Please refund the duplicate charge"}).model)
+
+        serve_message = mcp_message = ""
+        os.environ["LAYA_DEFAULT_MODEL"] = "mutli-lingual"
+        try:
+            build_router()
+            ok("default_model/serve_refuses_to_start", False, "build_router() returned a Router")
+        except SystemExit as exc:
+            serve_message = str(exc)
+            ok("default_model/serve_refuses_to_start", True)
+        except Exception as exc:  # noqa: BLE001 -- a traceback is not "exits with a message"
+            ok("default_model/serve_refuses_to_start", False,
+               "raised %r instead of exiting: %s" % (type(exc).__name__, exc))
+        mcp_mod._ROUTER = None
+        try:
+            mcp_mod._ensure_router()
+            ok("default_model/mcp_refuses", False, "_ensure_router() returned a Router")
+        except ToolError as exc:
+            mcp_message = exc.message
+            ok("default_model/mcp_refuses_with_a_tool_error",
+               exc.code == "internal_error", repr(exc.code))
+        except Exception as exc:  # noqa: BLE001 -- anything else escapes the tool wrapper
+            ok("default_model/mcp_refuses_with_a_tool_error", False,
+               "raised %r instead of a ToolError, so the client gets a server crash" % type(exc).__name__)
+        # One message, both surfaces: the operator fixes the typo from what they were told,
+        # whether or not the server came up.
+        ok("default_model/both_surfaces_name_the_variable_and_the_value",
+           all("invalid LAYA_DEFAULT_MODEL 'mutli-lingual'" in m for m in (serve_message, mcp_message)),
+           "serve=%r mcp=%r" % (serve_message, mcp_message))
+        ok("default_model/both_surfaces_carry_core_s_words",
+           all("unknown model" in m for m in (serve_message, mcp_message)),
+           "serve=%r mcp=%r" % (serve_message, mcp_message))
+        # The docstring promises a failed build is retriable rather than cached.
+        ok("default_model/failed_build_is_not_cached", mcp_mod._ROUTER is None,
+           repr(mcp_mod._ROUTER))
+    finally:
+        mcp_mod._ROUTER = saved_router
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_server_registration():
     tools = asyncio.run(mcp_server.list_tools())
     names = sorted(t.name for t in tools)
@@ -2146,6 +2260,7 @@ test_timeout_removed()
 test_models_from_env()
 test_batch_item_shape_as_documented()
 test_auto_task_env()
+test_default_model_env()
 test_server_registration()
 test_server_shortlist_k_default()
 

@@ -488,6 +488,7 @@ def _server_router(monkeypatch, **env):
     monkeypatch.setenv("LAYA_PRELOAD", "0")       # nothing may download
     monkeypatch.setenv("LAYA_AUTO_TASK", "1")     # the config that puts three checkpoints in play
     monkeypatch.delenv("LAYA_MAX_LOADED", raising=False)
+    monkeypatch.delenv("LAYA_DEFAULT_MODEL", raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     router = build_router()
@@ -572,6 +573,83 @@ def test_raising_the_cap_stops_the_server_rebuilding_a_checkpoint(monkeypatch):
     assert roomy.max_loaded == 3
     assert len(built3) == 3, built3             # each checkpoint once, then they stay resident
     assert sorted(roomy.loaded) == sorted(DEFAULT_MODELS)
+
+
+# README's other answer written as a constructor argument is `Router(default="multilingual")`,
+# given where it explains that very short Latin-script text ("Quero cancelar", "Esqueci minha
+# senha") carries nothing identifying its language and so goes to `default`. Both packaged
+# servers build their Router from the environment and neither could pass it: the only reader of
+# LAYA_DEFAULT_MODEL was examples/server.py, so the demo server honoured the variable while
+# laya-serve routed the ambiguous states to the English checkpoint it was told not to use.
+#
+# Unlike the numeric knobs above, an unresolvable name is fatal here. `LAYA_MAX_LOADED=abc`
+# falling back to 2 costs a rebuild; `LAYA_DEFAULT_MODEL=mutli` falling back to english costs the
+# wrong checkpoint answering every ambiguous state, which is the failure the operator was trying
+# to configure away. So the message is core's and the server refuses to start.
+def test_default_model_reaches_the_router_the_server_builds(monkeypatch):
+    from laya.router import DEFAULT_MODELS, Router, _ALIASES, normalise_name
+    from laya.serve import _default_model_option
+
+    # Unset is "not asked for", not a copy of Router's default -- the same reason
+    # `_resolve_max_loaded` returns None, and the same drift it prevents.
+    monkeypatch.delenv("LAYA_DEFAULT_MODEL", raising=False)
+    assert _default_model_option() == {}
+    for blank in ("", "   ", "\n"):
+        monkeypatch.setenv("LAYA_DEFAULT_MODEL", blank)
+        assert _default_model_option() == {}, repr(blank)
+
+    # The accepted spellings are core's tables read out of core, so a name added to _ALIASES
+    # arrives here on its own -- and a value this module resolves differently from the way
+    # `Router` itself resolves it fails the same line.
+    for name in sorted(set(DEFAULT_MODELS) | set(_ALIASES)):
+        monkeypatch.setenv("LAYA_DEFAULT_MODEL", name)
+        assert _default_model_option() == {"default": normalise_name(name)}, name
+
+    # And it reaches the Router the server builds. The literal is the one the README and
+    # docs/docker.md quote, so moving Router's default has to move those too.
+    router, _ = _server_router(monkeypatch)
+    assert router.default == Router().default
+    assert router.default == "english"
+    for raw, want in (("multilingual", "multilingual"), ("ml", "multilingual"),
+                      (" MULTI ", "multilingual"), ("typed-decisions", "typed-decisions")):
+        router, _ = _server_router(monkeypatch, LAYA_DEFAULT_MODEL=raw)
+        assert router.default == want, raw
+
+    # The decision the whole knob exists to change, measured at `route()` rather than at the
+    # attribute -- `route` documents that it decides "without loading or running anything", so
+    # this costs no weights.
+    ambiguous = ("12345 !!!", "Quero cancelar", "Esqueci minha senha")
+    stock, _ = _server_router(monkeypatch)
+    portuguese, _ = _server_router(monkeypatch, LAYA_DEFAULT_MODEL="multilingual")
+    for state in ambiguous:
+        assert stock.route(state).model == "english", state
+        assert "using default (english)" in stock.route(state).reason, state
+        assert portuguese.route(state).model == "multilingual", state
+        assert "using default (multilingual)" in portuguese.route(state).reason, state
+    # A fallback, not a pin: text the detector can place routes on what it detects.
+    assert portuguese.route({"body": "Please refund the duplicate charge"}).model == "english"
+
+
+def test_an_unresolvable_default_stops_the_server_with_core_s_words(monkeypatch):
+    from laya.serve import build_router
+
+    monkeypatch.setenv("LAYA_PRELOAD", "0")
+    monkeypatch.delenv("LAYA_DEFAULT_MODEL", raising=False)
+    monkeypatch.setenv("LAYA_DEFAULT_MODEL", "mutli-lingual")
+    with pytest.raises(SystemExit) as raised:
+        build_router()
+    message = str(raised.value)
+    # Names the variable, quotes the value the operator typed, and then says in core's own words
+    # what the accepted set is -- so the typo is fixed from the message, not from the source.
+    assert message.startswith("invalid LAYA_DEFAULT_MODEL 'mutli-lingual': unknown model"), message
+    for name in ("english", "multilingual", "typed-decisions", "ml"):
+        assert name in message, message
+    # The contrast with the numeric knobs has to stay the contrast: with the name fixed, the bad
+    # number below still falls back instead of stopping the server.
+    monkeypatch.setenv("LAYA_DEFAULT_MODEL", "english")
+    monkeypatch.setenv("LAYA_MAX_LOADED", "abc")
+    assert build_router().default == "english"
+    assert build_router().max_loaded == 2
 
 
 
