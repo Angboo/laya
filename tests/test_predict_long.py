@@ -897,6 +897,13 @@ check_raises("hook budget/a hook that shrinks the room is refused", ValueError,
 check_raises("hook budget/rewriting ctx.questions is caught too", ValueError,
              lambda: _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(16)}),
                                         72, *_CFG, asked={"a": q_many(2)}))
+# The boundary is `>=`, not `>`: a re-budget that leaves the room EXACTLY the size the scan used
+# is harmless and must still answer. At cfg 100/20 a 4-option question leaves exactly 72, which is
+# what a 2-option scan sized to, so this is the one shape that separates the two comparisons.
+check_true("hook budget/a room exactly equal to the window is allowed",
+           _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(4)}), 72, *_CFG,
+                              asked={"a": q_many(2)}) is None, "room == sized")
+
 check_true("hook budget/questions untouched skips the recompute entirely",
            _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(16)}), 72, *_CFG,
                               asked={"a": q_many(16)}) is None, "nothing moved")
