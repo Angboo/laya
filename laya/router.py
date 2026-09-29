@@ -401,9 +401,12 @@ class Router(HookRegistry):
     passes on: `Router(revision="   ")` used to reach `resolve_revision`, where a truthy but blank
     string suppressed the `LAYA_REVISION` fallback and left huggingface_hub's default, and is now
     dropped before it gets there, so a Router configured with whitespace behaves like one
-    configured with nothing and `$LAYA_REVISION` applies. It is the one place a weaker source ends
-    up ahead of an explicit argument, and it is what "this configuration line was never filled in"
-    has to mean if `revision` and a `revisions` entry are to be read the same way.
+    configured with nothing and `$LAYA_REVISION` applies. That is what "this configuration line was
+    never filled in" has to mean if `revision` and a `revisions` entry are to be read the same way.
+
+    It is one of two places a weaker source ends up ahead of an explicit argument. The other is a
+    per-checkpoint digest entry from `LAYA_SHA256_DIGESTS`, which wins over an `expected_sha256`
+    passed through `agent_kwargs`; see the class docstring.
 
     Anything else `laya.Agent` accepts is reachable through `agent_kwargs`, which is merged into
     every checkpoint the Router builds:
@@ -413,9 +416,30 @@ class Router(HookRegistry):
         Router(agent_kwargs={"fast": True})
 
     `expected_sha256` there pins the same files on every checkpoint, which is what a single
-    resident checkpoint or a shared `tokenizer.json` wants. It is never discarded wholesale: where a
-    checkpoint also has digests of its own, from `sha256_digests` or from the environment, the two
-    maps are merged **file by file**, so a file only one of them names is still verified.
+    resident checkpoint or a shared `tokenizer.json` wants. It is never discarded wholesale by a
+    checkpoint's own digests: where one also has an entry, from `sha256_digests` or from a
+    **per-checkpoint** `LAYA_SHA256_DIGESTS`, the two maps are merged **file by file**, so a file
+    only one of them names is still verified.
+
+    Two exceptions, both deliberate and both tested, because "merged file by file" is not the whole
+    story and the difference is a supply-chain control:
+
+    * A **flat** `LAYA_SHA256_DIGESTS` -- `{artifact: digest}` rather than `{model: {...}}` -- is
+      not a layer here at all. `verify_digests` applies it itself, but only when nothing else pins
+      (`if expected is None`), so ANY `expected_sha256` reaching `Agent`, from here or from a
+      checkpoint entry, means the flat variable is not consulted for that load. Verified on real
+      files: a flat variable pinning `model.safetensors` plus an `agent_kwargs` map pinning
+      `tokenizer.json` loads a tampered `model.safetensors`. Use the per-checkpoint shape, or name
+      every file you care about in one map, if you need both. This is unchanged from `main`.
+    * An explicit `{}` or `None` entry MASKS what would otherwise apply -- that is what "load this
+      one unverified" has to mean, and `test_an_explicit_none_entry_masks_a_flat_environment_map`
+      pins it.
+
+    And the precedence is per-checkpoint over shared regardless of where each came from, so a
+    per-checkpoint entry synthesised from `LAYA_SHA256_DIGESTS` wins over an `expected_sha256`
+    passed here in code. An environment variable beating an explicit argument is worth stating
+    plainly on a control like this; `test_an_environment_pin_overrides_the_shared_one_per_checkpoint`
+    is where that is pinned.
 
     For a file both name, the per-checkpoint entry wins. The two are not equally specific: the
     `agent_kwargs` map reaches every checkpoint the Router builds, and `model.safetensors` is the one

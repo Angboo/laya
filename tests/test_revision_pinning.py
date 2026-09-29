@@ -23,7 +23,7 @@ from laya.revisions import (  # noqa: E402
     snapshot_revision,
     verify_digests,
 )
-from laya.router import Router  # noqa: E402
+from laya.router import Router, _digests_from_env, _merge_expected_digests  # noqa: E402
 
 
 class _StopLoad(Exception):
@@ -866,6 +866,57 @@ class RouterRevisionFallbackTests(unittest.TestCase):
         kwargs = self._load(env="bbb")
         self.assertNotIn("revision", kwargs)
         self.assertEqual(self._effective(kwargs, env="bbb"), "bbb")
+
+
+class ReviewGapTests(unittest.TestCase):
+    """Guards an adversarial review found unpinned: each mutant below survived every lane."""
+
+    def test_a_non_dict_per_checkpoint_entry_is_handed_on_untouched(self):
+        """`_merge_expected_digests` hands a non-dict on so `verify_digests` owns the message.
+
+        Dropping the guard let a list of pairs be `dict.update`-ed into a map and silently accepted
+        as digests. Both shapes still fail closed, but only one of them fails in the right words.
+        """
+        self.assertEqual(_merge_expected_digests({"a": "1" * 64}, "nope"), "nope")
+        self.assertEqual(_merge_expected_digests({"a": "1" * 64}, [("a", "1" * 64)]),
+                         [("a", "1" * 64)])
+
+    def test_a_non_dict_shared_map_is_handed_on_untouched(self):
+        """The same for the shared half, which had the same missing coverage."""
+        self.assertEqual(_merge_expected_digests("nope", None), "nope")
+        self.assertEqual(_merge_expected_digests(["a"], None), ["a"])
+
+    def test_a_blank_revision_suppresses_the_environment_through_agent(self):
+        """`(revision or env).strip()`: a truthy-but-blank argument wins the `or`, then strips away.
+
+        The Router drops a blank before it reaches here, and that is tested. `Agent`/`laya.load` do
+        not, so a config line that ends up whitespace silently loses the deployment's pin and gets
+        huggingface_hub's default. Undocumented and untested before: the mutant that makes a blank
+        behave like an absent value survived every lane. Pinned as the behaviour that exists, so a
+        change to it is a decision rather than an accident.
+        """
+        with patch.dict(os.environ, {"LAYA_REVISION": "deadbeef"}, clear=False):
+            self.assertEqual(resolve_revision("some/repo", None), "deadbeef")
+            self.assertEqual(resolve_revision("some/repo", ""), "deadbeef")
+            self.assertIsNone(resolve_revision("some/repo", "   "))
+            self.assertIsNone(resolve_revision("some/repo", "\t"))
+            self.assertEqual(resolve_revision("some/repo", "  aaa  "), "aaa")
+
+    def test_a_flat_environment_map_is_masked_by_any_other_pin(self):
+        """The documented exception, asserted so the class docstring cannot drift from it again.
+
+        `verify_digests` reads a flat `LAYA_SHA256_DIGESTS` only `if expected is None`, so anything
+        reaching `Agent` as `expected_sha256` means the flat variable is not consulted. An earlier
+        revision of the class docstring said the two were "merged file by file", which is true of
+        the per-checkpoint shape and false of this one.
+        """
+        with patch.dict(os.environ,
+                             {"LAYA_SHA256_DIGESTS": json.dumps({"model.safetensors": "a" * 64})},
+                             clear=False):
+            self.assertEqual(_digests_from_env(["english"]), {})   # flat: not a layer here
+            merged = _merge_expected_digests({"tokenizer.json": "b" * 64}, None)
+            self.assertEqual(merged, {"tokenizer.json": "b" * 64})
+            self.assertNotIn("model.safetensors", merged)
 
 
 if __name__ == "__main__":
