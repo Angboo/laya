@@ -989,6 +989,29 @@ check("hook budget/it is handed the window size and the config it sized from",
 
 
 
+# A question whose options fill the whole sequence leaves no room for any state, so no window can
+# carry a single token of the document. `window_budget` refuses rather than scanning with window=0,
+# and deleting that raise left all 149 checks green -- the scan then ran with a window of 0 and
+# reported spans for text no model had seen.
+_no_room = {"a": q_many(400)}
+check_true("no room/the fixture really does fill the sequence",
+           room_for(q_many(400)) <= 0,
+           "room=%d" % room_for(q_many(400)))
+check_raises("no room/a scan with no room for the state is refused", ValueError,
+             lambda: window_budget(TOK, [Agent._to_internal(_no_room["a"])], MAX_LEN, HEAD_MAX_LEN,
+                                   window=None, stride=None))
+check_raises("no room/and predict_long refuses it rather than scanning a zero-width window",
+             ValueError, lambda: scan(_no_room))
+_no_room_msg = _attempt(lambda: window_budget(TOK, [Agent._to_internal(_no_room["a"])],
+                                              MAX_LEN, HEAD_MAX_LEN, window=None, stride=None))
+check_true("no room/the refusal names the budget that caused it",
+           "max_len=%d" % MAX_LEN in str(_no_room_msg) and "no room for the state" in str(_no_room_msg),
+           str(_no_room_msg)[:120])
+# And one option fewer still scans, so this pins the boundary rather than "big questions fail".
+check_true("no room/a question that leaves room is still scanned",
+           room_for(q_many(2)) > 0 and len(scan({"a": q_many(2)})[1]) > 0, "")
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)
