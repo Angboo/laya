@@ -18,12 +18,12 @@ named-language accuracy is reported separately: a detector can safely choose
 including guess counts, are in
 [`../results/massive_route_comparison_swedish.json`](../results/massive_route_comparison_swedish.json).
 
-Reproduce from the repository root, passing a baseline and candidate checkout:
+Reproduce from the repository root, passing baseline and candidate commits:
 
 ```sh
 python research/evals/massive_route_comparison.py \
-  --before-module /path/to/baseline/laya/lang.py \
-  --after-module laya/lang.py \
+  --before-ref 6d942c92081fbc139e736bbd9ac0023223c29b7f \
+  --after-ref ee499bb095587c8af17f2747dacd89a4c76c1ff1 \
   --out research/results/massive_route_comparison_swedish.json
 ```
 
@@ -34,29 +34,28 @@ downloads the split from Hugging Face on first run and needs `huggingface_hub` i
 
 | Measure | Baseline | Candidate | Change |
 |---|---:|---:|---:|
-| Overall checkpoint route accuracy | 77.428% | 77.429% | +0.001 pp |
-| Exact named-language accuracy | 8.837% | 8.841% | +0.004 pp |
-| Swedish checkpoint route accuracy | 86.954% | 86.954% | 0.000 pp |
+| Overall checkpoint route accuracy | 76.831% | 77.428% | +0.597 pp |
+| Exact named-language accuracy | 8.243% | 8.837% | +0.594 pp |
+| Swedish checkpoint route accuracy | 78.379% | 86.954% | +8.574 pp |
 | Swedish named-language accuracy | 0.000% | 30.296% | +30.296 pp |
-| Danish checkpoint route accuracy | 53.430% | 53.430% | 0.000 pp |
-| Norwegian Bokmål route accuracy | 49.630% | 49.630% | 0.000 pp |
+| Danish checkpoint route accuracy | 44.586% | 53.430% | +8.843 pp |
+| Norwegian Bokmål route accuracy | 43.073% | 49.630% | +6.557 pp |
 
-Checkpoint route accuracy changes only for `it` (+0.034 pp) and `pt` (+0.034 pp); no
-locale decreased. The overall route gain is two examples out of 151,674. Named-language
-accuracy also changes slightly for `de`, `it`, `pt`, and `ro`, reflecting shared evidence
-rules rather than locale-specific language work. For the 51 locale rows and exact
-before/after counts, use the JSON artifact rather than rounded percentages here.
+No locale's checkpoint-routing accuracy decreased. Both detectors are loaded directly
+from committed Git objects, with commit IDs and SHA-256 source hashes recorded in the
+artifact. The local router implementation is also fingerprinted. This prevents modified
+worktree files from being mislabeled as a baseline commit.
 
 ## Interpretation and limits
 
-MASSIVE measures intent classification utterances, not customer-support transcripts.
-It supplies a broad per-locale routing check, not evidence that Swedish support
-customers are served well end to end. On the pinned split, the Swedish change improves
-named-language detection but barely changes which checkpoint is selected; the
-configured default already sends most ambiguous examples to English.
+MASSIVE contains intent utterances, not customer-support transcripts. Routing accuracy
+measures checkpoint selection, not model answer quality. Exact language identification
+is reported separately; the detector does not name all 51 languages.
 
-Swedish, Danish, and Norwegian share short words. In the candidate results, four
-Norwegian examples are named `sv`; all still route to the same multilingual checkpoint
-as before. The detector does not claim that checkpoint-routing gains prove perfect
-language identification. Broader Swedish support data and a focused false-positive
-review remain useful follow-up work.
+Four Norwegian Bokmål utterances and five Icelandic utterances are labeled Swedish by
+the candidate. They still select the expected multilingual checkpoint. Shared Nordic
+words therefore remain a limitation for downstream uses of the language label.
+
+The benchmark was used during development and is not an untouched holdout. Real Swedish
+support examples and end-to-end model evaluation are still needed for support-quality
+claims.

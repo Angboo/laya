@@ -6,8 +6,8 @@ and after a proposed change to ``laya.lang``. It evaluates the full test split f
 Run from the repository root:
 
     python research/evals/massive_route_comparison.py \
-        --before-module /path/to/baseline/laya/lang.py \
-        --after-module laya/lang.py --out research/results/massive_route_comparison.json
+        --before-ref BASELINE_COMMIT \
+        --after-ref CANDIDATE_COMMIT --out research/results/massive_route_comparison.json
 
 No model weights are loaded. A non-English MASSIVE locale should route to ``multilingual``;
 English should route to ``english``. Named-language accuracy is reported separately because the
@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import importlib.util
+import hashlib
+import types
 import json
 import subprocess
 import sys
@@ -33,38 +34,22 @@ REVISION = "940fd47a81eaa7f2cc7b129674d945d618ac38c2"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_detector(path: Path, name: str):
-    """Load a standalone Laya language module from an arbitrary checkout."""
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load language detector: %s" % path)
-    module = importlib.util.module_from_spec(spec)
+def git_bytes(*args: str) -> bytes:
+    return subprocess.check_output(["git", "-C", str(REPO_ROOT), *args])
+
+
+def load_detector(ref: str, name: str):
+    """Load committed bytes; never label a modified worktree file as its HEAD."""
+    revision = git_bytes("rev-parse", "--verify", ref + "^{commit}").decode().strip()
+    source = git_bytes("show", revision + ":laya/lang.py")
+    module = types.ModuleType(name)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    exec(compile(source, revision + ":laya/lang.py", "exec"), module.__dict__)
+    return module, {"revision": revision, "path": "laya/lang.py",
+                    "sha256": hashlib.sha256(source).hexdigest()}
 
 
-def route(detector: Any, router_module: Any, text: str) -> tuple[str, str]:
-    """Use the repository's real Router._route decision path without loading a checkpoint."""
-    router = router_module.Router(default="english")
-    decision = router._route(text)
-    return decision.model, (decision.get("detection") or {}).get("language") or "undecided"
-
-
-def source_revision(path: Path) -> str:
-    """Return the Git revision owning a detector source file."""
-    source = path.resolve()
-    root = next((parent for parent in source.parents if (parent / ".git").exists()), source.parent)
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
-
-
-def score_locale(detector: Any, router_module: Any, locale: str, path: Path) -> Dict[str, Any]:
+def score_locale(router: Any, locale: str, path: Path) -> Dict[str, Any]:
     routes: Counter[str] = Counter()
     named_languages: Counter[str] = Counter()
     named_correct = 0
@@ -72,7 +57,9 @@ def score_locale(detector: Any, router_module: Any, locale: str, path: Path) -> 
     with gzip.open(path, "rt", encoding="utf-8") as source:
         for line in source:
             row = json.loads(line)
-            model, named_language = route(detector, router_module, row["text"])
+            decision = router._route(row["text"])
+            model = decision.model
+            named_language = (decision.get("detection") or {}).get("language") or "undecided"
             routes[model] += 1
             named_languages[named_language] += 1
             named_correct += named_language == locale
@@ -90,10 +77,8 @@ def score_locale(detector: Any, router_module: Any, locale: str, path: Path) -> 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--before-module", required=True, type=Path,
-                        help="path to baseline laya/lang.py")
-    parser.add_argument("--after-module", required=True, type=Path,
-                        help="path to candidate laya/lang.py")
+    parser.add_argument("--before-ref", required=True, help="baseline Git commit")
+    parser.add_argument("--after-ref", required=True, help="candidate Git commit")
     parser.add_argument("--out", type=Path, help="write the JSON report to this path")
     args = parser.parse_args(argv)
 
@@ -102,13 +87,13 @@ def main(argv=None) -> int:
                      if name.startswith("test/") and name.endswith(".json.gz"))
     if not locales:
         raise RuntimeError("no per-locale MASSIVE test files at pinned revision")
-    before_path = args.before_module.resolve()
-    after_path = args.after_module.resolve()
-    before = load_detector(before_path, "laya_lang_before")
-    after = load_detector(after_path, "laya_lang_after")
-    # Use this checkout's Router implementation and replace only its pure detector function for
-    # each pass; all checkpoint-selection rules remain the repository code.
+    before, before_source = load_detector(args.before_ref, "laya_lang_before")
+    after, after_source = load_detector(args.after_ref, "laya_lang_after")
+    sys.path.insert(0, str(REPO_ROOT))
     from laya import router as router_module
+
+    router = router_module.Router(default="english")
+    original_analyse = router_module.analyse
 
     report: Dict[str, Any] = {
         "dataset": DATASET,
@@ -117,10 +102,10 @@ def main(argv=None) -> int:
         "model_free": True,
         "routing_policy": "english locale -> english checkpoint; every other locale -> multilingual",
         "routing_metric_note": "Router._route decisions are recorded; route accuracy uses expected checkpoint by MASSIVE locale, including Router's configured default for undecided text.",
-        "before_module": str(before_path),
-        "before_revision": source_revision(before_path),
-        "after_module": str(after_path),
-        "after_revision": source_revision(after_path),
+        "before_source": before_source,
+        "after_source": after_source,
+        "router_source": {"path": "laya/router.py",
+                          "sha256": hashlib.sha256(Path(router_module.__file__).read_bytes()).hexdigest()},
         "locales": {},
         "overall": {},
     }
@@ -134,9 +119,9 @@ def main(argv=None) -> int:
             revision=REVISION,
         ))
         router_module.analyse = before.analyse
-        old = score_locale(before, router_module, locale, local_path)
+        old = score_locale(router, locale, local_path)
         router_module.analyse = after.analyse
-        new = score_locale(after, router_module, locale, local_path)
+        new = score_locale(router, locale, local_path)
         expected_model = "english" if locale == "en" else "multilingual"
         for item in (old, new):
             item["expected_checkpoint"] = expected_model
@@ -150,6 +135,7 @@ def main(argv=None) -> int:
             total["route_correct"] += item["route_correct"]
             total["named_language_correct"] += item["named_language_correct"]
 
+    router_module.analyse = original_analyse
     for name, total in (("before", before_total), ("after", after_total)):
         count = total["examples"]
         report["overall"][name] = {

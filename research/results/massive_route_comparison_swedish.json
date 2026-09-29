@@ -1,8 +1,14 @@
 {
-  "after_module": "/Users/danielnylander/Documents/Codex/2026-09-28/kan/work/laya/laya/lang.py",
-  "after_revision": "75f2a04a80dbf7dee874addc29c77a7539860ccd",
-  "before_module": "/Users/danielnylander/Documents/Codex/2026-09-28/kan/work/laya-split/laya/lang.py",
-  "before_revision": "6d942c92081fbc139e736bbd9ac0023223c29b7f",
+  "after_source": {
+    "path": "laya/lang.py",
+    "revision": "ee499bb095587c8af17f2747dacd89a4c76c1ff1",
+    "sha256": "9a19b93dda8e784dfc8e326a1d29b67b14e170280ac0327171fc68fd2b76d1c9"
+  },
+  "before_source": {
+    "path": "laya/lang.py",
+    "revision": "6d942c92081fbc139e736bbd9ac0023223c29b7f",
+    "sha256": "0c336dd6ab96ad592c5e8a6ec132ad9f9c9a5a0e811f40f5bce8292f8304ab1f"
+  },
   "dataset": "mteb/amazon_massive_intent",
   "locales": {
     "af": {
@@ -37,19 +43,19 @@
           "en": 734,
           "fr": 1,
           "it": 4,
-          "nl": 177,
-          "pt": 25,
-          "undecided": 1911
+          "nl": 176,
+          "pt": 27,
+          "undecided": 1910
         },
-        "route_accuracy": 0.167787,
-        "route_correct": 499,
+        "route_accuracy": 0.142569,
+        "route_correct": 424,
         "routed_to": {
-          "english": 2475,
-          "multilingual": 499
+          "english": 2550,
+          "multilingual": 424
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.025218
     },
     "am": {
       "after": {
@@ -273,28 +279,28 @@
           "ro": 1,
           "undecided": 2387
         },
-        "route_accuracy": 0.534297,
-        "route_correct": 1589,
+        "route_accuracy": 0.445864,
+        "route_correct": 1326,
         "routed_to": {
-          "english": 1385,
-          "multilingual": 1589
+          "english": 1648,
+          "multilingual": 1326
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.088433
     },
     "de": {
       "after": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.655346,
-        "named_language_correct": 1949,
+        "named_language_accuracy": 0.65501,
+        "named_language_correct": 1948,
         "named_language_guesses": {
-          "de": 1949,
+          "de": 1948,
           "en": 82,
           "fr": 3,
           "pt": 1,
-          "undecided": 939
+          "undecided": 940
         },
         "route_accuracy": 0.752186,
         "route_correct": 2237,
@@ -322,7 +328,7 @@
           "multilingual": 2237
         }
       },
-      "named_language_accuracy_delta": 0.000336,
+      "named_language_accuracy_delta": 0.0,
       "route_accuracy_delta": 0.0
     },
     "el": {
@@ -495,17 +501,18 @@
         "named_language_correct": 0,
         "named_language_guesses": {
           "en": 97,
-          "undecided": 2877
+          "pt": 9,
+          "undecided": 2868
         },
-        "route_accuracy": 0.667787,
-        "route_correct": 1986,
+        "route_accuracy": 0.654338,
+        "route_correct": 1946,
         "routed_to": {
-          "english": 988,
-          "multilingual": 1986
+          "english": 1028,
+          "multilingual": 1946
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.013449
     },
     "fr": {
       "after": {
@@ -770,37 +777,36 @@
           "az": 2,
           "en": 3,
           "pt": 7,
-          "sv": 5,
-          "undecided": 2957
+          "undecided": 2962
         },
-        "route_accuracy": 0.909213,
-        "route_correct": 2704,
+        "route_accuracy": 0.89879,
+        "route_correct": 2673,
         "routed_to": {
-          "english": 270,
-          "multilingual": 2704
+          "english": 301,
+          "multilingual": 2673
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.010423
     },
     "it": {
       "after": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.590787,
-        "named_language_correct": 1757,
+        "named_language_accuracy": 0.589778,
+        "named_language_correct": 1754,
         "named_language_guesses": {
           "en": 159,
-          "es": 19,
-          "fr": 4,
-          "it": 1757,
-          "undecided": 1035
+          "es": 20,
+          "fr": 5,
+          "it": 1754,
+          "undecided": 1036
         },
-        "route_accuracy": 0.635508,
-        "route_correct": 1890,
+        "route_accuracy": 0.635171,
+        "route_correct": 1889,
         "routed_to": {
-          "english": 1084,
-          "multilingual": 1890
+          "english": 1085,
+          "multilingual": 1889
         }
       },
       "before": {
@@ -822,8 +828,8 @@
           "multilingual": 1889
         }
       },
-      "named_language_accuracy_delta": 0.001009,
-      "route_accuracy_delta": 0.000337
+      "named_language_accuracy_delta": 0.0,
+      "route_accuracy_delta": 0.0
     },
     "ja": {
       "after": {
@@ -1068,18 +1074,18 @@
           "bn": 2,
           "en": 3,
           "es": 23,
-          "pt": 1,
-          "undecided": 2945
+          "pt": 3,
+          "undecided": 2943
         },
-        "route_accuracy": 0.933759,
-        "route_correct": 2777,
+        "route_accuracy": 0.933423,
+        "route_correct": 2776,
         "routed_to": {
-          "english": 197,
-          "multilingual": 2777
+          "english": 198,
+          "multilingual": 2776
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.000336
     },
     "ml": {
       "after": {
@@ -1256,18 +1262,17 @@
           "fr": 10,
           "it": 12,
           "pt": 1,
-          "sv": 4,
-          "undecided": 2471
+          "undecided": 2475
         },
-        "route_accuracy": 0.496301,
-        "route_correct": 1476,
+        "route_accuracy": 0.430733,
+        "route_correct": 1281,
         "routed_to": {
-          "english": 1498,
-          "multilingual": 1476
+          "english": 1693,
+          "multilingual": 1281
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.065568
     },
     "nl": {
       "after": {
@@ -1305,37 +1310,18 @@
           "pt": 6,
           "undecided": 1520
         },
-        "route_accuracy": 0.283457,
-        "route_correct": 843,
+        "route_accuracy": 0.271352,
+        "route_correct": 807,
         "routed_to": {
-          "english": 2131,
-          "multilingual": 843
+          "english": 2167,
+          "multilingual": 807
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.012105
     },
     "pl": {
       "after": {
-        "examples": 2974,
-        "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.0,
-        "named_language_correct": 0,
-        "named_language_guesses": {
-          "de": 1,
-          "en": 53,
-          "es": 1,
-          "pt": 142,
-          "undecided": 2777
-        },
-        "route_accuracy": 0.813046,
-        "route_correct": 2418,
-        "routed_to": {
-          "english": 556,
-          "multilingual": 2418
-        }
-      },
-      "before": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
         "named_language_accuracy": 0.0,
@@ -1354,31 +1340,30 @@
           "multilingual": 2418
         }
       },
+      "before": {
+        "examples": 2974,
+        "expected_checkpoint": "multilingual",
+        "named_language_accuracy": 0.0,
+        "named_language_correct": 0,
+        "named_language_guesses": {
+          "de": 1,
+          "en": 53,
+          "es": 1,
+          "pt": 137,
+          "undecided": 2782
+        },
+        "route_accuracy": 0.812038,
+        "route_correct": 2415,
+        "routed_to": {
+          "english": 559,
+          "multilingual": 2415
+        }
+      },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.001008
     },
     "pt": {
       "after": {
-        "examples": 2974,
-        "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.53228,
-        "named_language_correct": 1583,
-        "named_language_guesses": {
-          "en": 62,
-          "es": 14,
-          "fr": 1,
-          "it": 8,
-          "pt": 1583,
-          "undecided": 1306
-        },
-        "route_accuracy": 0.765636,
-        "route_correct": 2277,
-        "routed_to": {
-          "english": 697,
-          "multilingual": 2277
-        }
-      },
-      "before": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
         "named_language_accuracy": 0.531944,
@@ -1398,23 +1383,43 @@
           "multilingual": 2276
         }
       },
-      "named_language_accuracy_delta": 0.000336,
-      "route_accuracy_delta": 0.000337
+      "before": {
+        "examples": 2974,
+        "expected_checkpoint": "multilingual",
+        "named_language_accuracy": 0.531944,
+        "named_language_correct": 1582,
+        "named_language_guesses": {
+          "en": 62,
+          "es": 14,
+          "fr": 1,
+          "it": 8,
+          "pt": 1582,
+          "undecided": 1307
+        },
+        "route_accuracy": 0.764963,
+        "route_correct": 2275,
+        "routed_to": {
+          "english": 699,
+          "multilingual": 2275
+        }
+      },
+      "named_language_accuracy_delta": 0.0,
+      "route_accuracy_delta": 0.000336
     },
     "ro": {
       "after": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.151311,
-        "named_language_correct": 450,
+        "named_language_accuracy": 0.150975,
+        "named_language_correct": 449,
         "named_language_guesses": {
           "bn": 2,
           "en": 221,
           "es": 10,
           "fr": 120,
-          "it": 98,
+          "it": 99,
           "pt": 24,
-          "ro": 450,
+          "ro": 449,
           "undecided": 2049
         },
         "route_accuracy": 0.533289,
@@ -1446,7 +1451,7 @@
           "multilingual": 1586
         }
       },
-      "named_language_accuracy_delta": 0.000336,
+      "named_language_accuracy_delta": 0.0,
       "route_accuracy_delta": 0.0
     },
     "ru": {
@@ -1517,15 +1522,15 @@
           "pt": 108,
           "undecided": 2731
         },
-        "route_accuracy": 0.573638,
-        "route_correct": 1706,
+        "route_accuracy": 0.572293,
+        "route_correct": 1702,
         "routed_to": {
-          "english": 1268,
-          "multilingual": 1706
+          "english": 1272,
+          "multilingual": 1702
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.001345
     },
     "sq": {
       "after": {
@@ -1538,8 +1543,8 @@
           "fr": 10,
           "it": 94,
           "nl": 1,
-          "pt": 42,
-          "undecided": 2812
+          "pt": 39,
+          "undecided": 2815
         },
         "route_accuracy": 0.914929,
         "route_correct": 2721,
@@ -1558,8 +1563,8 @@
           "fr": 10,
           "it": 94,
           "nl": 1,
-          "pt": 39,
-          "undecided": 2815
+          "pt": 42,
+          "undecided": 2812
         },
         "route_accuracy": 0.914929,
         "route_correct": 2721,
@@ -1595,25 +1600,24 @@
       "before": {
         "examples": 2974,
         "expected_checkpoint": "multilingual",
-        "named_language_accuracy": 0.302959,
-        "named_language_correct": 901,
+        "named_language_accuracy": 0.0,
+        "named_language_correct": 0,
         "named_language_guesses": {
-          "de": 7,
-          "en": 43,
-          "fr": 4,
+          "de": 11,
+          "en": 47,
+          "fr": 7,
           "ro": 1,
-          "sv": 901,
-          "undecided": 2018
+          "undecided": 2908
         },
-        "route_accuracy": 0.869536,
-        "route_correct": 2586,
+        "route_accuracy": 0.783793,
+        "route_correct": 2331,
         "routed_to": {
-          "english": 388,
-          "multilingual": 2586
+          "english": 643,
+          "multilingual": 2331
         }
       },
-      "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "named_language_accuracy_delta": 0.302959,
+      "route_accuracy_delta": 0.085743
     },
     "sw": {
       "after": {
@@ -1791,15 +1795,15 @@
           "pt": 77,
           "undecided": 2320
         },
-        "route_accuracy": 0.114997,
-        "route_correct": 342,
+        "route_accuracy": 0.11466,
+        "route_correct": 341,
         "routed_to": {
-          "english": 2632,
-          "multilingual": 342
+          "english": 2633,
+          "multilingual": 341
         }
       },
       "named_language_accuracy_delta": 0.0,
-      "route_accuracy_delta": 0.0
+      "route_accuracy_delta": 0.000337
     },
     "tr": {
       "after": {
@@ -1998,20 +2002,24 @@
   "overall": {
     "after": {
       "examples": 151674,
-      "named_language_accuracy": 0.088407,
-      "named_language_correct": 13409,
-      "route_accuracy": 0.774292,
-      "route_correct": 117440
-    },
-    "before": {
-      "examples": 151674,
       "named_language_accuracy": 0.088367,
       "named_language_correct": 13403,
       "route_accuracy": 0.774279,
       "route_correct": 117438
+    },
+    "before": {
+      "examples": 151674,
+      "named_language_accuracy": 0.082427,
+      "named_language_correct": 12502,
+      "route_accuracy": 0.768312,
+      "route_correct": 116533
     }
   },
   "revision": "940fd47a81eaa7f2cc7b129674d945d618ac38c2",
+  "router_source": {
+    "path": "laya/router.py",
+    "sha256": "df3b5de7d91ead9a27b3ca3abf92aef5aa350c176b70d4411af5319a20b8d962"
+  },
   "routing_metric_note": "Router._route decisions are recorded; route accuracy uses expected checkpoint by MASSIVE locale, including Router's configured default for undecided text.",
   "routing_policy": "english locale -> english checkpoint; every other locale -> multilingual",
   "split": "test"
