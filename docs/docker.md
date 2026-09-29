@@ -161,6 +161,78 @@ are mutually exclusive. The local-path response comes from the Agent and has no
 Router `routing` metadata. These settings also work with the CUDA override.
 Evaluate fine-tuned checkpoints on held-out examples before relying on them.
 
+## Models from ModelScope
+
+When a host cannot reach huggingface.co, the checkpoint can come from
+[ModelScope](https://modelscope.cn) and be baked into the image at build time. One
+argument selects which checkpoint, and it defaults to the multilingual one. The
+Compose override adds the prefetch arguments to both services and keeps the
+container off the Hub:
+
+```bash
+docker compose -f compose.yaml -f compose.http.yaml -f compose.modelscope.yaml up --build laya-serve
+```
+
+For NVIDIA, add `-f compose.cuda.yaml` before `up`; it repeats its own arguments for
+both services, so the ordering between the two overrides does not matter. Plain
+Docker takes the arguments directly:
+
+```bash
+docker build --build-arg MODELSCOPE_MODEL=multilingual \
+  -t laya:local .
+docker run --rm -e HF_HUB_OFFLINE=1 -p 127.0.0.1:8000:8000 laya:local laya-serve
+```
+
+[`docker/prefetch_modelscope.py`](https://github.com/NandhaKishorM/laya/blob/main/docker/prefetch_modelscope.py)
+lists the repository on modelscope.cn, downloads the checkpoint's own files -- the
+same set `laya/agent.py` asks the Hub for, so no sibling checkpoint is pulled -- and
+writes them into the image's hub cache the way `snapshot_download` lays out a
+snapshot. Nothing else changes: `Agent`, the `Router` that `laya-serve` builds,
+`laya.cli` and the integrations keep their repo ids and resolve them to the baked
+snapshot, so a container built this way needs no network at all. Each file's size
+and SHA-256 are checked against what the repository reports before the snapshot is
+published, so a truncated or substituted download fails the build instead of
+shipping inside a layer that looks healthy.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MODELSCOPE_MODEL` | `multilingual` (Compose); empty in the Dockerfile | Checkpoint to bake: `multilingual`, `english`, `typed-decisions` or `all`. Empty means no prefetch and the unchanged image |
+| `MODELSCOPE_REVISION` | `master` | ModelScope branch, tag or commit to bake |
+| `HF_HUB_OFFLINE` | `1` in the Compose override | `1` never contacts the Hub, so the baked copy is served |
+
+A type expands to that checkpoint's path inside the bundled repository, which is what
+the `Router` and the one-shot quickstart load by default, so a build that names one
+type serves it with no further change:
+
+```bash
+MODELSCOPE_MODEL=english docker compose -f compose.yaml -f compose.http.yaml -f compose.modelscope.yaml up --build laya-serve
+MODELSCOPE_MODEL=all docker compose -f compose.yaml -f compose.http.yaml -f compose.modelscope.yaml up --build laya-serve
+```
+
+`all` is the whole family, about 2.4 GB of weights. The override also sets
+`LAYA_MODELS=multilingual`, because `LAYA_PRELOAD=1` with the default list would try
+to build every checkpoint and fail on the first one that was not baked; set
+`LAYA_MODELS` to the list you baked when you bake more, and `MODELSCOPE_MODEL=all`
+when a deployment really does serve the family.
+
+Beyond the four types the argument also takes `repo[:subfolder]` specs, comma- or
+space-separated, which is how the mirror's standalone repositories
+([laya](https://modelscope.cn/models/convaiinnovations/laya),
+[laya-multilingual](https://modelscope.cn/models/convaiinnovations/laya-multilingual),
+[laya-typed-decisions](https://modelscope.cn/models/convaiinnovations/laya-typed-decisions))
+or a fine-tuned checkpoint is baked. A standalone repository is what
+`Agent("convaiinnovations/laya-multilingual")` loads directly; the `Router`'s default
+is the bundled path, so a type is normally what a serving image wants.
+
+Two details about pins and provenance. The build prints the commit the snapshot is
+keyed by -- pass that SHA as `revision=` or `LAYA_REVISION` to pin a load to exactly
+what was baked. Hub-side pins do not describe a mirror snapshot: `reviewed` names
+Hugging Face commits, and the SHA-256 digest map is keyed to Hub artifact hashes, so
+neither applies here. The build already refuses a download that does not match the
+mirror's own reported size and digest, which is the equivalent guarantee for this
+path. And the weights come from whichever mirror account the argument names, which is
+its own supply-chain decision for the deployment to make.
+
 ## Development and cleanup
 
 Open a Python prompt with `docker compose run --rm laya python`. To run the

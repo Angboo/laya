@@ -303,8 +303,48 @@ check_true("compose.cuda/no stale reference to a missing file",
 
 # Every file the Docker workflow validates must exist.
 for name in ("compose.yaml", "compose.example.yml", "compose.cuda.yaml", "compose.http.yaml",
-             "compose.spark.yaml"):
+             "compose.spark.yaml", "compose.modelscope.yaml"):
     check_true("compose/%s exists" % name, os.path.exists(name))
+
+# The ModelScope bake is a build argument, so a deployment that wants it has to carry the
+# arguments into *both* services -- `laya-serve` is its own service and an override for `laya`
+# never reaches it, which is the same trap compose.cuda.yaml documents. And the image has to stay
+# offline: a baked snapshot is keyed by a ModelScope commit the Hub cannot confirm, so going online
+# downloads the same weights again instead of serving the baked copy.
+ms = read("compose.modelscope.yaml")
+check_true("compose.modelscope/covers laya-serve too",
+           re.search(r"^\s{2}laya-serve:", ms, re.M) is not None,
+           "compose.modelscope.yaml does not mention laya-serve, so served checkpoints come from "
+           "the Hub and a host without Hugging Face access cannot serve at all")
+# One argument selects the checkpoint, and it defaults to the multilingual one, the checkpoint
+# every Laya caller routes to without being asked.
+check("compose.modelscope/repeats the prefetch args for both services",
+      len(re.findall(r'MODELSCOPE_MODEL: "\$\{MODELSCOPE_MODEL:-multilingual\}"', ms)), 2)
+check("compose.modelscope/repeats the revision for both services",
+      len(re.findall(r'MODELSCOPE_REVISION: "\$\{MODELSCOPE_REVISION:-master\}"', ms)), 2)
+check("compose.modelscope/keeps every service on the baked cache",
+      len(re.findall(r'HF_HUB_OFFLINE: "\$\{HF_HUB_OFFLINE:-1\}"', ms)), 2)
+check_true("compose.modelscope/preloads only what can load offline",
+           'LAYA_MODELS: "${LAYA_MODELS:-multilingual}"' in ms,
+           "LAYA_PRELOAD=1 with the family-wide default would fail on the first checkpoint that "
+           "was not baked")
+
+# The default build must stay exactly what it was: no prefetch, so a plain
+# `docker build .` hits the Hub as before, and the RUN is a no-op for the empty argument.
+dockerfile_runtime = dockerfile.partition("AS runtime")[2]
+check_true("Dockerfile/prefetch args default to off",
+           re.search(r'^ARG MODELSCOPE_MODEL=""', dockerfile_runtime, re.M) is not None,
+           "a non-empty default would change every existing build")
+check_true("Dockerfile/copies the prefetch script",
+           "docker/prefetch_modelscope.py" in dockerfile, "the RUN below references a missing file")
+check_true("Dockerfile/prefetch step is conditional",
+           re.search(r'^\s*RUN if \[ -n "\$MODELSCOPE_MODEL" \]; then', dockerfile_runtime, re.M) is not None,
+           "an unconditional RUN would make every build depend on modelscope.cn")
+check_true("Dockerfile/prefetch hands the cache to the runtime user",
+           "chown -R laya:laya /home/laya/.cache" in dockerfile_runtime,
+           "the tokenizer-compatibility fix writes into the snapshot on first load, and the image "
+           "runs as UID 10001")
+check_true("docker/prefetch_modelscope.py exists", os.path.exists("docker/prefetch_modelscope.py"))
 
 
 # --------------------------------------------------------------- nix: the deployment layer

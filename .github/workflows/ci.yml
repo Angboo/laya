@@ -138,6 +138,7 @@ jobs:
           python tests/test_context_manager.py
           python tests/test_criteria_normalization.py
           python tests/test_docker_entrypoint.py
+          python tests/test_modelscope_prefetch.py
           python tests/test_empty_questions.py
           python tests/test_router_memory.py
           python tests/test_shortlist_cosine.py
