@@ -94,7 +94,7 @@ def package_names() -> Dict[str, Set[str]]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 for name in NAME.findall(node.value):
-                    found.setdefault(name, set()).add(os.path.relpath(path, ROOT))
+                    found.setdefault(name, set()).add(os.path.relpath(path, ROOT).replace(os.sep, "/"))
     return found
 
 
@@ -127,7 +127,7 @@ def markdown_names() -> Dict[str, Set[str]]:
     paths += [p for p in walk(ROOT, "docs") if p.endswith(".md")]
     for path in paths:
         for name in NAME.findall(read(path)):
-            found.setdefault(name, set()).add(os.path.relpath(path, ROOT))
+            found.setdefault(name, set()).add(os.path.relpath(path, ROOT).replace(os.sep, "/"))
     return found
 
 
@@ -149,7 +149,7 @@ def non_markdown_names() -> Dict[str, Set[str]]:
             except (UnicodeDecodeError, OSError):
                 continue
             for name in NAME.findall(text):
-                found.setdefault(name, set()).add(os.path.relpath(path, ROOT))
+                found.setdefault(name, set()).add(os.path.relpath(path, ROOT).replace(os.sep, "/"))
     return found
 
 
