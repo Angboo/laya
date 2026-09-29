@@ -293,7 +293,7 @@ def _start_evidence():
     return probe, evidence
 
 
-def _check_scan_budget(agent, evidence, sized, cfg_max_len, cfg_head_max_len):
+def _check_scan_budget(agent, evidence, sized, cfg_max_len, cfg_head_max_len, asked=None):
     """Raise when the budget or questions in force leave less room than the scan was sized for.
 
     `predict_long` sizes its windows from the agent's config, before any hook has run. A start hook
@@ -323,6 +323,13 @@ def _check_scan_budget(agent, evidence, sized, cfg_max_len, cfg_head_max_len):
     eff_head = evidence.get("head_max_len")
     eff_max_len = cfg_max_len if eff_max_len is None else eff_max_len
     eff_head = cfg_head_max_len if eff_head is None else eff_head
+    if eff_max_len == cfg_max_len and eff_head == cfg_head_max_len and (
+            asked is None or questions == asked):
+        # Nothing the scan was sized against moved, so there is nothing to recompute -- and
+        # recomputing anyway costs a tokenization of every question head, which `window_budget`
+        # already paid and `_encode_state` will pay again. That showed up as a third head
+        # tokenization in `test_question_token_reuse`, which asserts two.
+        return
     try:
         internal = [agent._to_internal(q) for q in questions.values()]
     except Exception:
@@ -1486,7 +1493,7 @@ class Agent(HookRegistry):
             # fit one window was silently truncated by a re-budgeting hook and still reported
             # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
             # never reached the model, while a longer document on the identical input hard-failed.
-            _check_scan_budget(self, evidence, budget, max_len, head_max_len)
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
@@ -1512,7 +1519,7 @@ class Agent(HookRegistry):
                                batch_size)
         results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
                                      **_with_start_probe(hook_kwargs, probe))
-        _check_scan_budget(self, evidence, budget, max_len, head_max_len)
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
 
         if evidence["answered"]:
             # The hook replaced the call before any window was scored. Aggregating over its payload

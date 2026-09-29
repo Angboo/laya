@@ -20,7 +20,6 @@ import numpy as np  # noqa: E402
 import laya.agent as agent_mod
 from laya.agent import Agent, _check_scan_budget, _start_evidence
 
-from laya import common
 from laya.onnx_agent import ONNXAgent  # noqa: E402
 
 PASS, FAIL = [], []
@@ -894,9 +893,13 @@ def _budget_message():
 
 check_raises("hook budget/a hook that shrinks the room is refused", ValueError,
              lambda: _check_scan_budget(_probe_agent, _evidence(head_max_len=60), 72, *_CFG))
+# `asked` is what predict_long was called with; the recorded questions are what the chain left.
 check_raises("hook budget/rewriting ctx.questions is caught too", ValueError,
              lambda: _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(16)}),
-                                        72, *_CFG))
+                                        72, *_CFG, asked={"a": q_many(2)}))
+check_true("hook budget/questions untouched skips the recompute entirely",
+           _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(16)}), 72, *_CFG,
+                              asked={"a": q_many(16)}) is None, "nothing moved")
 check_true("hook budget/an unchanged budget is allowed",
            _check_scan_budget(_probe_agent, _evidence(), 72, *_CFG) is None, "no hook")
 check_true("hook budget/a budget widened together is allowed",
@@ -917,7 +920,8 @@ check_true("hook budget/the refusal names both budgets and both rooms",
 _seen_budget = []
 _real_check = agent_mod._check_scan_budget
 try:
-    agent_mod._check_scan_budget = lambda ag, ev, sized, ml, hm: _seen_budget.append((sized, ml, hm))
+    agent_mod._check_scan_budget = (
+        lambda ag, ev, sized, ml, hm, asked=None: _seen_budget.append((sized, ml, hm)))
     _wired = make_agent(lambda states, qs: [
         {"model": "m", "answers": {"a": {"choice": "x", "answer_confidence": 0.5}},
          "usage": {"input_tokens": 1}} for _ in states])
@@ -932,7 +936,8 @@ check("hook budget/the torch scan checks its budget exactly once", len(_seen_bud
 # them under a widened head (both 36) makes the mutant survive, which is how it slipped through.
 check_raises("hook budget/the smallest room wins across questions", ValueError,
              lambda: _check_scan_budget(
-                 _probe_agent, _evidence(questions={"a": q_many(2), "b": q_many(16)}), 72, *_CFG))
+                 _probe_agent, _evidence(questions={"a": q_many(2), "b": q_many(16)}), 72, *_CFG,
+                 asked={"a": q_many(2)}))
 
 # What the probe RECORDS is half the check: synthesising an evidence dict in the tests above leaves
 # the recording itself unpinned, and dropping either field made the checker silently inert.
@@ -964,7 +969,8 @@ check_raises("questions/the torch scan validates before _to_internal", ValueErro
 # says the contract binds both agents.
 _onnx_src = inspect.getsource(ONNXAgent.predict_long)
 check_true("hook budget/the ONNX scan checks its budget too",
-           "_check_scan_budget(self, evidence, budget, max_len, head_max_len)" in _onnx_src, "")
+           "_check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)" in _onnx_src,
+           "")
 check("hook budget/both agents check it on the single-window path too",
       (inspect.getsource(Agent.predict_long).count("_check_scan_budget("),
        _onnx_src.count("_check_scan_budget(")), (2, 2))

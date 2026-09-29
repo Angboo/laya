@@ -490,7 +490,7 @@ class ONNXAgent(HookRegistry):
             # fit one window was silently truncated by a re-budgeting hook and still reported
             # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
             # never reached the model, while a longer document on the identical input hard-failed.
-            _check_scan_budget(self, evidence, budget, max_len, head_max_len)
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
@@ -519,7 +519,7 @@ class ONNXAgent(HookRegistry):
         # `ctx.max_len`/`ctx.head_max_len` identically), so leaving it off here meant the bug was
         # fully live on this path while the other agent refused the identical input -- measured,
         # 34.6% of a document reaching no model.
-        _check_scan_budget(self, evidence, budget, max_len, head_max_len)
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
 
         if evidence["answered"]:
             # A hook answered the document before any window was scored: pass that answer
