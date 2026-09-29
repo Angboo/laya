@@ -15,6 +15,7 @@ untouched, so nothing a caller gates on today moves.
 
 No weights are loaded: the confidence helpers are pure.
 """
+import copy
 import math
 import os
 import sys
@@ -147,17 +148,19 @@ check("flag/raw choice intact", ans["q_high"]["choice"], "a")
 
 # --------------------------------------------------------------- the gate's state is reported
 # `low_confidence` is written only when the gate fires, so its absence cannot tell a caller
-# "no min_confidence was passed" apart from "a gate ran and this answer cleared it". An operator
-# with 10,000 logged decisions cannot compute an abstention rate, cannot prove the gate was in
-# effect, and cannot re-split a batch that used different thresholds per request class -- the
-# threshold is consumed and dropped. `docs/staged-adoption.md` asks a shadow record to carry
-# "errors and any fallback or review decision"; there was no field to put that in.
+# "a gate ran and this answer cleared it" from "no gate ran at all". An operator with 10,000
+# logged decisions cannot compute an abstention rate, cannot tell whether a run was gated, and
+# cannot re-split a batch that used different thresholds per request class -- the threshold is
+# consumed and dropped. `docs/staged-adoption.md` asks a shadow record to carry "errors and any
+# fallback or review decision"; there was no field to put that in.
 #
-# The contract: the gate's state is a value on every answer, so it is never inferred from a
-# missing field.
+# The contract: where a gate ran, its state is an explicit value, so it is never inferred from a
+# missing field. Where no gate was configured, nothing is written at all -- an ungated call returns
+# the payload it always returned, rather than growing a field every existing caller would then have
+# to read. The two cases are told apart by the presence of `abstention`, which is why the vocabulary
+# has no "not configured" member to read out of the field.
 from laya.confidence import (  # noqa: E402
     GATE_ABSTAINED,
-    GATE_NOT_CONFIGURED,
     GATE_PASSED,
     GATE_STATES,
     GATE_UNEVALUATED,
@@ -165,7 +168,7 @@ from laya.confidence import (  # noqa: E402
 )
 
 check("gate/the vocabulary is closed",
-      list(GATE_STATES), ["not_configured", "passed", "abstained", "unevaluated"])
+      list(GATE_STATES), ["passed", "abstained", "unevaluated"])
 
 fresh = lambda: [{  # noqa: E731
     "answers": {
@@ -174,13 +177,16 @@ fresh = lambda: [{  # noqa: E731
     }
 }]
 
-# No gate: every answer says so, and nothing is flagged.
+# No gate: the payload is untouched. Not a sentinel, not a flag -- byte-for-byte what the caller
+# got before this helper existed, so no existing caller has to learn a field to keep working.
 off = fresh()
+before = copy.deepcopy(off)
 apply_confidence_gate(off, None)
+check("gate/an ungated call writes nothing at all", off, before)
 for qid, a in off[0]["answers"].items():
-    check("gate/not_configured %s" % qid, a["abstention"], GATE_NOT_CONFIGURED)
-    check_true("gate/not_configured carries no threshold %s" % qid, "abstention_threshold" not in a)
-    check_true("gate/not_configured is not a flag %s" % qid, "low_confidence" not in a)
+    check_true("gate/ungated %s reports no state" % qid, "abstention" not in a)
+    check_true("gate/ungated %s carries no threshold" % qid, "abstention_threshold" not in a)
+    check_true("gate/ungated %s is not a flag" % qid, "low_confidence" not in a)
 
 # A gate that ran: the answer that cleared it says `passed`, which is the state the boolean
 # could not express. This is the whole point -- before, this answer was byte-identical to the
@@ -220,6 +226,13 @@ odd = [{"answers": {
     "q_none": {"type": "choice"},
     "q_inf": {"type": "choice", "answer_confidence": float("inf")},
     "q_bool": {"type": "choice", "answer_confidence": True},
+    # The fallback path, which is where the number used to leak. With no usable
+    # `answer_confidence` the gate reads the entropy `confidence`, and an entropy NaN has to come
+    # back as "nothing to gate on" -- not as the NaN itself, which is not None and would
+    # therefore read as a pass. `flag_low_confidence` never noticed (NaN < x is False, and
+    # None is not None is also False), so nothing else pinned this down.
+    "q_nan_entropy": {"type": "choice", "confidence": float("nan")},
+    "q_bool_entropy": {"type": "choice", "confidence": True},
     "q_fine": {"type": "choice", "answer_confidence": 0.99},
 }}]
 apply_confidence_gate(odd, 0.80)
@@ -272,10 +285,11 @@ class _StubRunner:
 stub = _StubRunner(CONFIDENCES)
 
 # 1. Was the gate in effect at all? Before, both answers were byte-identical to the gated pair
-#    below, so the answer was "no way to tell".
+#    below, so the answer was "no way to tell". Now the ungated run simply has no `abstention`
+#    key, and the gated one does -- which is how a caller tells them apart.
 ungated = decide(stub, "state", questions=QUESTIONS)
 for qid in CONFIDENCES:
-    check("workflow/ungated %s says so" % qid, ungated[qid]["abstention"], GATE_NOT_CONFIGURED)
+    check_true("workflow/ungated %s reports no state" % qid, "abstention" not in ungated[qid])
 
 gated = decide(stub, "state", questions=QUESTIONS, min_confidence=0.80)
 check("workflow/the cleared answer reports passed", gated["high"]["abstention"], GATE_PASSED)
@@ -327,14 +341,13 @@ check_true("export/apply_confidence_gate is in dir()", "apply_confidence_gate" i
 check_true("export/GATE_STATES is importable from laya", hasattr(laya, "GATE_STATES"))
 check_true("export/GATE_STATES is in __all__", "GATE_STATES" in laya.__all__)
 check_true("export/GATE_STATES is in dir()", "GATE_STATES" in dir(laya))
-# The four values are reached through GATE_STATES rather than exported one by one: iterating the
+# The three values are reached through GATE_STATES rather than exported one by one: iterating the
 # vocabulary is the whole use, and every `laya.__all__` name has to earn a documented entry
 # (`tests/test_packaging.py` enforces that).
 import laya.confidence as _confidence  # noqa: E402
 
 check("export/GATE_STATES is the vocabulary a caller iterates", list(GATE_STATES),
-      [_confidence.GATE_NOT_CONFIGURED, _confidence.GATE_PASSED,
-       _confidence.GATE_ABSTAINED, _confidence.GATE_UNEVALUATED])
+      [_confidence.GATE_PASSED, _confidence.GATE_ABSTAINED, _confidence.GATE_UNEVALUATED])
 check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GATE_STATES)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
