@@ -267,7 +267,8 @@ def _start_evidence():
     inference, `states` is a snapshot of the states that reached it (`None` if the probe never ran,
     which means `predict_batch` was replaced and no hook chain was dispatched).
     """
-    evidence = {"answered": False, "states": None, "question_types": None}
+    evidence = {"answered": False, "states": None, "question_types": None,
+                "max_len": None, "head_max_len": None, "questions": None}
 
     def probe(ctx):
         evidence["answered"] = ctx.results is not None
@@ -279,46 +280,65 @@ def _start_evidence():
                 qid: qdef.get("type") if isinstance(qdef, dict) else None
                 for qid, qdef in ctx.questions.items()
             }
+        # Also what the budget and the questions ACTUALLY are once the chain has run, for
+        # `_check_scan_budget`. Recorded, never judged here: a hook that raises is governed by the
+        # caller's `hooks_raise`/`hooks_timeout`, so a correctness check that raises from inside the
+        # chain can be switched off by a policy meant for third-party telemetry. Measured: with
+        # `hooks_raise=False` -- what `docs/hooks/tracing.md` recommends -- a refusal became a
+        # RuntimeWarning blaming `_StartAdapter`, and the scan proceeded.
+        evidence["max_len"] = ctx.max_len
+        evidence["head_max_len"] = ctx.head_max_len
+        evidence["questions"] = dict(ctx.questions) if ctx.questions else {}
 
     return probe, evidence
 
 
-def _window_budget_guard(tok, internal, sized, cfg_max_len, cfg_head_max_len):
-    """A start hook that refuses a scan whose windows no longer fit the budget in force.
+def _check_scan_budget(agent, evidence, sized, cfg_max_len, cfg_head_max_len):
+    """Raise when the budget or questions in force leave less room than the scan was sized for.
 
-    `predict_long` sizes its windows from the agent's config, but a start hook may set
-    `ctx.max_len` / `ctx.head_max_len`, and those are what `build_sequence` uses. When the hook
-    widens the head more than it widens `max_len` -- which `widen_for_high_cardinality` in
-    `docs/hooks/patterns.md` does, and it is documented for exactly the high-cardinality questions
-    that make windowing necessary -- the real room SHRINKS, every window is re-truncated on the way
-    in, and once the stride exceeds the real room consecutive windows stop touching. Measured on the
-    English checkpoint with that hook at 50 options: windows sized 303, room actually 253; at 100
-    options the reviewer measured 43.4% of a document reaching no model, against the 37.6% this
-    change exists to remove. Silently worse than not windowing at all.
+    `predict_long` sizes its windows from the agent's config, before any hook has run. A start hook
+    may then set `ctx.max_len`/`ctx.head_max_len`, or rewrite `ctx.questions` -- both documented
+    powers -- and `build_sequence` uses whatever it finds. When the head widens faster than
+    `max_len`, or the questions get more options, the real room SHRINKS: every window is
+    re-truncated on the way in, and once the stride exceeds the real room consecutive windows stop
+    touching. Measured on the English checkpoint with `widen_for_high_cardinality` from
+    `docs/hooks/patterns.md` at 50 options, windows sized 303 against a room of 253; at 100 options
+    a reviewer measured 43.4% of a document reaching no model, against the 37.6% this change exists
+    to remove. Silently worse than not windowing at all.
 
-    Sizing after the hook chain would mean dispatching it before the windows exist, which changes
-    when hooks run and what they see. Refusing is the honest alternative: the scan cannot honour a
-    budget it was not sized for, and a caller who needs both can pass `window=`/`stride=` explicitly
-    or drive `predict_batch` itself. This runs in the start chain, so it aborts before any forward
-    pass rather than after one.
+    Called by `predict_long` AFTER the chain has run, not raised from inside it. A hook that raises
+    is subject to the caller's `hooks_raise` and `hooks_timeout`, so the first version of this check
+    could be switched off by `hooks_raise=False` -- which `docs/hooks/tracing.md` recommends -- and
+    could blow a `hooks_timeout` the caller set for their own hooks. The cost is that the forward
+    pass has already happened when this fires: a misconfigured scan is refused rather than answered
+    wrongly, but it is not refused for free. Sizing the windows after the chain instead would change
+    when hooks run and what they see, which is a larger change than this one.
     """
-    def guard(ctx):
-        eff_max_len = ctx.max_len if ctx.max_len is not None else cfg_max_len
-        eff_head = ctx.head_max_len if ctx.head_max_len is not None else cfg_head_max_len
-        if eff_max_len == cfg_max_len and eff_head == cfg_head_max_len:
-            return
-        room = min(state_room(tok, q, eff_max_len, eff_head) for q in internal)
-        if room >= sized:
-            return                       # the budget moved, but not in a direction that truncates
-        raise ValueError(
-            "predict_long: a start hook set the token budget to max_len=%d head_max_len=%d, which "
-            "leaves %d state tokens per window, but the scan was sized for %d from the agent's "
-            "config (max_len=%d head_max_len=%d). Every window would be re-truncated and parts of "
-            "the document would reach no model. Pass window=/stride= explicitly, or call "
-            "predict_batch directly, if you need both."
-            % (eff_max_len, eff_head, room, sized, cfg_max_len, cfg_head_max_len))
-
-    return guard
+    if evidence.get("answered"):
+        return                                 # a hook answered the document; no window was scored
+    questions = evidence.get("questions")
+    if not questions:
+        return                                 # nothing to fit, as `window_budget` also concludes
+    eff_max_len = evidence.get("max_len")
+    eff_head = evidence.get("head_max_len")
+    eff_max_len = cfg_max_len if eff_max_len is None else eff_max_len
+    eff_head = cfg_head_max_len if eff_head is None else eff_head
+    try:
+        internal = [agent._to_internal(q) for q in questions.values()]
+    except Exception:
+        return                                 # malformed questions are the validator's to report
+    if not internal:
+        return
+    room = min(state_room(agent.tok, q, eff_max_len, eff_head) for q in internal)
+    if room >= sized:
+        return
+    raise ValueError(
+        "predict_long: after the start hooks ran, the questions and token budget (max_len=%d "
+        "head_max_len=%d) leave %d state tokens per window, but the scan was sized for %d from the "
+        "agent's config (max_len=%d head_max_len=%d). Every window would be re-truncated and parts "
+        "of the document would reach no model. Pass window=/stride= explicitly, or call "
+        "predict_batch directly, if you need a start hook to change either."
+        % (eff_max_len, eff_head, room, sized, cfg_max_len, cfg_head_max_len))
 
 
 def _with_start_probe(hook_kwargs, probe):
@@ -1462,6 +1482,11 @@ class Agent(HookRegistry):
             # Why 0 for a hook answer here: the state did fit one window, but no window was scored,
             # which is the same fact the multi-window path reports as 0. Reading 1 would make a
             # cached answer and a served answer agree on how much of the input the model saw.
+            # The same budget check as the multi-window path. Without it a document short enough to
+            # fit one window was silently truncated by a re-budgeting hook and still reported
+            # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
+            # never reached the model, while a longer document on the identical input hard-failed.
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
@@ -1478,8 +1503,6 @@ class Agent(HookRegistry):
             i += step
 
         probe, evidence = _start_evidence()
-        guard = _window_budget_guard(self.tok, [internal[qid] for qid in ids], budget,
-                                     max_len, head_max_len)
         # `list(windows)`, not `windows`: `ctx.states` is the list the hook receives, so a hook that
         # mutates it in place (`append`, `sort`) would otherwise also grow the split this call
         # attributes answers to, and the counts would agree while `starts` no longer lined up.
@@ -1488,7 +1511,8 @@ class Agent(HookRegistry):
         cap = window_batch_cap(len(windows), budget, max(64, max_len - head_max_len - 8),
                                batch_size)
         results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
-                                     **_with_start_probe(hook_kwargs, [guard, probe]))
+                                     **_with_start_probe(hook_kwargs, probe))
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len)
 
         if evidence["answered"]:
             # The hook replaced the call before any window was scored. Aggregating over its payload

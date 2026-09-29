@@ -440,7 +440,7 @@ class ONNXAgent(HookRegistry):
         in `Agent.predict_long`: `truncated` is a window count and `truncated_questions` is the
         last window's list, so `truncated` can be above 0 while the list is empty.
         """
-        from .agent import _start_evidence, _with_start_probe
+        from .agent import _check_scan_budget, _start_evidence, _with_start_probe
         from .hooks import aggregate_usage
 
         hook_kwargs = {"hooks": hooks, "on_predict_start": on_predict_start,
@@ -486,6 +486,11 @@ class ONNXAgent(HookRegistry):
             probe, evidence = _start_evidence()
             single = dict(self.system_one(state, questions, lang=lang,
                                           **_with_start_probe(hook_kwargs, probe)))
+            # The same budget check as the multi-window path. Without it a document short enough to
+            # fit one window was silently truncated by a re-budgeting hook and still reported
+            # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
+            # never reached the model, while a longer document on the identical input hard-failed.
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
@@ -509,6 +514,12 @@ class ONNXAgent(HookRegistry):
                                batch_size)
         results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
                                      **_with_start_probe(hook_kwargs, probe))
+        # Same check as the torch agent, for the same reason and on the same contract: a start hook
+        # re-budgets an ONNX scan exactly as it re-budgets a torch one (`predict_batch` applies
+        # `ctx.max_len`/`ctx.head_max_len` identically), so leaving it off here meant the bug was
+        # fully live on this path while the other agent refused the identical input -- measured,
+        # 34.6% of a document reaching no model.
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len)
 
         if evidence["answered"]:
             # A hook answered the document before any window was scored: pass that answer

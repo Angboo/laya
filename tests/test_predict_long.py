@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np  # noqa: E402
 
-from laya.agent import Agent, _window_budget_guard
+import laya.agent as agent_mod
+from laya.agent import Agent, _check_scan_budget, _start_evidence
 
 from laya import common
 from laya.onnx_agent import ONNXAgent  # noqa: E402
@@ -847,79 +848,133 @@ check_true("batch cap/the torch scan passes the cap to predict_batch",
            "batch_size=cap" in _torch_src, "")
 check_true("batch cap/the ONNX scan passes the cap to predict_batch",
            "window_batch_cap(" in _onnx_src and "batch_size=cap" in _onnx_src, "")
-# Constructing it is not installing it: removing only the hand-off left the construction in place
-# and a "is it mentioned?" check green.
-check_true("hook budget/the torch scan installs the budget guard",
-           "_window_budget_guard(" in _torch_src and "[guard, probe]" in _torch_src, "")
 # Compared on the statements, not on any mention: the comment above the call names `_to_internal`.
 check_true("questions/the ONNX scan validates before _to_internal",
            _onnx_src.index("_Agent._check_question(qid")
            < _onnx_src.index("internal = {qid: self._to_internal"), "")
 
 
-# A start hook may set ctx.max_len / ctx.head_max_len, and those are what `build_sequence` uses --
-# but the scan was sized from the agent's config. `widen_for_high_cardinality`, which
-# docs/hooks/patterns.md ships for exactly these questions, widens the head more than max_len, so
-# the real room SHRINKS: measured on the English checkpoint at 50 options, windows sized 303 against
-# a real room of 253, and at 100 options 43.4% of the document reached no model -- worse than the
-# 37.6% this change removes. Refusing is the honest answer; silently scanning is not.
-def _widen_head_only(ctx):
-    ctx.head_max_len = 60              # cfg is max_len=100 head_max_len=20, so the room shrinks
+# A start hook may set ctx.max_len / ctx.head_max_len, or rewrite ctx.questions -- both documented
+# powers -- and `build_sequence` uses whatever it finds, while the scan was sized from the config
+# before any hook ran. `widen_for_high_cardinality`, which docs/hooks/patterns.md ships for exactly
+# these questions, widens the head faster than max_len, so the real room SHRINKS: 303 sized against
+# 253 real at 50 options on the English checkpoint, and 43.4% of a document unread at 100.
+#
+# The first version of this was a start hook that RAISED, and three ways of defeating it all left
+# the suite green: `hooks_raise=False` -- what docs/hooks/tracing.md recommends -- downgraded the
+# refusal to a RuntimeWarning and the scan proceeded; a hook that rewrote ctx.questions instead of
+# the budget was invisible; and `sized=0` at the call site made it unable to fire while the
+# source-text assertions still matched. It is now a plain function `predict_long` calls itself, so
+# no hook policy governs it, and both halves are checked below: what it decides, and that it is
+# actually called with the budget the scan used.
+_CFG = (100, 20)              # make_agent's config; budget = max(64, 100-20-8) = 72
 
 
-def _widen_both(ctx):
-    ctx.max_len, ctx.head_max_len = 400, 60    # widened together: the room grows
+def _evidence(max_len=None, head_max_len=None, questions=None, answered=False):
+    return {"answered": answered, "states": None, "max_len": max_len,
+            "head_max_len": head_max_len,
+            "questions": {"a": q_many(2)} if questions is None else questions}
 
 
-_guard = _window_budget_guard(TOK, [Agent._to_internal(q_many(12))],
-                              sized=72, cfg_max_len=100, cfg_head_max_len=20)
+_probe_agent = make_agent(lambda states, qs: [])
 
 
-class _Ctx:
-    def __init__(self, max_len=None, head_max_len=None):
-        self.max_len, self.head_max_len = max_len, head_max_len
+def _scan_raw(questions=None, **kw):
+    a = make_agent(lambda states, qs: [])
+    return a.predict_long(LONG, questions or {"a": q_many(2)}, **kw)
 
 
-
-def _zero_room_message():
+def _budget_message():
     try:
-        common.window_budget(TOK, [Agent._to_internal(q_many(24))], 100, 20,
-                             window=None, stride=None)
+        _check_scan_budget(_probe_agent, _evidence(head_max_len=60), 72, *_CFG)
     except ValueError as exc:
         return str(exc)
     return ""
 
-def _guard_message():
-    """The text of the refusal, so the message itself is asserted rather than just the type."""
-    try:
-        _guard(_Ctx(100, 60))
-    except ValueError as exc:
-        return str(exc)
-    return ""
 
-
-check_true("hook budget/an unchanged budget is allowed",
-           _guard(_Ctx()) is None, "no hook")
-check_true("hook budget/a budget widened together is allowed",
-           _guard(_Ctx(400, 60)) is None, "room grows")
 check_raises("hook budget/a hook that shrinks the room is refused", ValueError,
-             lambda: _guard(_Ctx(100, 60)))
-# The limitation this replaces: one oversized question aborts a whole multi-question call, because
-# the budget takes min(rooms). Untested before -- `if room <= 0:` -> `if room < 0:` can never fire,
-# since `state_room` clamps at 0, and every suite stayed green.
-check("room/24 options leave exactly zero state tokens",
-      common.state_room(TOK, Agent._to_internal(q_many(24)), 100, 20), 0)
-check_raises("room/questions that fill the sequence are refused, not silently truncated", ValueError,
-             lambda: common.window_budget(TOK, [Agent._to_internal(q_many(24))], 100, 20,
-                                          window=None, stride=None))
-# `room <= 0` must be the boundary: `room < 0` can never fire, since `state_room` clamps at 0, so
-# the refusal would be dead code and a zero-room scan would proceed. Asserted on the message, which
-# only the `<= 0` branch produces.
-check_true("room/the refusal is the zero-room branch, not an incidental error",
-           "no window can carry any of it" in _zero_room_message(), _zero_room_message())
+             lambda: _check_scan_budget(_probe_agent, _evidence(head_max_len=60), 72, *_CFG))
+check_raises("hook budget/rewriting ctx.questions is caught too", ValueError,
+             lambda: _check_scan_budget(_probe_agent, _evidence(questions={"a": q_many(16)}),
+                                        72, *_CFG))
+check_true("hook budget/an unchanged budget is allowed",
+           _check_scan_budget(_probe_agent, _evidence(), 72, *_CFG) is None, "no hook")
+check_true("hook budget/a budget widened together is allowed",
+           _check_scan_budget(_probe_agent, _evidence(400, 60), 72, *_CFG) is None, "room grows")
+check_true("hook budget/a hook that answered the document is not refused",
+           _check_scan_budget(_probe_agent, _evidence(head_max_len=60, answered=True),
+                              72, *_CFG) is None, "cache hit")
+check_true("hook budget/no questions is not a crash",
+           _check_scan_budget(_probe_agent, _evidence(head_max_len=60, questions={}),
+                              72, *_CFG) is None, "empty questions")
 check_true("hook budget/the refusal names both budgets and both rooms",
-           all(t in _guard_message() for t in ("max_len=100", "head_max_len=60", "sized for 72")),
-           _guard_message())
+           all(t in _budget_message() for t in ("max_len=100", "head_max_len=60", "sized for 72")),
+           _budget_message())
+
+# ... and that predict_long actually calls it, with the budget it sized the windows to. This is what
+# `sized=0` walked past: the symbol was present and the call site spelled right, but the value made
+# the check inert.
+_seen_budget = []
+_real_check = agent_mod._check_scan_budget
+try:
+    agent_mod._check_scan_budget = lambda ag, ev, sized, ml, hm: _seen_budget.append((sized, ml, hm))
+    _wired = make_agent(lambda states, qs: [
+        {"model": "m", "answers": {"a": {"choice": "x", "answer_confidence": 0.5}},
+         "usage": {"input_tokens": 1}} for _ in states])
+    _wired.predict_long(LONG, {"a": q_many(2)})
+finally:
+    agent_mod._check_scan_budget = _real_check
+check("hook budget/the torch scan checks its budget exactly once", len(_seen_budget), 1)
+# The room is the SMALLEST any question leaves, which is why `window_budget` takes a min. No test
+# put two questions of different cardinality through the checker, so `min` -> `max` was green.
+# At the unchanged budget these two leave rooms of 76 and 24 against a scan sized for 72, so `min`
+# refuses and `max` does not -- which is the whole reason `window_budget` takes a min. Collapsing
+# them under a widened head (both 36) makes the mutant survive, which is how it slipped through.
+check_raises("hook budget/the smallest room wins across questions", ValueError,
+             lambda: _check_scan_budget(
+                 _probe_agent, _evidence(questions={"a": q_many(2), "b": q_many(16)}), 72, *_CFG))
+
+# What the probe RECORDS is half the check: synthesising an evidence dict in the tests above leaves
+# the recording itself unpinned, and dropping either field made the checker silently inert.
+_rec_probe, _rec = _start_evidence()
+
+
+class _RecCtx:
+    results = None
+    states = ["s"]
+    max_len = 400
+    head_max_len = 60
+    questions = {"a": q_many(2)}
+
+
+_rec_probe(_RecCtx())
+check("probe/records the budget in force", (_rec["max_len"], _rec["head_max_len"]), (400, 60))
+check("probe/records the questions in force", list(_rec["questions"]), ["a"])
+check_true("probe/copies the questions rather than aliasing them",
+           _rec["questions"] is not _RecCtx.questions, "")
+
+# Validation before `_to_internal` on the torch agent too. The ONNX side is pinned by a source-order
+# check; deleting the torch loop was green.
+check_raises("questions/the torch scan validates before _to_internal", ValueError,
+             lambda: _scan_raw(questions={"a": {"type": "choice", "instructions": "?",
+                                                "criteria": None}}))
+
+# Both agents, not one. The ONNX scan had no check at all while the torch one refused the identical
+# input -- measured, 34.6% of a document reaching no model -- and the source comment two screens up
+# says the contract binds both agents.
+_onnx_src = inspect.getsource(ONNXAgent.predict_long)
+check_true("hook budget/the ONNX scan checks its budget too",
+           "_check_scan_budget(self, evidence, budget, max_len, head_max_len)" in _onnx_src, "")
+check("hook budget/both agents check it on the single-window path too",
+      (inspect.getsource(Agent.predict_long).count("_check_scan_budget("),
+       _onnx_src.count("_check_scan_budget(")), (2, 2))
+
+check("hook budget/it is handed the window size and the config it sized from",
+      _seen_budget[0] if _seen_budget else None,
+      (window_budget(TOK, [Agent._to_internal(q_many(2))], 100, 20,
+                     window=None, stride=None)[0], 100, 20))
+
+
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
