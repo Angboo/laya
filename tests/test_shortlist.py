@@ -721,6 +721,39 @@ check_true(
     mt_cached.cache_info()["hits"] + mt_cached.cache_info()["misses"] == 32,
 )
 
+# --------------------------------------------------------------- cache dimensionality
+# A row stored under one dimensionality cannot stack against a row of another: the
+# docstring asks the caller to clear the cache when the model changes, and the cache
+# refuses the call instead of returning a matrix that silently mixes both.
+
+
+class SwapEmbed:
+    """One callable whose width changes between calls, like a swapped model."""
+
+    def __init__(self):
+        self.dim = 2
+        self.calls = []
+
+    def __call__(self, texts):
+        self.calls.append(list(texts))
+        return [[1.0] * self.dim for _text in texts]
+
+
+swap_fn = SwapEmbed()
+swap_cached = cached_embed_fn(swap_fn)
+swap_cached(["alpha"])
+check("cache/dim first width cached", swap_cached.cache_info()["size"], 1)
+swap_fn.dim = 3
+try:
+    swap_cached(["beta"])
+    check_true("cache/dim drift refused", False, "no error raised")
+except ValueError as exc:
+    check_true("cache/dim drift refused", "cache_clear()" in str(exc), str(exc))
+check("cache/dim drift caches nothing new", swap_cached.cache_info()["size"], 1)
+swap_cached.cache_clear()
+swap_cached(["beta"])
+check("cache/dim clear then re-embed works", swap_cached.cache_info()["size"], 1)
+
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
