@@ -34,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Dict
 
 FILES_API = "https://modelscope.cn/api/v1/models/{repo}/repo/files"
 FILE_API = "https://modelscope.cn/api/v1/models/{repo}/repo"
@@ -164,20 +165,15 @@ def list_repo(repo: str, revision: str, subfolder: str):
 
 
 def snapshot_commit(tip: str, entries: list) -> str:
-    """The commit to key the baked snapshot by: the weights' own, else the revision's tip.
+    """The commit the baked snapshot is keyed by: the tip of the requested revision.
 
-    The weights' commit is the one a caller would pin to get *these* bytes back, so it is the
-    more useful key. A mixed-commit fetch still lands as one snapshot directory, because the
-    offline path never compares the file list against a commit -- but that is a warning, not a
-    failure: a maintenance commit to a README must not break a build.
+    A mirror repository can hold files from several uploads, so the commit a checkpoint's own
+    weights sit on is not a repository-wide key -- and one repository has to bake *one* snapshot
+    directory, because `refs/<revision>` names a single commit that every checkpoint in that
+    repository resolves through. The tip is that key. It is printed at build time, and it is what
+    a caller pins with `revision=` or `LAYA_REVISION` to get exactly these bytes.
     """
-    commits = {entry["revision"] for entry in entries if entry["revision"]}
-    weights = [entry["revision"] for entry in entries
-               if entry["rel"] == "model.safetensors" and entry["revision"]]
-    if len(commits) > 1:
-        print("    note: files span commits %s; keying the snapshot by the weights' commit"
-              % sorted(commits), file=sys.stderr)
-    return (weights[0] if weights else "") or tip
+    return tip or max((entry["revision"] for entry in entries if entry["revision"]), default="")
 
 
 def download(repo: str, revision: str, entry: dict, dest: Path) -> None:
@@ -241,17 +237,32 @@ def seed(cache: Path, repo: str, commit: str, revision: str, staging: Path) -> N
             (refs / name).write_text(commit, encoding="utf-8")
 
 
-def prefetch(spec: str, revision: str, cache: Path) -> None:
-    repo, subfolder = split_spec(spec)
-    tip, entries = list_repo(repo, revision, subfolder)
+def prefetch(specs: list, revision: str, cache: Path) -> None:
+    """Bake every requested checkpoint of one repository into a single snapshot.
+
+    One repository, one snapshot: `refs/<revision>` names one commit, and both
+    `Agent("ns/repo")` and `Agent("ns/repo", subfolder="...")` resolve the revision the same way,
+    so the root checkpoint and each subfolder have to land in the same directory.
+    """
+    repo = specs[0][0]
+    entries, tip, staged = [], "", {}
+    for _, subfolder in specs:
+        if subfolder in staged:
+            continue
+        folder_tip, items = list_repo(repo, revision, subfolder)
+        if not items:
+            print("  %s: no checkpoint files, skipped" % (subfolder or "."))
+            continue
+        staged[subfolder] = True
+        tip = tip or folder_tip
+        entries += [entry for entry in items if entry["path"] not in
+                    {other["path"] for other in entries}]
     if not entries:
-        raise SystemExit("laya: %s%s holds no checkpoint files at revision %r"
-                         % (repo, "/" + subfolder if subfolder else "", revision))
+        raise SystemExit("laya: %s holds no checkpoint files at revision %r" % (repo, revision))
     commit = snapshot_commit(tip, entries)
     if not commit:
-        raise SystemExit("laya: %s%s names no commit at revision %r, so there is nothing to key "
-                         "the baked snapshot by" % (repo, "/" + subfolder if subfolder else "",
-                                                    revision))
+        raise SystemExit("laya: %s names no commit at revision %r, so there is nothing to key the "
+                         "baked snapshot by" % (repo, revision))
     repo_dir = cache / repo_folder(repo)
     staging = repo_dir / "snapshots" / (".staging-" + str(os.getpid()))
     try:
@@ -278,13 +289,18 @@ def main() -> int:
     parser.add_argument("--cache-dir", default=None,
                         help="hub cache directory; defaults to HF_HUB_CACHE or $HF_HOME/hub")
     args = parser.parse_args()
-    specs = expand_model(args.model)
+    specs = [split_spec(spec) for spec in expand_model(args.model)]
     cache = cache_root(args.cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
-    for spec in specs:
-        print("modelscope/%s at revision %s" % (spec, args.revision))
-        prefetch(spec, args.revision, cache)
-    print("baked %d checkpoint(s) into %s" % (len(specs), cache))
+    grouped: Dict[str, list] = {}
+    for repo, subfolder in specs:
+        grouped.setdefault(repo, []).append(subfolder)
+    for repo, subfolders in grouped.items():
+        print("modelscope/%s at revision %s (%s)"
+              % (repo, args.revision, ", ".join(sub or "root" for sub in subfolders)))
+        prefetch([(repo, sub) for sub in subfolders], args.revision, cache)
+    print("baked %d checkpoint(s) in %d repository(ies) into %s"
+          % (len(specs), len(grouped), cache))
     return 0
 
 

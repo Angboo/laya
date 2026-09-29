@@ -215,21 +215,32 @@ to build every checkpoint and fail on the first one that was not baked; set
 `LAYA_MODELS` to the list you baked when you bake more, and `MODELSCOPE_MODEL=all`
 when a deployment really does serve the family.
 
-Beyond the four types the argument also takes `repo[:subfolder]` specs, comma- or
+Several types can be named at once -- `MODELSCOPE_MODEL="english multilingual"`
+bakes both, about 1.5 GB -- which is what a serving image usually wants: the
+`Router` chooses between the English and the multilingual checkpoint on its own,
+and one it was not given answers `500 inference failed` with
+`does not contain 'rl_agent_config.json'` in the log. Checkpoints that share a
+repository always bake into one snapshot, because a cached revision resolves to a
+single directory; the root checkpoint and each subfolder are both in it.
+
+Beyond the types the argument also takes `repo[:subfolder]` specs, comma- or
 space-separated, which is how the mirror's standalone repositories
 ([laya](https://modelscope.cn/models/convaiinnovations/laya),
 [laya-multilingual](https://modelscope.cn/models/convaiinnovations/laya-multilingual),
 [laya-typed-decisions](https://modelscope.cn/models/convaiinnovations/laya-typed-decisions))
 or a fine-tuned checkpoint is baked. A standalone repository is what
-`Agent("convaiinnovations/laya-multilingual")` loads directly; the `Router`'s default
-is the bundled path, so a type is normally what a serving image wants.
+`Agent("convaiinnovations/laya-multilingual")` loads directly; the `Router`'s
+default is the bundled path, so a type is normally what a serving image wants.
 
 Two details about pins and provenance. The build prints the commit the snapshot is
-keyed by -- pass that SHA as `revision=` or `LAYA_REVISION` to pin a load to exactly
-what was baked. Hub-side pins do not describe a mirror snapshot: `reviewed` names
-Hugging Face commits, and the SHA-256 digest map is keyed to Hub artifact hashes, so
-neither applies here. The build already refuses a download that does not match the
-mirror's own reported size and digest, which is the equivalent guarantee for this
+keyed by, which is the tip of the revision that was baked -- pass that SHA as
+`revision=` or `LAYA_REVISION` to pin a load to exactly what was baked. A mirror
+repository can hold files from several uploads, so that tip is the one
+repository-wide key there is. Hub-side pins do not describe a mirror snapshot:
+`reviewed` names Hugging Face commits, and the SHA-256 digest map is keyed to Hub
+artifact hashes, so neither applies here. The build already refuses a download
+that does not match the mirror's own reported size and digest, which is the
+equivalent guarantee for this
 path. And the weights come from whichever mirror account the argument names, which is
 its own supply-chain decision for the deployment to make.
 

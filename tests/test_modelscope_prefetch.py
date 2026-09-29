@@ -19,6 +19,7 @@ import http.client
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -62,6 +63,14 @@ def tree(path):
 # way the mirror does: the checkpoint's tokenizer and encoder are pages of their own, and a sibling
 # checkpoint directory is a page this bake must not walk into.
 PAGES = {
+    "": [
+        entry("model.safetensors", WEIGHTS_COMMIT),
+        entry("rl_agent_config.json", WEIGHTS_COMMIT),
+        entry("README.md", TIP_COMMIT),
+        tree("encoder"),
+        tree("multilingual"),
+    ],
+    "encoder": [entry("encoder/config.json", WEIGHTS_COMMIT)],
     "multilingual": [
         entry("multilingual/model.safetensors", WEIGHTS_COMMIT),
         entry("multilingual/rl_agent_config.json", WEIGHTS_COMMIT),
@@ -73,6 +82,9 @@ PAGES = {
     ],
     "multilingual/tokenizer": [entry("multilingual/tokenizer/tokenizer.json", WEIGHTS_COMMIT)],
     "multilingual/encoder": [entry("multilingual/encoder/config.json", WEIGHTS_COMMIT)],
+    "typed-decisions": [tree("typed-decisions/tokenizer"), tree("typed-decisions/encoder")],
+    "typed-decisions/tokenizer": [],
+    "typed-decisions/encoder": [],
 }
 
 
@@ -205,6 +217,28 @@ class TypeTests(unittest.TestCase):
         self.assertEqual(prefetch.expand_model("models/custom:typed-decisions models/other"),
                          ["models/custom:typed-decisions", "models/other"])
 
+    def test_main_drives_the_whole_argument(self):
+        """`--model` to baked snapshot, through the CLI: the shape main() passes to prefetch()."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "hub"
+
+            def urlopen(target, **_):
+                request = target if isinstance(target, urllib.request.Request)                     else urllib.request.Request(target)
+                return FakeResponse(request)
+
+            argv = ["prefetch_modelscope.py", "--model", "english multilingual",
+                    "--revision", "master", "--cache-dir", str(cache)]
+            with patch.object(sys, "argv", argv),                     patch.object(prefetch.urllib.request, "urlopen", urlopen):
+                self.assertEqual(prefetch.main(), 0)
+            # Both types of one repository land in one merged snapshot, keyed by the revision tip.
+            snapshots = sorted(p.name for p in
+                               (cache / "models--convaiinnovations--laya" / "snapshots").iterdir())
+            self.assertEqual(snapshots, [TIP_COMMIT])
+            snapshot = cache / "models--convaiinnovations--laya" / "snapshots" / TIP_COMMIT
+            for rel in ("rl_agent_config.json", "model.safetensors", "encoder/config.json",
+                        "multilingual/rl_agent_config.json", "multilingual/model.safetensors"):
+                self.assertTrue(snapshot.joinpath(rel).is_file(), rel)
+
     def test_a_bad_value_is_refused_with_the_valid_names(self):
         for value in ("", "french", "multilingual,french", "ml,spanish"):
             with self.assertRaises(SystemExit) as caught:
@@ -254,6 +288,16 @@ class BakeTests(unittest.TestCase):
         repo, _ = prefetch.split_spec(self.SPEC)
         return self.cache / ("models--" + repo.replace("/", "--"))
 
+    def specs(self):
+        """The subfolders under test, in the (repo, subfolder) shape prefetch() takes.
+
+        One repository bakes one snapshot, so the default is the single checkpoint this class
+        names and a test can add more of the same repository with `bake_subfolders`.
+        """
+        repo, spec_sub = prefetch.split_spec(self.SPEC)
+        subfolders = getattr(self, "bake_subfolders", None) or [spec_sub]
+        return [(repo, sub) for sub in subfolders]
+
     def bake(self, response=FakeResponse):
         def urlopen(target, **_):
             # `list_repo` passes a URL, `download` passes a Request; the mirror answers both.
@@ -262,7 +306,7 @@ class BakeTests(unittest.TestCase):
             return response(request)
 
         with patch.object(prefetch.urllib.request, "urlopen", urlopen):
-            prefetch.prefetch(self.SPEC, "master", self.cache)
+            prefetch.prefetch(self.specs(), "master", self.cache)
         return self.folder()
 
     def published(self, repo_dir):
@@ -274,7 +318,7 @@ class BakeTests(unittest.TestCase):
 
     def test_seeded_layout_matches_what_the_hub_writes(self):
         repo_dir = self.bake()
-        snapshot = repo_dir / "snapshots" / WEIGHTS_COMMIT
+        snapshot = repo_dir / "snapshots" / TIP_COMMIT
         self.assertTrue(snapshot.is_dir(), "no snapshot for the weights' commit")
         for rel in ("multilingual/rl_agent_config.json", "multilingual/model.safetensors",
                     "multilingual/tokenizer/tokenizer.json", "multilingual/encoder/config.json"):
@@ -283,17 +327,45 @@ class BakeTests(unittest.TestCase):
         # drops `multilingual/` resolves and then fails with "Subfolder not found".
         self.assertEqual(snapshot.joinpath("multilingual", "model.safetensors").read_bytes(),
                          CONTENTS["multilingual/model.safetensors"])
+        self.assertEqual(snapshot.joinpath("multilingual", "rl_agent_config.json").read_bytes(),
+                         CONTENTS["multilingual/rl_agent_config.json"])
         # The runtime asks for `main`, the mirror publishes `master`: both names resolve.
-        self.assertEqual((repo_dir / "refs" / "main").read_text(), WEIGHTS_COMMIT)
-        self.assertEqual((repo_dir / "refs" / "master").read_text(), WEIGHTS_COMMIT)
+        # Keyed by the revision's tip: one repository bakes one snapshot, because refs/<revision>
+        # names a single commit and every checkpoint in that repository resolves through it.
+        self.assertEqual((repo_dir / "refs" / "main").read_text(), TIP_COMMIT)
+        self.assertEqual((repo_dir / "refs" / "master").read_text(), TIP_COMMIT)
         # Sibling files never enter the snapshot.
         self.assertFalse(snapshot.joinpath("multilingual", "README.md").exists())
         self.assertFalse(snapshot.joinpath("README.md").exists())
-        self.assertEqual(self.published(repo_dir), [WEIGHTS_COMMIT])
+        self.assertEqual(self.published(repo_dir), [TIP_COMMIT])
+
+    def test_one_repository_bakes_one_merged_snapshot(self):
+        """A bundle bake carries both checkpoints, or the second one is unreachable.
+
+        `refs/main` names a single commit, so baking english and multilingual separately leaves
+        only the last one resolvable -- which is exactly what the English request hit.
+        """
+        self.SPEC = "convaiinnovations/laya"
+        self.bake_subfolders = ["", "multilingual"]
+        repo_dir = self.bake()
+        snapshot = repo_dir / "snapshots" / TIP_COMMIT
+        # English sits at the repository root, multilingual under its own subfolder: both loaded
+        # by the same `Agent` revision argument, so both have to be in the same directory.
+        self.assertTrue(snapshot.joinpath("rl_agent_config.json").is_file(), "english")
+        self.assertTrue(snapshot.joinpath("model.safetensors").is_file(), "english weights")
+        self.assertTrue(snapshot.joinpath("multilingual", "rl_agent_config.json").is_file(),
+                        "multilingual")
+        self.assertTrue(snapshot.joinpath("multilingual", "model.safetensors").is_file(),
+                        "multilingual weights")
+        self.assertEqual(self.published(repo_dir), [TIP_COMMIT])
+        self.assertEqual((repo_dir / "refs" / "main").read_text(), TIP_COMMIT)
+        # A third checkpoint in the same repository is walked past, not fetched.
+        self.assertFalse(snapshot.joinpath("typed-decisions").exists())
 
     def test_a_standalone_repo_lands_at_the_snapshot_root(self):
         """No subfolder: the checkpoint's own files sit at the snapshot root, as on the Hub."""
         self.SPEC = "convaiinnovations/laya-multilingual"
+        self.bake_subfolders = [""]
         pages = {
             "": [
                 entry("model.safetensors", WEIGHTS_COMMIT),
@@ -307,7 +379,7 @@ class BakeTests(unittest.TestCase):
         }
         with patch.dict(PAGES, pages, clear=True):
             repo_dir = self.bake()
-        snapshot = repo_dir / "snapshots" / WEIGHTS_COMMIT
+        snapshot = repo_dir / "snapshots" / TIP_COMMIT
         self.assertTrue(snapshot.joinpath("model.safetensors").is_file())
         self.assertTrue(snapshot.joinpath("rl_agent_config.json").is_file())
         self.assertTrue(snapshot.joinpath("tokenizer", "tokenizer.json").is_file())
@@ -329,34 +401,36 @@ class BakeTests(unittest.TestCase):
                             "multilingual/tokenizer/*", "multilingual/encoder/*"],
             cache_dir=str(self.cache), local_files_only=True,
         )
-        expected = self.cache / "models--convaiinnovations--laya" / "snapshots" / WEIGHTS_COMMIT
+        expected = self.cache / "models--convaiinnovations--laya" / "snapshots" / TIP_COMMIT
         self.assertEqual(Path(os.path.realpath(resolved)), Path(os.path.realpath(str(expected))))
 
     def test_the_commit_the_bake_keyed_resolves_as_a_pin(self):
-        """`revision=` reaching the weights' own commit must hit the same snapshot."""
+        """`revision=` reaching the revision's tip must hit the same snapshot."""
         from huggingface_hub import snapshot_download
 
         self.bake()
-        resolved = snapshot_download("convaiinnovations/laya", revision=WEIGHTS_COMMIT,
+        resolved = snapshot_download("convaiinnovations/laya", revision=TIP_COMMIT,
                                      cache_dir=str(self.cache), local_files_only=True)
-        self.assertEqual(Path(os.path.realpath(resolved)).name, WEIGHTS_COMMIT)
+        self.assertEqual(Path(os.path.realpath(resolved)).name, TIP_COMMIT)
 
     def test_a_commit_the_bake_did_not_key_misses(self):
-        """A commit that was not baked must miss, not silently serve the weights' snapshot."""
+        """An upload commit the bake did not key must miss, not serve a snapshot it is not in."""
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
 
         self.bake()
         with self.assertRaises(LocalEntryNotFoundError):
-            snapshot_download("convaiinnovations/laya", revision=TIP_COMMIT,
+            snapshot_download("convaiinnovations/laya", revision=WEIGHTS_COMMIT,
                               cache_dir=str(self.cache), local_files_only=True)
 
     def test_a_dropped_connection_is_retried_and_resumed(self):
         """A mid-body drop must resume byte-aligned, not restart or duplicate the file."""
         repo_dir = self.bake(Dropping)
-        snapshot = repo_dir / "snapshots" / WEIGHTS_COMMIT
+        snapshot = repo_dir / "snapshots" / TIP_COMMIT
         self.assertEqual(snapshot.joinpath("multilingual", "model.safetensors").read_bytes(),
                          CONTENTS["multilingual/model.safetensors"])
+        self.assertEqual(snapshot.joinpath("multilingual", "rl_agent_config.json").read_bytes(),
+                         CONTENTS["multilingual/rl_agent_config.json"])
 
     def test_truncated_download_refuses_to_publish(self):
         with patch.object(prefetch, "RETRIES", 2), patch.object(prefetch, "BACKOFF", 0):
@@ -377,7 +451,7 @@ class BakeTests(unittest.TestCase):
     def test_rebaking_the_same_commit_replaces_the_snapshot(self):
         self.bake()
         repo_dir = self.bake()
-        self.assertEqual(self.published(repo_dir), [WEIGHTS_COMMIT])
+        self.assertEqual(self.published(repo_dir), [TIP_COMMIT])
 
 
 if __name__ == "__main__":
