@@ -462,6 +462,15 @@ class ONNXAgent(HookRegistry):
         # leave tokens no window reads at all. `README.md` and `Router.predict_long` document this
         # contract for both agents, so both have to honour it.
         ids = list(questions.keys())
+        # Validate before `_to_internal`, which does none: hoisting only `_to_internal` ahead of the
+        # hooks turned the ValueError `_check_question` exists to raise into
+        # `AttributeError: 'NoneType' object has no attribute 'items'` -- verbatim the message its
+        # own docstring says it prevents, and a regression from `main` on this path. The torch
+        # `predict_long` hoists both. `laya.serve` maps ValueError to 422 and anything else to 500.
+        from .agent import Agent as _Agent           # deferred, as `predict_batch` does
+
+        for qid in ids:
+            _Agent._check_question(qid, questions[qid])
         internal = {qid: self._to_internal(questions[qid]) for qid in ids}
         budget, step_default, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
                                                 head_max_len, window=window, stride=stride)

@@ -17,7 +17,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np  # noqa: E402
 
-from laya.agent import Agent  # noqa: E402
+from laya.agent import Agent, _window_budget_guard
+
+from laya import common
+from laya.onnx_agent import ONNXAgent  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -63,7 +66,7 @@ def make_agent(batch_result_fn):
     a.tok = _Tok()
     a._to_internal = staticmethod(Agent._to_internal).__func__
     a._calls = {"system_one": 0, "batch_states": None, "system_one_kwargs": None,
-                "batch_kwargs": None}
+                "batch_kwargs": None, "batch_size": "unset"}
 
     def _system_one(state, questions, lang=None, **controls):
         a._calls["system_one"] += 1
@@ -73,6 +76,7 @@ def make_agent(batch_result_fn):
     def _predict_batch(states, questions, batch_size=None, lang=None, **controls):
         a._calls["batch_states"] = list(states)
         a._calls["batch_kwargs"] = controls
+        a._calls["batch_size"] = batch_size
         return batch_result_fn(list(states), questions)
 
     a.system_one = _system_one
@@ -755,8 +759,12 @@ check_true("stride/and the caller is told the stride moved too",
            any("stride=90" in str(w.message) and "reduced" in str(w.message) for w in caught),
            [str(w.message)[:90] for w in caught])
 _room12 = room_for(q_many(12))
-check_true("stride/the clamped scan leaves no gap", all(
-    b - a <= _room12 for a, b in read_spans(_clamped[1], _room12)), _clamped[1][:3])
+# `read_spans` clamps every span to `start + room`, so `b - a <= room` is true of ANY input --
+# executed against deliberate garbage it still passed. What the clamped scan has to guarantee is
+# that nothing is left unread, which `uncovered` measures and which goes red when the stride clamp
+# is mutated to `size * 2`.
+check("stride/the clamped scan leaves no gap",
+      uncovered(read_spans(_clamped[1], _room12), STATE_TOKENS), [])
 # A stride past the window the caller actually asked for is still their error.
 check_raises("stride/past the window the caller asked for is still refused", ValueError,
              lambda: scan({"a": q_many(12)}, window=40, stride=80))
@@ -772,7 +780,6 @@ except ImportError:      # source reverted: let the checks below go red rather t
 
     def window_batch_cap(*_a, **_k):     # type: ignore[misc]
         return -1
-from laya.onnx_agent import ONNXAgent                                           # noqa: E402
 
 _onnx = ONNXAgent.__new__(ONNXAgent)
 _onnx.tok = _Tok()
@@ -803,6 +810,116 @@ check("docs/README says the window is capped at the room the questions leave",
 check("docs/predict_long's docstring documents the cap",
       "capped at the room the" in (Agent.predict_long.__doc__ or ""), True)
 
+
+# --- findings from an adversarial review -----------------------------------------------------
+
+# The batch cap is wired into BOTH agents and nothing pinned the wiring: replacing `cap` with
+# `batch_size` at either call site, or swapping window_budget's two arguments so the cap can never
+# fire, left every suite green. The cap is the OOM protection the change exists to keep.
+_blow = make_agent(lambda states, questions: [
+    {"model": "m", "answers": {"a": {"choice": "x", "answer_confidence": 0.5}},
+     "usage": {"input_tokens": 1}} for _ in states])
+_blow.predict_long(LONG, {"a": q_many(16)})   # room 24 vs a 72-token config budget: 3x blow-up
+# The exact value, not "some int": returning a quarter of it, or moving _WINDOW_BATCH_BLOWUP,
+# both left a plausible-looking number that an in-range assertion accepted.
+check("batch cap/a blown-up scan is chunked to the un-capped scan's pass size",
+      _blow._calls["batch_size"], 9)
+
+_mild = make_agent(lambda states, questions: [
+    {"model": "m", "answers": {"a": {"choice": "x", "answer_confidence": 0.5}},
+     "usage": {"input_tokens": 1}} for _ in states])
+_mild.predict_long(LONG, {"a": q_many(2)})
+check("batch cap/a mild scan keeps the single shared pass", _mild._calls["batch_size"], None)
+
+_explicit = make_agent(lambda states, questions: [
+    {"model": "m", "answers": {"a": {"choice": "x", "answer_confidence": 0.5}},
+     "usage": {"input_tokens": 1}} for _ in states])
+_explicit.predict_long(LONG, {"a": q_many(16)}, batch_size=3)
+check("batch cap/an explicit batch_size is honoured untouched",
+      _explicit._calls["batch_size"], 3)
+
+# Both agents must USE the cap, and the torch scan must install the budget guard. The fake agent
+# replaces `predict_batch` wholesale, so no hook chain runs through it and behaviour cannot see the
+# wiring; the source is what distinguishes "computed" from "computed and passed on".
+_torch_src = inspect.getsource(Agent.predict_long)
+_onnx_src = inspect.getsource(ONNXAgent.predict_long)
+check_true("batch cap/the torch scan passes the cap to predict_batch",
+           "batch_size=cap" in _torch_src, "")
+check_true("batch cap/the ONNX scan passes the cap to predict_batch",
+           "window_batch_cap(" in _onnx_src and "batch_size=cap" in _onnx_src, "")
+# Constructing it is not installing it: removing only the hand-off left the construction in place
+# and a "is it mentioned?" check green.
+check_true("hook budget/the torch scan installs the budget guard",
+           "_window_budget_guard(" in _torch_src and "[guard, probe]" in _torch_src, "")
+# Compared on the statements, not on any mention: the comment above the call names `_to_internal`.
+check_true("questions/the ONNX scan validates before _to_internal",
+           _onnx_src.index("_Agent._check_question(qid")
+           < _onnx_src.index("internal = {qid: self._to_internal"), "")
+
+
+# A start hook may set ctx.max_len / ctx.head_max_len, and those are what `build_sequence` uses --
+# but the scan was sized from the agent's config. `widen_for_high_cardinality`, which
+# docs/hooks/patterns.md ships for exactly these questions, widens the head more than max_len, so
+# the real room SHRINKS: measured on the English checkpoint at 50 options, windows sized 303 against
+# a real room of 253, and at 100 options 43.4% of the document reached no model -- worse than the
+# 37.6% this change removes. Refusing is the honest answer; silently scanning is not.
+def _widen_head_only(ctx):
+    ctx.head_max_len = 60              # cfg is max_len=100 head_max_len=20, so the room shrinks
+
+
+def _widen_both(ctx):
+    ctx.max_len, ctx.head_max_len = 400, 60    # widened together: the room grows
+
+
+_guard = _window_budget_guard(TOK, [Agent._to_internal(q_many(12))],
+                              sized=72, cfg_max_len=100, cfg_head_max_len=20)
+
+
+class _Ctx:
+    def __init__(self, max_len=None, head_max_len=None):
+        self.max_len, self.head_max_len = max_len, head_max_len
+
+
+
+def _zero_room_message():
+    try:
+        common.window_budget(TOK, [Agent._to_internal(q_many(24))], 100, 20,
+                             window=None, stride=None)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+def _guard_message():
+    """The text of the refusal, so the message itself is asserted rather than just the type."""
+    try:
+        _guard(_Ctx(100, 60))
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+check_true("hook budget/an unchanged budget is allowed",
+           _guard(_Ctx()) is None, "no hook")
+check_true("hook budget/a budget widened together is allowed",
+           _guard(_Ctx(400, 60)) is None, "room grows")
+check_raises("hook budget/a hook that shrinks the room is refused", ValueError,
+             lambda: _guard(_Ctx(100, 60)))
+# The limitation this replaces: one oversized question aborts a whole multi-question call, because
+# the budget takes min(rooms). Untested before -- `if room <= 0:` -> `if room < 0:` can never fire,
+# since `state_room` clamps at 0, and every suite stayed green.
+check("room/24 options leave exactly zero state tokens",
+      common.state_room(TOK, Agent._to_internal(q_many(24)), 100, 20), 0)
+check_raises("room/questions that fill the sequence are refused, not silently truncated", ValueError,
+             lambda: common.window_budget(TOK, [Agent._to_internal(q_many(24))], 100, 20,
+                                          window=None, stride=None))
+# `room <= 0` must be the boundary: `room < 0` can never fire, since `state_room` clamps at 0, so
+# the refusal would be dead code and a zero-room scan would proceed. Asserted on the message, which
+# only the `<= 0` branch produces.
+check_true("room/the refusal is the zero-room branch, not an incidental error",
+           "no window can carry any of it" in _zero_room_message(), _zero_room_message())
+check_true("hook budget/the refusal names both budgets and both rooms",
+           all(t in _guard_message() for t in ("max_len=100", "head_max_len=60", "sized for 72")),
+           _guard_message())
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

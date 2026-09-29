@@ -42,6 +42,7 @@ from .common import (
     temp_bucket,
     unpermute_probs,
     window_batch_cap,
+    state_room,
     window_budget,
 )
 from .confidence import check_min_confidence, flag_low_confidence
@@ -282,10 +283,52 @@ def _start_evidence():
     return probe, evidence
 
 
+def _window_budget_guard(tok, internal, sized, cfg_max_len, cfg_head_max_len):
+    """A start hook that refuses a scan whose windows no longer fit the budget in force.
+
+    `predict_long` sizes its windows from the agent's config, but a start hook may set
+    `ctx.max_len` / `ctx.head_max_len`, and those are what `build_sequence` uses. When the hook
+    widens the head more than it widens `max_len` -- which `widen_for_high_cardinality` in
+    `docs/hooks/patterns.md` does, and it is documented for exactly the high-cardinality questions
+    that make windowing necessary -- the real room SHRINKS, every window is re-truncated on the way
+    in, and once the stride exceeds the real room consecutive windows stop touching. Measured on the
+    English checkpoint with that hook at 50 options: windows sized 303, room actually 253; at 100
+    options the reviewer measured 43.4% of a document reaching no model, against the 37.6% this
+    change exists to remove. Silently worse than not windowing at all.
+
+    Sizing after the hook chain would mean dispatching it before the windows exist, which changes
+    when hooks run and what they see. Refusing is the honest alternative: the scan cannot honour a
+    budget it was not sized for, and a caller who needs both can pass `window=`/`stride=` explicitly
+    or drive `predict_batch` itself. This runs in the start chain, so it aborts before any forward
+    pass rather than after one.
+    """
+    def guard(ctx):
+        eff_max_len = ctx.max_len if ctx.max_len is not None else cfg_max_len
+        eff_head = ctx.head_max_len if ctx.head_max_len is not None else cfg_head_max_len
+        if eff_max_len == cfg_max_len and eff_head == cfg_head_max_len:
+            return
+        room = min(state_room(tok, q, eff_max_len, eff_head) for q in internal)
+        if room >= sized:
+            return                       # the budget moved, but not in a direction that truncates
+        raise ValueError(
+            "predict_long: a start hook set the token budget to max_len=%d head_max_len=%d, which "
+            "leaves %d state tokens per window, but the scan was sized for %d from the agent's "
+            "config (max_len=%d head_max_len=%d). Every window would be re-truncated and parts of "
+            "the document would reach no model. Pass window=/stride= explicitly, or call "
+            "predict_batch directly, if you need both."
+            % (eff_max_len, eff_head, room, sized, cfg_max_len, cfg_head_max_len))
+
+    return guard
+
+
 def _with_start_probe(hook_kwargs, probe):
-    """`hook_kwargs` with `probe` appended after the caller's own start hooks."""
+    """`hook_kwargs` with `probe` appended after the caller's own start hooks.
+
+    `probe` may be one hook or a list of them, appended in order.
+    """
     kwargs = dict(hook_kwargs)
-    kwargs["on_predict_start"] = list(_as_sequence(hook_kwargs.get("on_predict_start"))) + [probe]
+    extra = list(probe) if isinstance(probe, (list, tuple)) else [probe]
+    kwargs["on_predict_start"] = list(_as_sequence(hook_kwargs.get("on_predict_start"))) + extra
     return kwargs
 def _option_logits(logits, items, offset):
     """Raw per-option logits, the rows `_decode_answers` divides by temperature.
@@ -1435,6 +1478,8 @@ class Agent(HookRegistry):
             i += step
 
         probe, evidence = _start_evidence()
+        guard = _window_budget_guard(self.tok, [internal[qid] for qid in ids], budget,
+                                     max_len, head_max_len)
         # `list(windows)`, not `windows`: `ctx.states` is the list the hook receives, so a hook that
         # mutates it in place (`append`, `sort`) would otherwise also grow the split this call
         # attributes answers to, and the counts would agree while `starts` no longer lined up.
@@ -1443,7 +1488,7 @@ class Agent(HookRegistry):
         cap = window_batch_cap(len(windows), budget, max(64, max_len - head_max_len - 8),
                                batch_size)
         results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
-                                     **_with_start_probe(hook_kwargs, probe))
+                                     **_with_start_probe(hook_kwargs, [guard, probe]))
 
         if evidence["answered"]:
             # The hook replaced the call before any window was scored. Aggregating over its payload
