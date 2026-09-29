@@ -3,6 +3,7 @@
 A fake Router is injected so nothing loads a checkpoint; we only assert that the
 HTTP layer maps requests/responses and enforces auth as hs-jev expects.
 """
+import asyncio
 import inspect
 import json
 import logging
@@ -937,10 +938,47 @@ def test_admission_slot_is_released_after_inference(monkeypatch):
     assert client.post("/v1/systemone", json=REQ).status_code == 200
 
 
+_WAIT_TIMEOUT = 5.0  # seconds; a loopback bind that has not landed by now never will (#721)
+
+
+async def _wait_for_condition(condition, what, timeout=_WAIT_TIMEOUT, interval=0.01):
+    """Poll `condition()` until it is truthy, or fail naming `what` rather than hang (#721).
+
+    An unbounded `while not ...: await asyncio.sleep(interval)` looks identical whether the
+    condition arrives in a millisecond or never, and prints nothing either way, so a host whose
+    loopback networking reports differently from the runners leaves pytest stalled instead of
+    failing. Bounding the wait turns that into an ordinary failure that names the step.
+    """
+
+    async def poll():
+        while not condition():
+            await asyncio.sleep(interval)
+
+    try:
+        await asyncio.wait_for(poll(), timeout)
+    except asyncio.TimeoutError:
+        pytest.fail(f"timed out after {timeout}s waiting for {what}")
+
+
+def test_a_bounded_wait_fails_on_a_condition_that_never_lands():
+    """#721: the bound is the whole point, so it is exercised against a condition that never
+    becomes true. Unbounded, this is the hang the helper exists to remove, and the same code
+    path then cannot be checked by a test that waits for it."""
+    async def lands():
+        await _wait_for_condition(lambda: True, "an already-true condition")
+
+    asyncio.run(lands())  # the satisfied case returns rather than waiting out the timeout
+
+    async def never():
+        await _wait_for_condition(lambda: False, "a condition that never lands", timeout=0.05)
+
+    with pytest.raises(pytest.fail.Exception, match="a condition that never lands"):
+        asyncio.run(never())
+
+
 def test_accepted_connections_set_tcp_nodelay(monkeypatch):
     """#620: asyncio skips TCP_NODELAY when an accepted socket reports proto 0, as it
     does on macOS and Windows, so Nagle held back small responses by about 50 ms."""
-    import asyncio
     import socket
 
     import uvicorn
@@ -957,18 +995,22 @@ def test_accepted_connections_set_tcp_nodelay(monkeypatch):
                                 http=captured["http"], log_level="warning")
         server = uvicorn.Server(config)
         serving = asyncio.ensure_future(server.serve())
-        while not server.started:
-            await asyncio.sleep(0.01)
-        port = server.servers[0].sockets[0].getsockname()[1]
-        _, writer = await asyncio.open_connection("127.0.0.1", port)
-        while not server.server_state.connections:
-            await asyncio.sleep(0.01)
-        (conn,) = server.server_state.connections
-        nodelay = conn.transport.get_extra_info("socket").getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-        writer.close()
-        server.should_exit = True
-        await serving
-        return nodelay
+        writer = None
+        try:
+            await _wait_for_condition(lambda: server.started, "uvicorn to bind and start serving")
+            port = server.servers[0].sockets[0].getsockname()[1]
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            await _wait_for_condition(lambda: server.server_state.connections,
+                                      "the loopback connection to be accepted")
+            (conn,) = server.server_state.connections
+            return conn.transport.get_extra_info("socket").getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        finally:
+            # A timed-out wait raises out of `drive()`, and the server task and the client
+            # connection would then outlive the test, so tear both down on every path.
+            if writer is not None:
+                writer.close()
+            server.should_exit = True
+            await asyncio.wait_for(serving, _WAIT_TIMEOUT)
 
     assert asyncio.run(drive())
 
