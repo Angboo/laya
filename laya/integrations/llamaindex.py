@@ -68,6 +68,19 @@ from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
+from ..confidence import answer_confidence_value as _answer_confidence_value  # noqa: E402
+
+
+def _gated_confidence(answer: Dict[str, Any]) -> float:
+    """The threshold number for one answer: the calibrated field, defaulting to 1.0.
+
+    Every selector and router in this module gates `confidence_threshold` on this, and
+    they must all read the same quantity -- `answer_confidence`, the calibrated number
+    core gates on, never the entropy `confidence` (see `laya.confidence`). An answer that
+    reports no usable confidence is treated as fully confident, exactly as before.
+    """
+    conf = _answer_confidence_value(answer or {})
+    return conf if conf is not None else 1.0
 
 
 def _extract_query_str(query: Union[str, QueryBundle, Any]) -> str:
@@ -292,7 +305,7 @@ class LayaSingleSelector(BaseSelector):
 
         ans = res.get("answers", {}).get("selector", {})
         chosen_key = ans.get("choice")
-        conf = ans.get("answer_confidence", ans.get("confidence", 1.0))
+        conf = _gated_confidence(ans)
 
         # Map "choice_i" back to index i
         chosen_idx: int = 0
@@ -578,7 +591,7 @@ class LayaQueryRouter:
 
         ans = res.get("answers", {}).get("route", {})
         chosen = ans.get("choice")
-        conf = ans.get("answer_confidence", ans.get("confidence", 1.0))
+        conf = _gated_confidence(ans)
 
         if self.confidence_threshold > 0.0 and conf < self.confidence_threshold:
             if self.fallback_key:

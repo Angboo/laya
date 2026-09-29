@@ -56,6 +56,7 @@ class LayaTaskGuardError(ValueError):
 # them came to forward only `model`.
 from ._controls import budget_kwargs as _budget_kwargs, hook_kwargs as _hook_kwargs  # noqa: E402
 from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as _reject_remote_hooks  # noqa: E402
+from ..confidence import answer_confidence_value as _answer_confidence_value  # noqa: E402
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
@@ -307,7 +308,11 @@ class LayaCrewRouter:
 
         ans = res.get("answers", {}).get("delegation", {})
         chosen_key = ans.get("choice")
-        conf = ans.get("answer_confidence", ans.get("confidence", 1.0))
+        # The calibrated number core gates on, never the entropy field: `confidence` is on a
+        # different scale (see `laya.confidence`), so a threshold on one must not read the other.
+        conf = _answer_confidence_value(ans)
+        if conf is None:
+            conf = 1.0
 
         # Map agent_i back to integer index i
         chosen_idx: int = 0

@@ -226,6 +226,7 @@ def mock_router_response(state, questions):
                 "choice": choice,
                 "probabilities": {"billing": conf, "technical": 1.0 - conf},
                 "confidence": conf,
+                "answer_confidence": conf,
             }
         },
     }

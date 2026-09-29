@@ -29,6 +29,7 @@ except ImportError:
 # The per-call control rules live in `._controls` because the CrewAI and LlamaIndex wrappers end
 # at the same `predict` call and the same laya-serve body; keeping the rule in three places is how
 # two of them ended up forwarding only `model`.
+from ..confidence import answer_confidence_value as _answer_confidence_value
 from ._controls import budget_kwargs as _budget_kwargs, hook_kwargs as _hook_kwargs
 from ._controls import predict_kwargs as _predict_kwargs
 from ._controls import reject_remote_hooks as _reject_remote_hooks
@@ -466,9 +467,11 @@ class LayaRouter(_BatchedRunnable, RunnableSerializable):
         self.last_decision = result
         ans = result["answers"][self.question_id]
         choice = ans["choice"]
-        confidence = ans.get("answer_confidence")
+        # The calibrated number core gates on, never the entropy field: `confidence` is on a
+        # different scale (see `laya.confidence`), so a threshold on one must not read the other.
+        confidence = _answer_confidence_value(ans)
         if confidence is None:
-            confidence = ans.get("confidence", 1.0)
+            confidence = 1.0
 
         if self.confidence_threshold > 0.0 and confidence < self.confidence_threshold:
             if self.fallback is not None:

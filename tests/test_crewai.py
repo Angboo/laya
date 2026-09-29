@@ -452,6 +452,44 @@ except Exception as exc:
     check_true("controls/guard remote refuses hooks", False, type(exc).__name__)
 
 
+# --------------------------------------------------------------- Confidence source
+# The threshold gates the calibrated field, never the entropy one: `confidence` is on a
+# different scale (see `laya.confidence`), so the two must not be interchangeable here.
+
+
+class DisagreeingAgent(MockLayaAgent):
+    """Answers whose two confidence fields disagree, on purpose."""
+
+
+def _disagreeing_router(**kwargs):
+    def response(state, questions):
+        return {"model": "mock-crew-router",
+                "answers": {"delegation": {"choice": "agent_0", "confidence": 0.95,
+                                           "answer_confidence": 0.4}}}
+    return LayaCrewRouter(agent=DisagreeingAgent(response), **kwargs)
+
+
+# Below the calibrated threshold but above the entropy one: gates on the calibrated number.
+low = _disagreeing_router(confidence_threshold=0.80, fallback_agent_index=1)
+decided = low.route("anything", agents)
+check("gate/reads calibrated not entropy", decided.agent_index, 1)
+try:
+    _disagreeing_router(confidence_threshold=0.80, raise_on_low_confidence=True).route("anything",
+                                                                                       agents)
+    check_true("gate/raises on the calibrated number", False, "no error raised")
+except LayaLowConfidenceError as err:
+    check("gate/error carries the calibrated number", err.confidence, 0.4)
+
+# An answer with no usable confidence keeps the old behaviour: treated as fully confident.
+def _silent(state, questions):
+    return {"model": "mock-crew-router", "answers": {"delegation": {"choice": "agent_2"}}}
+
+
+kept = LayaCrewRouter(agent=DisagreeingAgent(_silent), confidence_threshold=0.80).route(
+    "anything", agents)
+check("gate/missing confidence still passes", kept.agent_index, 2)
+
+
 # --------------------------------------------------------------- Results Summary
 print(f"PASS: {len(PASS)}")
 print(f"FAIL: {len(FAIL)}")
