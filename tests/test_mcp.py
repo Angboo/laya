@@ -846,8 +846,8 @@ class BatchRouter(FakeRouter):
         self.predict_batch_calls.append((list(requests), batch_size))
         return [self._answer_for(request) for request in requests]
 
-    def route_batch(self, requests):
-        self.route_batch_calls.append(list(requests))
+    def route_batch(self, requests, hooks_timeout=None):
+        self.route_batch_calls.append((list(requests), hooks_timeout))
         return [{"model": request.get("model") or "english", "repo": "fake/laya",
                  "reason": "batch route"} for request in requests]
 
@@ -858,8 +858,22 @@ class ShortRouter:
     def predict_batch(self, requests, batch_size=None):
         return []
 
-    def route_batch(self, requests):
+    def route_batch(self, requests, hooks_timeout=None):
         return []
+
+
+class StrictRouteRouter:
+    """A Router stub that predates the hooks_timeout kwarg on route_batch.
+
+    laya_route_batch must send `route_batch(items)` when the caller did not
+    ask for a hook deadline -- sending `route_batch(items, hooks_timeout=None)`
+    would break every caller that attached a pre-#577 Router (or a stub like
+    this one). This is the witness for M2 in the PR's mutation harness.
+    """
+
+    def route_batch(self, requests):
+        return [{"model": "english", "repo": "fake/laya",
+                 "reason": "strict route"} for _ in requests]
 
 
 BATCH_REQUESTS = [
@@ -1023,6 +1037,50 @@ def test_batch_route():
     ok("batch/route_counts", out["model_counts"] == {"english": 3}, repr(out["model_counts"]))
     # Route-only never predicts.
     ok("batch/route_no_forward", router.predict_batch_calls == [])
+    # Unset must not shadow the Router's own timeout: the tool layer only
+    # forwards when the caller actually asked for one.
+    ok("batch/route_hooks_timeout_default_none",
+       router.route_batch_calls[0][1] is None, repr(router.route_batch_calls[0]))
+    # The unset case must ALSO work against a Router that has never heard of
+    # hooks_timeout: sending `route_batch(items, hooks_timeout=None)` would
+    # break every caller with an older or hand-rolled router. Wrapped so the
+    # TypeError shows as a NAMED FAIL rather than crashing the whole suite.
+    try:
+        strict_out = laya_route_batch(BATCH_REQUESTS, router=StrictRouteRouter())
+        strict_ok = (len(strict_out["decisions"]) == 3
+                     and strict_out["model_counts"] == {"english": 3})
+        detail = repr(strict_out)
+    except TypeError as exc:
+        strict_ok = False
+        detail = "TypeError: %s" % exc
+    ok("batch/route_strict_router_no_kwarg", strict_ok, detail)
+    # hooks_timeout is forwarded verbatim (post-validate_timeout) to
+    # Router.route_batch's per-call override of the operator-installed hook
+    # deadline. Same shape as laya_predict_batch (see #766).
+    router = BatchRouter()
+    laya_route_batch(BATCH_REQUESTS, hooks_timeout=2.5, router=router)
+    _, timeout = router.route_batch_calls[0]
+    ok("batch/route_hooks_timeout_forwarded", timeout == 2.5, repr(timeout))
+    # An int is a valid timeout -- validate_timeout coerces to float.
+    router = BatchRouter()
+    laya_route_batch(BATCH_REQUESTS, hooks_timeout=1, router=router)
+    _, timeout = router.route_batch_calls[0]
+    ok("batch/route_hooks_timeout_int_coerced", timeout == 1.0 and isinstance(timeout, float),
+       repr(timeout))
+    # Bad values become invalid_hooks_timeout, not internal_error: the
+    # boundary check exists so a caller gets a real code back over MCP.
+    for bad in (0, -1, -0.5, "soon", True, [1.0]):
+        expect_tool_error("batch/route_bad_hooks_timeout_%r" % (bad,),
+                          lambda b=bad: laya_route_batch(
+                              BATCH_REQUESTS, hooks_timeout=b, router=BatchRouter()),
+                          "invalid_hooks_timeout")
+    # Validation happens before the router is touched: one bad timeout, no
+    # partial dispatch.
+    router = BatchRouter()
+    expect_tool_error("batch/route_bad_hooks_timeout_zero_router_untouched",
+                      lambda: laya_route_batch(BATCH_REQUESTS, hooks_timeout=0, router=router),
+                      "invalid_hooks_timeout")
+    ok("batch/route_no_dispatch_on_bad_timeout", router.route_batch_calls == [])
     expect_tool_error("batch/route_count_mismatch",
                       lambda: laya_route_batch(BATCH_REQUESTS, router=ShortRouter()),
                       "internal_error")

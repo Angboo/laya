@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable, Protocol, Sequence
 
 from ..confidence import check_min_confidence
+from ..hooks import validate_timeout
 from ..presets import state_field
 from .device import agent_device, device_report, router_agent
 
@@ -908,6 +909,26 @@ def _validate_batch_size(batch_size: Any) -> int | None:
     return batch_size
 
 
+def _validate_hooks_timeout(value: Any) -> float | None:
+    # Mirrors laya_predict_batch's forwarding shape: unset stays unset so a
+    # Router with its own default is not shadowed by 0, and core's
+    # ``validate_timeout`` decides what counts as a real deadline. Wrapping
+    # its ValueError as a ToolError keeps a bad arg from surfacing as
+    # ``internal_error: ValueError`` at the MCP boundary. Bools are refused
+    # here the same way _validate_batch_size refuses them -- core's
+    # float(True) == 1.0 would silently turn "True" into a one-second
+    # deadline, which is the kind of wrong-that-needs-to-shout.
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ToolError("invalid_hooks_timeout",
+                        "hooks_timeout must be a positive number or None, got %r" % (value,))
+    try:
+        return validate_timeout(value)
+    except (TypeError, ValueError) as exc:
+        raise ToolError("invalid_hooks_timeout", str(exc)) from exc
+
+
 def laya_predict_batch(
     requests: Any,
     batch_size: Any = None,
@@ -975,19 +996,24 @@ def laya_predict_batch(
     }
 
 
-def laya_route_batch(requests: Any, *, router: Any = None) -> dict:
+def laya_route_batch(requests: Any, hooks_timeout: Any = None, *, router: Any = None) -> dict:
     """Routing decisions for many requests: no forward pass, no checkpoint loads.
 
     The batch form of ``laya_route``, mirroring ``Router.route_batch``: it
     reports which checkpoint each request *would* answer from so clients can
     inspect or aggregate a workload's routing before paying any load cost.
+    ``hooks_timeout`` overrides the Router's own value for this call's
+    ``on_route`` dispatch, exactly as it does for ``laya_predict_batch``: an
+    operator-installed hook that hangs should not stall a whole routing sweep.
     """
     items = validate_batch_requests(requests)
+    timeout = _validate_hooks_timeout(hooks_timeout)
     if router is None:
         raise ToolError("models_not_ready", "Router is not loaded")
     if not hasattr(router, "route_batch"):
         raise ToolError("internal_error", "router has no route_batch() method")
-    decisions = router.route_batch(items)
+    decisions = router.route_batch(items, hooks_timeout=timeout) if timeout is not None \
+        else router.route_batch(items)
     if not isinstance(decisions, list) or len(decisions) != len(items):
         raise ToolError(
             "internal_error",
