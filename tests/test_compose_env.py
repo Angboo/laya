@@ -41,7 +41,8 @@ FAIL: List[str] = []
 NOTES: List[str] = []
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COMPOSE_FILES = ("compose.yaml", "compose.cuda.yaml", "compose.spark.yaml", "compose.http.yaml")
+COMPOSE_FILES = ("compose.yaml", "compose.cuda.yaml", "compose.spark.yaml", "compose.http.yaml",
+                 "compose.modelscope.yaml")
 NAME = re.compile(r"\bLAYA_[A-Z0-9_]+\b")
 # The dtype decision itself: a torch dtype object or the checkpoint's `amp_dtype` field. Prose
 # that merely names a precision ("MPS fp16 autocast") is not a decision site.
