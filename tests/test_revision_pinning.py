@@ -69,6 +69,28 @@ class ResolveRevisionTests(unittest.TestCase):
         self.assertIsNone(resolve_revision("acme/custom-model"))
         self.assertIsNone(resolve_revision("acme/custom-model", ""))
 
+    def test_reviewed_finds_the_pin_whatever_case_the_repo_is_spelled_in(self):
+        """Hugging Face resolves repo ids case-insensitively, so the pin lookup must too.
+
+        `laya.load("ConvaiInnovations/Laya")` under `LAYA_REVISION=reviewed` is the same
+        repository as the table's lowercase key. An exact-match lookup called it unpinned and
+        refused the load -- reporting a missing reviewed SHA for one that exists, the
+        opposite of what this control is for.
+        """
+        repo = "convaiinnovations/laya"
+        sha = PINNED_REVISIONS[repo]
+        for spelling in (repo, repo.upper(), repo.title(), repo.capitalize()):
+            with patch.dict(os.environ, {"LAYA_REVISION": "reviewed"}):
+                self.assertEqual(resolve_revision(spelling), sha, spelling)
+            # the explicit-argument form reaches the same branch
+            self.assertEqual(resolve_revision(spelling, "reviewed"), sha, spelling)
+
+    def test_reviewed_still_refuses_a_repo_the_table_does_not_have(self):
+        for spelling in ("Acme/Some-Model", "ACME/SOME-MODEL"):
+            with patch.dict(os.environ, {"LAYA_REVISION": "reviewed"}):
+                with self.assertRaises(ValueError, msg=spelling):
+                    resolve_revision(spelling)
+
 
 class SnapshotRevisionTests(unittest.TestCase):
     def test_snapshot_layout(self):
