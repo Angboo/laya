@@ -132,6 +132,26 @@ A run with no `--batch-size` asks for something that cannot happen, and says so 
 `sent: false`; a runner whose `predict_batch` predates the knob is scored unsorted rather than
 raising `TypeError` halfway through a long run.
 
+### The abstention gate at a threshold
+
+`--min-confidence T` forwards core's opt-in abstention threshold (#361) to every call the run
+makes, so `Router` and `ONNXAgent` mark answers whose `answer_confidence` falls below `T` with
+`low_confidence: True` before the harness sees them. Unlike grouping, this changes the answers
+that score: the same run at `T=0` and `T=0.7` is a different experiment, and a `precision@coverage`
+sweep is a series of these, not a single baseline drifting.
+
+The accepted range is core's `laya.confidence.check_min_confidence` -- `[0.0, 1.0]`, finite, not
+a bool -- rather than a copy here, so a value the gate itself would reject fails as a usage error
+(exit 2) before any checkpoint loads. `0.0` is a legal ask: it is the control arm for a
+`precision@coverage` sweep, and a check that dropped it would hide the sweep's own floor.
+
+A runner whose `predict` or (for a batched run) whose `predict_batch` predates the gate is
+**refused with a named `EvalError`**, not scored without the threshold. Silently dropping a
+scoring control is the class of lie this harness exists to prevent: the report would publish a
+`precision@coverage` figure for a policy that never ran. `config.timing` records both the ask and
+the fact: `min_confidence` is the threshold that was requested, `min_confidence_sent` says whether
+any call this run made actually carried it.
+
 ## Slices
 
 `compare` and `run` report overall numbers and, for `--slice language|model|qid|tag`, the same
