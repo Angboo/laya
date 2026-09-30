@@ -224,6 +224,7 @@ laya "My payment failed twice" --preset triage       # answer a ready-made prese
 laya --batch tickets.txt --predict                   # score a file of requests, one per line, in one batch
 cat tickets.txt | laya --batch - --predict --json    # stdin; one JSON line of answers per request
 laya "Where is my card" --questions intents.json     # answer your own questions, written in a JSON file
+laya "Refund my card" --predict --min-confidence 0.9 # mark an answer the model is unsure of
 laya                                                 # interactive mode
 ```
 
@@ -814,6 +815,24 @@ else:
 ```
 
 The threshold reads `answer_confidence` (`max(p)`) — the calibrated quantity, invariant to the number of options — never the entropy `confidence`. With `decide(..., min_confidence=...)` a low-confidence field comes back as `None` in the schema output, while `return_details=True` keeps the answer and its confidence. [LangChain `LayaRouter`](docs/langchain.md)'s `confidence_threshold` reads the same value: `answer_confidence` when the answer carries it, `confidence` otherwise. Left unset, `min_confidence` changes nothing.
+
+The same gate is a flag on the `laya` command:
+
+```bash
+laya "Is it the blue one or the green one" --preset triage --min-confidence 0.9
+```
+
+```text
+intent      : other (p=0.992)
+frustration : 1.06  [low-confidence]
+churn_risk  : 0.158  [low-confidence]
+```
+
+Each marked answer gets `[low-confidence]` on its printed line and the answer itself is still
+printed, so a run at a terminal reads the same way the dict does; `--json` carries the raw
+`low_confidence` key. `--batch FILE` applies one threshold to the whole file, which is the shape
+`predict_batch` takes. Routing has no answer to gate, so `laya --min-confidence 0.9 "..."` without
+`--predict`, `--preset` or `--questions` is refused rather than ignored.
 
 ---
 
