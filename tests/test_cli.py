@@ -688,8 +688,11 @@ check("drift: every control the parser names a flag for arrives in the call",
 # `lang_guess` is the weaker form of a flag the CLI already has, and both are call-level, so
 # `--lang` dominates it for a command line; `hooks_raise` / `hooks_timeout` govern hooks, and
 # `make_router` installs none, so there is nothing in this process for them to change.
-check("drift: the controls with no flag are exactly the accepted three",
-      sorted(PREDICT_CONTROLS - NAMED), ["hooks_raise", "hooks_timeout", "lang_guess"])
+check("drift: the controls with no flag are exactly the accepted six",
+      sorted(PREDICT_CONTROLS - NAMED)
+      == ["hooks", "hooks_raise", "hooks_timeout", "lang_guess",
+          "on_predict_end", "on_predict_start"],
+      sorted(PREDICT_CONTROLS - NAMED))
 
 # --------------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
