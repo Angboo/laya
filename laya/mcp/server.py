@@ -285,7 +285,8 @@ def laya_predict_tool(
         + _GUARDRAILS
     ),
 )
-def laya_predict_batch_tool(requests: list, batch_size: int = 0) -> str:
+def laya_predict_batch_tool(requests: list, batch_size: int = 0, hooks_timeout: float = 0,
+                             min_confidence: float = -1, sort_by_length: bool = False) -> str:
     """Answer many typed-question requests in one batched call."""
     router = _router_or_error()
     # batch_size=0 means "unset": MCP clients send defaults eagerly, and
@@ -294,6 +295,9 @@ def laya_predict_batch_tool(requests: list, batch_size: int = 0) -> str:
         laya_predict_batch,
         requests=requests,
         batch_size=batch_size or None,
+        hooks_timeout=hooks_timeout if hooks_timeout > 0 else None,
+        min_confidence=min_confidence if min_confidence >= 0 else None,
+        sort_by_length=sort_by_length,
         router=router,
     )
 
