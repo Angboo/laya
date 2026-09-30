@@ -208,6 +208,19 @@ Continue with the [Router quickstart](#quickstart-route-mode-recommended) to run
 
 - **`ModuleNotFoundError: No module named 'laya'`:** run both installation and your script with the same virtual environment's Python executable shown above. In an editor, select that interpreter as well.
 - **Missing `rl_agent_config.json`:** this file ships with a Laya checkpoint alongside `model.safetensors`; it is not a configuration file you need to create in the source repository. For a local model, pass the directory containing those checkpoint files.
+- **Checkpoint downloads and cache:** `Router()` is lazy: the first prediction downloads only the
+  selected checkpoint, then reuses the Hugging Face cache. Set `HF_HUB_CACHE` to move that cache.
+  The English and typed-decisions checkpoints have about 421M parameters each; multilingual has
+  about 322M (see the table above). Download sizes also depend on weight precision and files.
+- **Memory limits:** `Router()` keeps up to two checkpoints resident by default (`max_loaded=2`),
+  evicting the least recently used when needed. Use `Router(max_loaded=1)` to reduce resident
+  memory, at the cost of reloads when switching checkpoints. `Router(preload=True)` loads all
+  three up front and raises the resident limit to fit them; it is not an out-of-memory remedy.
+- **Windows + Python 3.14:** the model-construction crash reported in
+  [#123](https://github.com/NandhaKishorM/laya/issues/123) was fixed in Laya 0.3.7 by
+  [#195](https://github.com/NandhaKishorM/laya/pull/195) and verified on the reporter's Windows 11
+  setup without a manual patch. Upgrade older Laya installations with your environment's
+  Python executable followed by `-m pip install -U laya`.
 
 ---
 
@@ -333,6 +346,30 @@ To try the Python SDK in a CPU container, see the
 downloaded models between runs.
 
 Laya ships three checkpoints. The built-in **`Router`** is the recommended entry point: it evaluates any state in any language, automatically detects scripts and languages in sub-milliseconds, and dispatches to the optimal checkpoint in a single forward pass.
+
+### Minimal example (30 seconds)
+
+```python
+from laya import Router
+
+router = Router()  # downloads only the selected checkpoint on first use
+result = router.predict(
+    {"body": "We were billed twice. Please refund the duplicate."},
+    {"billing": {"type": "noul", "instructions": "Does the user request a refund?"}},
+)
+print(result["answers"]["billing"]["noul"])  # P(true), a float from 0.0 to 1.0
+print(result["routing"]["model"])            # which checkpoint answered, e.g. 'english'
+```
+
+Input is any state (`str`, `dict`, or `list` — text, email, ticket, JSON document) plus a dict of typed
+questions (`choice` = pick one label, `score` = ordinal levels, `noul` = yes/no statement check).
+Each `result["answers"][qid]` is an answer dict: `choice` is the selected label, `score` is the
+expected ordinal level, and `noul` is P(true). `confidence` is a separate field in that dict;
+`probabilities` is available for `choice` and `score`. `result["routing"]` explains which checkpoint was
+picked and why. Values depend on the checkpoint and input. For ready-made question sets see
+`laya.presets` (`triage_questions`, `moderation_questions`, `email_questions`, ...).
+
+Full walkthrough:
 
 ```python
 from laya import Router
