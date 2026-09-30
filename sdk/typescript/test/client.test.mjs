@@ -86,12 +86,38 @@ test('client model default and prediction overrides select local checkpoints', a
   assert.deepEqual(models, ['english', 'multilingual']);
 });
 
-test('unsupported routing options and invalid models fail before sending a request', async () => {
+test('invalid model and control values fail before sending a request', async () => {
   const client = new Laya({ fetch: async () => { assert.fail('must not send'); } });
-  for (const options of [{ task: 'typed' }, { lang: 'hi' }, { model: '' }, { model: 1 }]) {
-    await assert.rejects(client.predict('hello', questions, options), LayaValidationError);
+  for (const options of [
+    { model: '' }, { model: 1 },
+    { task: '' }, { task: 12 },
+    { lang: 12 }, { lang: '   ' }, { langGuess: 42 },
+    { maxLen: 0 }, { maxLen: 2.5 }, { headMaxLen: -1 },
+    { minConfidence: -0.1 }, { minConfidence: 1.5 }, { minConfidence: NaN },
+  ]) {
+    await assert.rejects(client.predict('hello', questions, options), LayaValidationError, JSON.stringify(options));
   }
   for (const model of ['', '  ', 1]) assert.throws(() => new Laya({ model }), LayaValidationError);
+});
+
+test('per-request controls reach the wire under their server names', async () => {
+  const client = new Laya({ fetch: async (_url, init) => {
+    assert.deepEqual(JSON.parse(init.body), {
+      state: 'hello',
+      questions,
+      task: 'typed',
+      lang: 'de',
+      lang_guess: 'fr',
+      max_len: 2048,
+      head_max_len: 256,
+      min_confidence: 0.8,
+    });
+    return json(prediction);
+  } });
+  await client.predict('hello', questions, {
+    task: 'typed', lang: 'de', langGuess: 'fr',
+    maxLen: 2048, headMaxLen: 256, minConfidence: 0.8,
+  });
 });
 
 test('bad JavaScript inputs fail before fetch without lossy serialization', async () => {

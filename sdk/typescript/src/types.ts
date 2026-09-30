@@ -32,6 +32,22 @@ export interface RequestOptions {
 export interface PredictOptions extends RequestOptions {
   /** Local Laya checkpoint or alias. Overrides the client's configured model. */
   model?: string;
+  /** Force a checkpoint by workflow name instead of letting routing decide; the server
+   *  answers 422 naming an unknown one. */
+  task?: string;
+  /** A language code (`de`, `en-US`) that skips detection when it names a language. */
+  lang?: string;
+  /** A language code from the client's own identifier, consulted after `lang` and
+   *  before detection. */
+  langGuess?: string;
+  /** Total token window for this request, capped by the deployment's
+   *  `LAYA_MAX_TOKEN_BUDGET` (422 above it). */
+  maxLen?: number;
+  /** Token window the option prompt shares, same cap. */
+  headMaxLen?: number;
+  /** Abstention threshold in `[0, 1]`; an answer whose `answer_confidence` falls below
+   *  it comes back marked `low_confidence`, with the answer itself kept. */
+  minConfidence?: number;
 }
 
 interface AnswerBase {
