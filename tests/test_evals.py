@@ -1465,6 +1465,207 @@ def test_cli_accepts_a_checkpoint_alias_in_a_pin(tmp_path, monkeypatch):
     assert recorded["revisions"] == {"english": SHA}
 
 
+# --------------------------------------------------------------- opt-in slice gates
+def _slice_gate_report(en_correct, zh_correct):
+    cases = [{"language": language, "scores": {"choice_accuracy": float(i < correct)},
+              "confidence": 0.8, "correct": i < correct}
+             for language, size, correct in (("en", 180, en_correct), ("zh", 20, zh_correct))
+             for i in range(size)]
+    return {"config": {"schema": evals.REPORT_SCHEMA, "dataset_sha256": "a" * 64,
+                       "questions_sha256": "b" * 64},
+            "overall": {"choice_accuracy": (en_correct + zh_correct) / 200},
+            "slices": {"language": {"en": {"choice_accuracy": en_correct / 180},
+                                    "zh": {"choice_accuracy": zh_correct / 20}}},
+            "cases": cases}
+
+
+def _write_gate_policy(tmp_path, rule):
+    path = tmp_path / "gates.json"
+    path.write_text(json.dumps({"version": 1, "rules": [rule]}), encoding="utf-8")
+    return str(path)
+
+
+def test_cli_slice_gate_catches_regression_hidden_by_overall_gain(tmp_path, capsys):
+    from laya import evals_cli
+
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    baseline.write_text(json.dumps(_slice_gate_report(162, 18)), encoding="utf-8")
+    candidate.write_text(json.dumps(_slice_gate_report(171, 12)), encoding="utf-8")
+    policy = _write_gate_policy(tmp_path, {"slice": {"language": "zh"},
+                                          "metric": "choice_accuracy", "min_count": 20,
+                                          "max_drop": 0.05})
+    args = ["compare", str(candidate), "--baseline", str(baseline),
+            "--tolerance", "choice_accuracy=0.02"]
+    assert evals_cli.main(args) == 0, "90% -> 91.5% overall passes the existing gate"
+    capsys.readouterr()
+    assert evals_cli.main(args + ["--gate-policy", policy]) == 1
+    error = capsys.readouterr().err
+    assert "language=zh" in error and "candidate=0.6000 (n=20)" in error
+    assert "baseline=0.9000 (n=20)" in error and "max_drop=0.0500" in error
+
+
+def test_slice_gate_requires_scored_evidence_on_both_sides(tmp_path):
+    from laya import _eval_policy
+
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "choice_accuracy",
+                   "min_count": 20, "max_drop": 0.05}))
+    base = _slice_gate_report(162, 18)
+    candidate = _slice_gate_report(171, 12)
+    report = EvalReport(**candidate)
+    assert not any("count" in f for f in _eval_policy.check_policy(report, policy, base))
+    policy["rules"][0]["max_drop"] = 0.3
+    assert _eval_policy.check_policy(report, policy, base) == [], "the exact drift boundary passes"
+    policy["rules"][0]["max_drop"] = 0.05
+    report.cases = [c for c in report.cases if c["language"] != "zh"] + report.cases[-19:]
+    assert any("candidate count 19" in f for f in _eval_policy.check_policy(report, policy, base))
+    report = EvalReport(**candidate)
+    base["cases"] = [c for c in base["cases"] if c["language"] != "zh"] + base["cases"][-19:]
+    assert any("baseline count 19" in f for f in _eval_policy.check_policy(report, policy, base))
+    del base["slices"]["language"]["zh"]
+    assert any("baseline metric or slice is missing" in f
+               for f in _eval_policy.check_policy(report, policy, base))
+
+
+def test_slice_gate_absolute_and_increase_direction(tmp_path):
+    from laya import _eval_policy
+
+    candidate = _slice_gate_report(171, 12)
+    report = EvalReport(**candidate)
+    absolute = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "choice_accuracy",
+                   "min_count": 20, "min": 0.7}))
+    assert any("min=0.7000 failed" in f for f in _eval_policy.check_policy(report, absolute))
+    candidate["slices"]["language"]["zh"].pop("choice_accuracy")
+    assert any("metric or slice is missing" in f for f in _eval_policy.check_policy(report, absolute))
+    candidate = _slice_gate_report(171, 12)
+    candidate["slices"]["language"]["zh"]["ece"] = 0.3
+    for case in candidate["cases"]:
+        if case["language"] == "zh":
+            case["confidence"] = 0.8
+    base = _slice_gate_report(162, 18)
+    base["slices"]["language"]["zh"]["ece"] = 0.1
+    increase = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "ece",
+                   "min_count": 20, "max_increase": 0.05}))
+    assert any("max_increase=0.0500" in f
+               for f in _eval_policy.check_policy(EvalReport(**candidate), increase, base))
+
+
+def test_slice_gate_counts_each_tagged_answer_once_and_accepts_boundary(tmp_path):
+    from laya import _eval_policy
+
+    candidate = _slice_gate_report(171, 12)
+    for case in candidate["cases"]:
+        case.update(qid="intent", model="stub", tags=["critical", "critical"])
+    candidate["slices"].update({
+        "tag": {"critical": {"choice_accuracy": 183 / 200}},
+        "qid": {"intent": {"choice_accuracy": 183 / 200}},
+        "model": {"stub": {"choice_accuracy": 183 / 200}},
+    })
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"tag": "critical"}, "metric": "choice_accuracy",
+                   "min_count": 200, "min": 0.915}))
+    assert _eval_policy.check_policy(EvalReport(**candidate), policy) == []
+    for dimension, value in (("qid", "intent"), ("model", "stub")):
+        policy["rules"][0]["slice"] = {dimension: value}
+        assert _eval_policy.check_policy(EvalReport(**candidate), policy) == []
+
+
+@pytest.mark.parametrize("rule", [
+    {"slice": {"language": "zh"}, "metric": "choice_accuracy", "min_count": 20,
+     "min": 0.6, "max_drop": 0.1},
+    {"slice": {"language": "zh", "tag": "critical"}, "metric": "choice_accuracy",
+     "min_count": 20, "min": 0.6},
+    {"slice": {"language": "zh"}, "metric": "choice_accuracy", "min_count": 0,
+     "min": 0.6},
+    {"slice": {"language": "zh"}, "metric": "choice_accuracy", "min_count": 20,
+     "max_drop": -0.1},
+])
+def test_cli_rejects_malformed_slice_policy_before_loading(monkeypatch, tmp_path, rule):
+    from laya import evals_cli
+
+    built = _patch_router(monkeypatch)
+    dataset = _write_dataset(tmp_path, RUN_ROWS)
+    policy = _write_gate_policy(tmp_path, rule)
+    assert evals_cli.main(["run", dataset, "--gate-policy", policy]) == 2
+    assert not built
+
+
+def test_cli_relative_slice_rule_requires_baseline_before_loading(monkeypatch, tmp_path):
+    from laya import evals_cli
+
+    built = _patch_router(monkeypatch)
+    dataset = _write_dataset(tmp_path, RUN_ROWS)
+    policy = _write_gate_policy(tmp_path, {"slice": {"language": "zh"},
+                                          "metric": "choice_accuracy", "min_count": 1,
+                                          "max_drop": 0.1})
+    assert evals_cli.main(["run", dataset, "--gate-policy", policy]) == 2
+    assert not built
+
+
+def test_cli_rejects_invalid_policy_json_and_version(monkeypatch, tmp_path):
+    from laya import evals_cli
+
+    built = _patch_router(monkeypatch)
+    dataset = _write_dataset(tmp_path, RUN_ROWS)
+    path = tmp_path / "gates.json"
+    for content in ("{not json", json.dumps({"version": 2, "rules": [
+            {"slice": {"language": "zh"}, "metric": "choice_accuracy",
+             "min_count": 1, "min": 0.5}]})):
+        path.write_text(content, encoding="utf-8")
+        assert evals_cli.main(["run", dataset, "--gate-policy", str(path)]) == 2
+    assert not built
+
+
+def test_cli_run_slice_gate_and_saved_compare_share_policy(monkeypatch, tmp_path, capsys):
+    from laya import evals_cli
+
+    # Choice answers without confidence keep this gate-wiring test weight-free.
+    def answer(label):
+        return {"type": "choice", "choice": label}
+    rows = [{"state": language, "questions": Q, "expected": {"intent": "a"},
+             "language": language} for language in ("en", "zh")]
+    dataset = _write_dataset(tmp_path, rows)
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _patch_router(monkeypatch, {"en": {"intent": answer("a")},
+                              "zh": {"intent": answer("a")}})
+    assert evals_cli.main(["run", dataset, "--json", str(baseline)]) == 0
+    _patch_router(monkeypatch, {"en": {"intent": answer("a")},
+                              "zh": {"intent": answer("b")}})
+    policy = _write_gate_policy(tmp_path, {"slice": {"language": "zh"},
+                                          "metric": "choice_accuracy", "min_count": 1,
+                                          "max_drop": 0.1})
+    flags = ["--baseline", str(baseline), "--tolerance", "choice_accuracy=1",
+             "--gate-policy", policy]
+    assert evals_cli.main(["run", dataset, *flags, "--json", str(candidate)]) == 1
+    assert json.loads(candidate.read_text())["config"]["gate_policy"]["rules"][0]["max_drop"] == 0.1
+    assert evals_cli.main(["compare", str(candidate), *flags]) == 1
+    assert "language=zh" in capsys.readouterr().err
+
+
+def test_slice_gate_fails_closed_on_identity_or_skipped_cases(tmp_path):
+    from laya import _eval_policy
+
+    candidate = _slice_gate_report(171, 12)
+    base = _slice_gate_report(162, 18)
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "choice_accuracy",
+                   "min_count": 20, "max_drop": 1.0}))
+    base["config"].pop("dataset_sha256")
+    assert any("need dataset_sha256 identity" in f
+               for f in _eval_policy.check_policy(EvalReport(**candidate), policy, base))
+    base["config"]["dataset_sha256"] = "c" * 64
+    assert any("not comparable" in f
+               for f in _eval_policy.check_policy(EvalReport(**candidate), policy, base))
+    base["config"]["dataset_sha256"] = "a" * 64
+    candidate["config"]["errored"] = [{"index": 1, "error": "missing answer"}]
+    assert any("skipped/errored" in f
+               for f in _eval_policy.check_policy(EvalReport(**candidate), policy, base))
+
+
 @pytest.mark.parametrize("pairs, expected", [
     (None, (None, {})),
     ([], (None, {})),

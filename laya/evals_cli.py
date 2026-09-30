@@ -17,7 +17,7 @@ import math
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import evals
+from . import _eval_policy, evals
 from .evals import EvalError
 
 
@@ -170,6 +170,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max", action="append", metavar="METRIC=VALUE", help="maximum for any metric")
     run.add_argument("--slice", action="append", choices=("language", "model", "qid", "tag"),
                      help="also report this slice dimension; repeatable")
+    run.add_argument("--gate-policy", metavar="FILE",
+                     help="apply opt-in per-slice quality rules from a JSON policy")
     run.add_argument("--json", dest="json_out", help="write the full report JSON here")
     run.add_argument("--markdown", dest="markdown_out", help="write a Markdown summary here")
 
@@ -178,6 +180,8 @@ def _build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--tolerance", action="append", metavar="METRIC=VALUE",
                          help="allowed absolute drift; repeatable")
+    compare.add_argument("--gate-policy", metavar="FILE",
+                         help="apply opt-in per-slice quality rules from a JSON policy")
 
     return parser
 
@@ -256,6 +260,10 @@ def _warn_no_value(extra: Sequence[evals.Evaluator], report: evals.EvalReport) -
 
 def _cmd_run(args) -> int:
     dataset = evals.Dataset.from_jsonl(args.dataset)
+    policy = _eval_policy.load_policy(args.gate_policy) if args.gate_policy else None
+    if policy and _eval_policy.needs_baseline(policy) and not args.baseline:
+        raise EvalError("--gate-policy has a relative rule; pass --baseline")
+    baseline = _load_report(args.baseline) if args.baseline and policy else None
     if args.model:
         for example in dataset.examples:      # --model is authoritative over per-row model
             example.model = args.model
@@ -295,6 +303,8 @@ def _cmd_run(args) -> int:
               # refetched under the same name, and a reviewer comparing two reports needs the
               # report -- not a file mtime -- to say so.
               "dataset_sha256": evals.file_fingerprint(args.dataset)}
+    if policy:
+        config["gate_policy"] = policy
     if args.onnx:
         config["onnx"] = args.onnx
     if extra:
@@ -328,7 +338,8 @@ def _cmd_run(args) -> int:
 
     failures = _check_thresholds(report.overall, mins, maxs)
     if args.baseline:
-        baseline = _load_report(args.baseline)
+        if baseline is None:
+            baseline = _load_report(args.baseline)
         ok, deltas = report.compare(baseline, tolerances)
         _print_deltas(deltas)
         if not ok:
@@ -338,6 +349,8 @@ def _cmd_run(args) -> int:
         refusal = _comparability_failure(report, baseline)
         if refusal:
             failures.append(refusal)
+    if policy:
+        failures.extend(_eval_policy.check_policy(report, policy, baseline))
 
     for name in sorted(report.overall):
         print("%-18s %.4f" % (name, report.overall[name]))
@@ -368,6 +381,7 @@ def _cmd_compare(args) -> int:
     # that disagreed with its baseline passed the gate while the same disagreement stated in
     # `config` was refused. The baseline has always gone through `_identity_of`; this makes the
     # candidate side symmetric.
+    policy = _eval_policy.load_policy(args.gate_policy) if args.gate_policy else None
     document = _load_report(args.report)
     report = evals.EvalReport(
         config=evals._identity_of(document),
@@ -379,9 +393,12 @@ def _cmd_compare(args) -> int:
     # comparability refusal has to apply here: a saved report that cannot say which experiment
     # it came from must not pass a gate either.
     refusal = _comparability_failure(report, baseline)
-    if refusal:
-        print("FAIL: " + refusal, file=sys.stderr)
-    return 0 if ok and not refusal else 1
+    failures = [refusal] if refusal else []
+    if policy:
+        failures.extend(_eval_policy.check_policy(report, policy, baseline))
+    for failure in failures:
+        print("FAIL: " + failure, file=sys.stderr)
+    return 0 if ok and not failures else 1
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
