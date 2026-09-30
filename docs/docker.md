@@ -183,6 +183,19 @@ docker build --build-arg MODELSCOPE_MODEL=multilingual \
 docker run --rm -e HF_HUB_OFFLINE=1 -p 127.0.0.1:8000:8000 laya:local laya-serve
 ```
 
+One prerequisite on a host that has run this before. The baked weights land in
+`$HF_HOME/hub` inside the image, under the cache directory `compose.yaml` mounts
+the `model-cache` volume at (`/home/laya/.cache/huggingface`), and Docker seeds a
+named volume from the image only while that volume is empty. A volume left over
+from the Hub-based quickstart holds the older Hub snapshot, it is never
+re-seeded, and the baked weights stay invisible behind it: the loader resolves
+`refs/main` to the old Hub commit and the container answers with the weights
+that were already downloaded, as if the rebuild had changed nothing. Point the
+deployment at an empty cache volume -- `docker compose down --volumes` with the
+same Compose files and the same `LAYA_CACHE_VOLUME`, or `LAYA_CACHE_VOLUME=<name>`
+for a fresh one. With `HF_HUB_OFFLINE=1` a missing or divergent ref is a load
+failure with no network to fall back to, but the prerequisite is the same.
+
 [`docker/prefetch_modelscope.py`](https://github.com/NandhaKishorM/laya/blob/main/docker/prefetch_modelscope.py)
 lists the repository on modelscope.cn, downloads the checkpoint's own files -- the
 same set `laya/agent.py` asks the Hub for, so no sibling checkpoint is pulled -- and
@@ -190,9 +203,11 @@ writes them into the image's hub cache the way `snapshot_download` lays out a
 snapshot. Nothing else changes: `Agent`, the `Router` that `laya-serve` builds,
 `laya.cli` and the integrations keep their repo ids and resolve them to the baked
 snapshot, so a container built this way needs no network at all. Each file's size
-and SHA-256 are checked against what the repository reports before the snapshot is
-published, so a truncated or substituted download fails the build instead of
-shipping inside a layer that looks healthy.
+is checked against what the repository reports before the snapshot is published,
+and its SHA-256 as well when the repository publishes one, so a truncated or
+substituted download fails the build instead of shipping inside a layer that
+looks healthy. A repository that publishes no digest leaves the check to size
+alone.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -238,11 +253,12 @@ keyed by, which is the tip of the revision that was baked -- pass that SHA as
 repository can hold files from several uploads, so that tip is the one
 repository-wide key there is. Hub-side pins do not describe a mirror snapshot:
 `reviewed` names Hugging Face commits, and the SHA-256 digest map is keyed to Hub
-artifact hashes, so neither applies here. The build already refuses a download
-that does not match the mirror's own reported size and digest, which is the
-equivalent guarantee for this
-path. And the weights come from whichever mirror account the argument names, which is
-its own supply-chain decision for the deployment to make.
+artifact hashes, so neither applies here, and no digest pin exists for a mirror
+snapshot either. The build already refuses a download that does not match the
+mirror's own reported size -- and its digest, when the mirror publishes one --
+which is the equivalent guarantee for this path. And the weights come from
+whichever mirror account the argument names, which is its own supply-chain
+decision for the deployment to make.
 
 ## Development and cleanup
 

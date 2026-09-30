@@ -11,6 +11,13 @@
 # keep their repo ids and resolve them to the baked snapshot: docker/prefetch_modelscope.py does it
 # during the build and stops it on any size or digest mismatch.
 #
+# Docker seeds a named volume from the image only while that volume is empty, so a host that has run
+# the quickstart before already has a model-cache volume from the Hub downloads, and the baked
+# weights are invisible behind it: the loader resolves refs/main to the old Hub commit and serves the
+# old weights with nothing to show for the rebuild. Start from an empty volume -- `docker compose
+# down --volumes` with the same Compose files and LAYA_CACHE_VOLUME setting, or point
+# LAYA_CACHE_VOLUME at a fresh one.
+#
 # For NVIDIA, append -f compose.cuda.yaml; it repeats the build args and the device reservation for
 # both services, because an override for `laya` never reaches `laya-serve`.
 #
