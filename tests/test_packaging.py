@@ -611,6 +611,42 @@ for _wf in _concurrency_workflows:
         "a ref-only group collapses every push to main into one run",
     )
 
+# ------------------------------------------------- cancelling runs that are not pull requests
+# Every workflow above cancels obsolete pull-request runs and nothing else. A workflow that
+# never runs on a pull request has no obsolete run to throw away, so an unconditional
+# `cancel-in-progress: true` can only discard a result someone is waiting for. evals.yml runs
+# weekly, on `release: published` and on `workflow_dispatch`, and all three land in the same
+# `evals-${{ github.ref }}` group, so whichever started second cancelled the first: a manual
+# re-run cancelled the weekly baseline, and the release gate could be cancelled by a dispatch
+# started a minute earlier. That job spends 60 minutes downloading weights and the dataset, and
+# a cancelled run uploads no report, so the cancellation reads as "nothing regressed".
+_WORKFLOW_DIR = os.path.join(".github", "workflows")
+_cancel_values = {}
+for _name in sorted(os.listdir(_WORKFLOW_DIR)):
+    if not _name.endswith((".yml", ".yaml")):
+        continue
+    _match = re.search(
+        r"(?m)^[ \t]*cancel-in-progress:\s*(.+?)\s*$",
+        _concurrency_block(read(os.path.join(_WORKFLOW_DIR, _name))),
+    )
+    if _match:
+        _cancel_values[_name] = _match.group(1)
+
+# Non-vacuity: a pattern that stops matching would empty this and pass every loop below.
+check_true("concurrency/the cancel-in-progress workflows are all inspected",
+           len(_cancel_values) >= 5, sorted(_cancel_values))
+
+for _name, _value in sorted(_cancel_values.items()):
+    # Two policies are correct here and anything else is not: never cancel, or cancel only
+    # obsolete pull-request runs. `cancel-in-progress: true` is neither.
+    _never_cancels = _value.strip().lower() in ("false", "no", "off")
+    check_true(
+        "concurrency/%s cancels no run it cannot supersede" % _name,
+        _never_cancels or "pull_request" in _value,
+        "cancel-in-progress: %s discards a validation run that is not an obsolete "
+        "pull-request one" % _value,
+    )
+
 # --------------------------------------------------------------- the API reference
 # `laya.__all__` is what `from laya import *` ships and what the README tells people to call, so
 # an export no page under docs/ names cannot be looked up at all. `cached_embed_fn` was one: the
