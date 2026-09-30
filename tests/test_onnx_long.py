@@ -264,6 +264,51 @@ check("empty/no questions -> empty answers, windowed usage",
 
 
 # ---------------------------------------------------------------- start hooks may replace questions
+def _rewrite_agrees(name, actual, expected):
+    """A question rewrite must reproduce the direct call, EXCEPT for the pass count.
+
+    #692 added this comparison so a start hook's questions drive aggregation: an added decision must
+    not disappear, a rename must not `KeyError`, a type change must apply the right rule. All of that
+    lives in `answers`, and all of it is asserted exactly as before.
+
+    What is exempted is `usage.windows`, and only in the safe direction. Windowing happens BEFORE the
+    hook chain -- it has to, because a start hook is documented to see and rewrite `ctx.states`, i.e.
+    the windows themselves -- so the scan is sized from the questions the caller passed. When a hook
+    then LEAVES MORE room than the scan was sized for, the scan is finer than it needed to be: every
+    token is still covered, the answers are identical, and the only difference is that more passes
+    were made. Measured on the ONNX fixture for the `clear` rewrite: 14 windows against 6, with
+    identical `answers`. The torch fixture happens to produce 8 either way, so it passed the
+    whole-dict comparison by luck rather than by construction.
+
+    The other direction is not exempted and is not silent: a hook that leaves LESS room than the scan
+    was sized for is refused outright by `_check_scan_budget`, because then the windows really would be
+    re-truncated and part of the document would reach no model. That refusal has its own checks, and it
+    is why this exemption is one-sided in practice rather than by assertion here -- an earlier revision
+    of this helper also asserted `hooked >= direct`, which reads like a guarantee and cannot fail:
+    the only route to a coarser hooked scan is a shrinking rewrite, and that is refused before it can
+    be observed. Removed rather than kept as decoration.
+    """
+    # `actual` is None when the call raised: the torch side routes it through `_attempt`, which
+    # swallows the exception and returns None. Report that as a failure rather than raising out of
+    # the helper -- the whole-dict `check` this replaced compared None against a dict and failed
+    # cleanly, and losing that cost a crash instead of a diagnosis the first time a mutation
+    # reintroduced #692's KeyError.
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        FAIL.append("questions/%s did not return a result to compare (actual=%r, expected=%r)"
+                    % (name, type(actual).__name__, type(expected).__name__))
+        return
+    a_usage = dict(actual.get("usage") or {})
+    e_usage = dict(expected.get("usage") or {})
+    a_windows, e_windows = a_usage.pop("windows", None), e_usage.pop("windows", None)
+    check("questions/%s reproduces the answers of the direct call" % name,
+          actual.get("answers"), expected.get("answers"))
+    check("questions/%s reproduces everything but the pass count" % name,
+          ({k: v for k, v in actual.items() if k != "usage"}, a_usage),
+          ({k: v for k, v in expected.items() if k != "usage"}, e_usage))
+    # `usage.windows` deliberately not compared; both values are read above only to strip them.
+    del a_windows, e_windows
+
+
 question_rewrites = [
     ("append", {**QUESTIONS, "review": QUESTIONS["urgent"]}),
     ("replace", {"review": QUESTIONS["urgent"]}),
@@ -281,7 +326,7 @@ for name, rewritten_questions in question_rewrites:
     except Exception as exc:
         FAIL.append("questions/%s raised %r" % (name, exc))
     else:
-        check("questions/%s matches directly requesting the final schema" % name, actual, expected)
+        _rewrite_agrees(name, actual, expected)
 
 check("questions/no-op preserves the unhooked result",
       _bare_onnx().predict_long(LONG_STATE, QUESTIONS, on_predict_start=lambda ctx: None),
