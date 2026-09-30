@@ -68,18 +68,19 @@ from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
-from ..confidence import answer_confidence_value as _answer_confidence_value  # noqa: E402
+from ..confidence import _gate_confidence  # noqa: E402
 
 
 def _gated_confidence(answer: Dict[str, Any]) -> float:
-    """The threshold number for one answer: the calibrated field, defaulting to 1.0.
+    """The threshold number for one answer, defaulting to 1.0 when it reports none.
 
-    Every selector and router in this module gates `confidence_threshold` on this, and
-    they must all read the same quantity -- `answer_confidence`, the calibrated number
-    core gates on, never the entropy `confidence` (see `laya.confidence`). An answer that
-    reports no usable confidence is treated as fully confident, exactly as before.
+    Every selector and router in this module gates `confidence_threshold` through this, and it
+    delegates to core's `_gate_confidence` so the wrappers and `flag_low_confidence` read the
+    same quantity: `answer_confidence` first, falling back to the entropy `confidence` so an
+    answer that carries only the older field is still gated rather than silently passed. An
+    answer with no usable number at all is treated as fully confident, exactly as before.
     """
-    conf = _answer_confidence_value(answer or {})
+    conf = _gate_confidence(answer or {})
     return conf if conf is not None else 1.0
 
 
