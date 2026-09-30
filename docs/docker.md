@@ -204,10 +204,9 @@ snapshot. Nothing else changes: `Agent`, the `Router` that `laya-serve` builds,
 `laya.cli` and the integrations keep their repo ids and resolve them to the baked
 snapshot, so a container built this way needs no network at all. Each file's size
 is checked against what the repository reports before the snapshot is published,
-and its SHA-256 as well when the repository publishes one, so a truncated or
-substituted download fails the build instead of shipping inside a layer that
-looks healthy. A repository that publishes no digest leaves the check to size
-alone.
+and its SHA-256 as well when the repository publishes one. A size or digest
+mismatch fails the build. A repository that publishes no digest leaves the
+check to size alone, which cannot detect a same-size substitution.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -256,7 +255,8 @@ repository-wide key there is. Hub-side pins do not describe a mirror snapshot:
 artifact hashes, so neither applies here, and no digest pin exists for a mirror
 snapshot either. The build already refuses a download that does not match the
 mirror's own reported size -- and its digest, when the mirror publishes one --
-which is the equivalent guarantee for this path. And the weights come from
+but this checks consistency with mirror metadata, not an independently pinned
+digest. The weights come from
 whichever mirror account the argument names, which is its own supply-chain
 decision for the deployment to make.
 

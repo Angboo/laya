@@ -9,13 +9,13 @@ way the Hub would have, and every code path that names a checkpoint keeps its id
 revision handling: `Agent(...)`, the `Router` laya-serve builds, `laya.cli`, the integrations.
 
 Only the standard library is used, because an image build has no reason to install the
-ModelScope SDK for a handful of HTTP calls. Every file is streamed with resume and its size and SHA-256
-are checked against the values the repository API reports, so a truncated or substituted
-download fails the build instead of shipping inside a layer that looks healthy.
+ModelScope SDK for a handful of HTTP calls. Every file is streamed with resume and its size is
+checked against the value the repository API reports. SHA-256 is checked only when the API
+publishes a digest; without one, a same-size substitution cannot be detected.
 
 Usage inside a Dockerfile RUN:
 
-    python prefetch_modelscope.py --models convaiinnovations/laya:multilingual \
+    python prefetch_modelscope.py --model convaiinnovations/laya:multilingual \
         --revision master --cache-dir "$HF_HOME/hub"
 
 Each spec is `repo[:subfolder]`; the subfolder selects one checkpoint from the bundled
