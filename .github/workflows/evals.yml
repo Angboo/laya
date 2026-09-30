@@ -14,9 +14,16 @@ on:
 permissions:
   contents: read
 
+# Nothing here runs on a pull request, so there is no obsolete run for a concurrency group to
+# throw away. All three triggers used to share `evals-${{ github.ref }}` with
+# `cancel-in-progress: true`, so whichever started second killed the first: a manual re-run
+# cancelled the weekly baseline, and the `release: published` gate could be cancelled by a
+# dispatch that started a minute earlier. The job spends 60 minutes downloading weights and the
+# dataset, and a cancelled run uploads no report, so the cancellation reads as a clean gate.
+# One group per run lets every trigger report.
 concurrency:
-  group: evals-${{ github.ref }}
-  cancel-in-progress: true
+  group: evals-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   english-regression:
