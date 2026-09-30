@@ -271,6 +271,20 @@ function isPlainDict(o: unknown): o is Record<string, unknown> {
   return proto === null || proto === Object.prototype;
 }
 
+/** Whether a `temperature_by_options` value means "no override" in Python.
+ *
+ * `cfg.get("temperature_by_options") or {}` turns every Python-falsy value into `{}`, and the
+ * two languages disagree about which values those are: an empty array is truthy in JavaScript,
+ * and NaN is falsy here while truthy in Python. So the set is named rather than inferred from
+ * JavaScript truthiness. Python's own falsy values are `[]`, `{}`, `0`, `0.0`, `False`, `None`
+ * and `""`; `{}` needs no case here because a dict is accepted either way.
+ */
+function isEmptyOverride(v: unknown): boolean {
+  if (v === null || v === undefined || v === false || v === "") return true;
+  if (v === 0) return true; // `===`, not Object.is: that distinguishes -0 from 0
+  return Array.isArray(v) && v.length === 0; // [] -- truthy in JavaScript
+}
+
 export function toInternal(qdef: QuestionDef): { t: "choice" | "score" | "noul"; ins: string; crit: unknown; labels?: { false: string; true: string } } {
   const t = qdef["type"] as "choice" | "score" | "noul";
   let crit: unknown = qdef["criteria"];
@@ -399,23 +413,23 @@ export class Agent extends HookRegistry {
           `Language override ${JSON.stringify(l)} temperature must be a list of 3 floats`,
         );
       }
-      const tboRaw = (lc?.temperature_by_options ?? {}) as Record<string, unknown>;
-      // Python requires a mapping here and names the language otherwise. `?? {}` covers only
-      // null/undefined, so a string reached `Object.entries` and became character keys --
-      // "nope" gave {"0":"n","1":"o","2":"p","3":"e"} -- and every bucket a question can ask for
-      // then missed, silently, at the base temperature; a number gave {} and so did nothing at
-      // all. A falsy value is an empty override on both sides (Python's `or {}` is what makes it
-      // so), so only a truthy non-mapping is an error here too.
-      if (tboRaw && (typeof tboRaw !== "object" || Array.isArray(tboRaw))) {
+      const tboRaw: unknown = lc?.temperature_by_options;
+      // Python: `cfg.get("temperature_by_options") or {}`, then `isinstance(..., dict)`. So a
+      // Python-falsy value is an empty override, a dict is kept, and anything else is rejected
+      // naming the language. isPlainDict is the module's own mapping test, so a Map, Set or Date
+      // is refused instead of being read as {} by Object.entries -- a configured override that
+      // silently does nothing is the same failure as no override at all.
+      if (!isEmptyOverride(tboRaw) && !isPlainDict(tboRaw)) {
         throw new Error(
           `Language override ${JSON.stringify(l)} temperature_by_options must be a mapping of ` +
             `bucket -> float, got ${Array.isArray(tboRaw) ? "list" : typeof tboRaw}`,
         );
       }
+      const tboDict: Record<string, unknown> = isPlainDict(tboRaw) ? tboRaw : {};
       this.langTemperatures[normL] = {
         temperature: [0, 1, 2].map((i) => clampTemperature(tRaw[i])),
         temperatureByOptions: Object.fromEntries(
-          Object.entries(tboRaw).map(([k, v]) => [k, clampTemperature(v)]),
+          Object.entries(tboDict).map(([k, v]) => [k, clampTemperature(v)]),
         ),
       };
     }
