@@ -400,6 +400,18 @@ export class Agent extends HookRegistry {
         );
       }
       const tboRaw = (lc?.temperature_by_options ?? {}) as Record<string, unknown>;
+      // Python requires a mapping here and names the language otherwise. `?? {}` covers only
+      // null/undefined, so a string reached `Object.entries` and became character keys --
+      // "nope" gave {"0":"n","1":"o","2":"p","3":"e"} -- and every bucket a question can ask for
+      // then missed, silently, at the base temperature; a number gave {} and so did nothing at
+      // all. A falsy value is an empty override on both sides (Python's `or {}` is what makes it
+      // so), so only a truthy non-mapping is an error here too.
+      if (tboRaw && (typeof tboRaw !== "object" || Array.isArray(tboRaw))) {
+        throw new Error(
+          `Language override ${JSON.stringify(l)} temperature_by_options must be a mapping of ` +
+            `bucket -> float, got ${Array.isArray(tboRaw) ? "list" : typeof tboRaw}`,
+        );
+      }
       this.langTemperatures[normL] = {
         temperature: [0, 1, 2].map((i) => clampTemperature(tRaw[i])),
         temperatureByOptions: Object.fromEntries(

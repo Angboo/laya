@@ -83,6 +83,27 @@ describe("lang_temperatures", () => {
     ).toThrow('Language override "de" temperature must be a list of 3 floats');
   });
 
+  it("rejects bucket overrides that are not a mapping, as Python does", () => {
+    // Python (common.py resolve_lang_temperatures) requires a mapping and names the language
+    // otherwise. `?? {}` only covers null/undefined, so a string reached Object.entries and
+    // became character keys: Object.entries("nope") is [["0","n"],["1","o"],["2","p"],["3","e"]],
+    // none of which is a bucket any question asks for.
+    for (const buckets of ["nope", 42, true, ["choice:2"]]) {
+      expect(
+        () => new Agent({ provider: fakeProvider(), lang_temperatures: { de: { temperature_by_options: buckets } } } as any),
+      ).toThrow('Language override "de" temperature_by_options must be a mapping of bucket -> float');
+    }
+    // A falsy value is an empty override in both languages, and Python's `or {}` is what makes
+    // that so; these must keep passing rather than start failing on a shape that means "none".
+    for (const buckets of [undefined, null, {}, 0, false, ""]) {
+      const a = new Agent({
+        provider: fakeProvider(),
+        lang_temperatures: { de: { temperature_by_options: buckets } },
+      } as any);
+      expect(a.langTemperatures.de.temperatureByOptions).toEqual({});
+    }
+  });
+
   it("rejects a base temperature that is not a list of 3 floats, as Python does (#502)", () => {
     for (const temperature of [[1, 1], [1, 1, 1, 1], 2, "1"]) {
       expect(() => new Agent({ provider: fakeProvider(), temperature } as any)).toThrow(
