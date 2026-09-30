@@ -145,6 +145,8 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="evaluate an ONNX export through ONNXAgent instead of the torch Router; "
                           "--model then names the checkpoint directory or Hub id the export came "
                           "from (default convaiinnovations/laya)")
+    run.add_argument("--calibration", metavar="PATH",
+                     help="path to a JSON calibration map for ONNXAgent (requires --onnx)")
     run.add_argument("--revision", action="append", metavar="SHA | NAME=SHA",
                      help="pin the checkpoint commit: a bare SHA applies to every checkpoint this "
                           "run loads, NAME=SHA pins one (repeatable). Unpinned runs fetch the "
@@ -270,9 +272,11 @@ def _cmd_run(args) -> int:
         if revisions:
             raise EvalError("--revision NAME=SHA needs the Router; with --onnx pass one bare SHA")
         agent = ONNXAgent(args.model or "convaiinnovations/laya", onnx_path=args.onnx,
-                          revision=revision)
+                          revision=revision, calibration=args.calibration)
         runner: Any = OnnxRunner(agent)
     else:
+        if args.calibration:
+            raise EvalError("--calibration requires --onnx; for the torch Router calibrate via fit_temperatures")
         import laya
         try:
             pins: Dict[str, Any] = {}
@@ -297,6 +301,8 @@ def _cmd_run(args) -> int:
               "dataset_sha256": evals.file_fingerprint(args.dataset)}
     if args.onnx:
         config["onnx"] = args.onnx
+        if args.calibration:
+            config["calibration"] = args.calibration
     if extra:
         config["score_within"] = [evaluator.tolerance for evaluator in extra]
     report = evals.evaluate(runner, dataset, evaluators=evals.default_evaluators() + extra,
