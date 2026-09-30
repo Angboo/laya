@@ -17,7 +17,8 @@ banner("03", "Reading the result", """
 
     `answers` is keyed by the ids you chose, so glue code can index it directly instead of
     zipping a list back onto the questions. Each answer carries a `type` matching its
-    question, the typed decision fields, a `confidence`, and an `action` payload.
+    question, the typed decision fields, a `confidence` and an `answer_confidence`, and an
+    `action` payload.
 
     `usage` is the part readers misread: `input_tokens` is the whole batch, with the state
     counted once per question, so it grows with the number of questions rather than being a
@@ -64,9 +65,9 @@ for key, value in result.items():
 
 # ---------------------------------------------------------------- 3. parsed fields
 heading("the same answers, parsed into a table")
-print("   %-12s %-7s %-34s %-11s %s" % ("question id", "type", "primary answer",
-                                         "confidence", "action"))
-print("   " + "-" * 82)
+print("   %-12s %-7s %-34s %-11s %-11s %s" % ("question id", "type", "primary answer",
+                                             "confidence", "answer_conf", "action"))
+print("   " + "-" * 89)
 for qid, a in answers.items():
     if a["type"] == "choice":
         primary = "%s (p=%.3f)" % (a["choice"], a["probabilities"][a["choice"]])
@@ -74,14 +75,21 @@ for qid, a in answers.items():
         primary = "%.3f of %d  (expected, 0-based)" % (a["score"], len(a["legend"]) - 1)
     else:
         primary = "%.4f -> %s" % (a["noul"], "true" if a["noul"] > 0.5 else "false")
-    print("   %-12s %-7s %-34s %-11.3f %.3f"
-          % (qid, a["type"], primary, a["confidence"], a["action"]["act_probability"]))
+    print("   %-12s %-7s %-34s %-11.3f %-11.3f %.3f"
+          % (qid, a["type"], primary, a["confidence"], a["answer_confidence"],
+             a["action"]["act_probability"]))
 
 heading("the fields each type carries")
-print("   choice : type, choice, probabilities {label: p}, confidence, action")
+print("   choice : type, choice, probabilities {label: p},")
+print("            confidence, answer_confidence, action")
 print("   score  : type, score, legend {index: text}, probabilities {index: p},")
-print("            confidence, action     (indexes and legend keys are strings: \"0\", \"1\", ...)")
-print("   noul   : type, noul (P(true)), confidence, action")
+print("            confidence, answer_confidence, action")
+print("            (indexes and legend keys are strings: \"0\", \"1\", ...)")
+print("   noul   : type, noul (P(true)), confidence, answer_confidence, action")
+print("   `confidence` is 1 minus normalised entropy -- a scale that moves with the option")
+print("   count on the same answer. `answer_confidence` is max(p), the probability mass on")
+print("   the answer being reported, and it is the field to gate on (example 18 routes at a")
+print("   threshold on it).")
 print("   every answer also carries action['act_probability'], a separate two-way head over")
 print("   the same encoder (see agent.cfg['act_costs'] / ['cost_wrong_act']). The typed")
 print("   fields above are the decision; action is an auxiliary signal your policy may use.")
