@@ -41,6 +41,18 @@ def test_onnx_graph_runs_at_any_batch(exported):
     """
     onnx_path, agent_pt = exported
     session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    # The declared shapes: symbolic names, not integers baked in at trace time. Catches an export
+    # that drops or renames a declaration even on a torch where the batch test below still passes.
+    declared = {t.name: t.shape for t in session.get_inputs() + session.get_outputs()}
+    assert declared == {
+        "input_ids": ["batch_size", "seq_len"],
+        "attention_mask": ["batch_size", "seq_len"],
+        "marker_pos": ["batch_size", "num_markers"],
+        "marker_mask": ["batch_size", "num_markers"],
+        "qtype": ["batch_size"],
+        "logits": ["batch_size", "num_markers"],
+        "act_logits": ["batch_size", 2],
+    }, declared
     for batch in (1, 3, 7):
         rng = np.random.default_rng(batch)
         seq_len = 53
