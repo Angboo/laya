@@ -42,7 +42,7 @@ from .common import (
     temp_bucket,
     unpermute_probs,
 )
-from .confidence import check_min_confidence, flag_low_confidence
+from .confidence import apply_confidence_gate, check_min_confidence
 from .hooks import (
     HookRegistry, PredictContext, _as_sequence, aggregate_usage, compose_hooks, dispatch,
     normalise_hooks, validate_timeout,
@@ -1268,8 +1268,7 @@ class Agent(HookRegistry):
             ctx.elapsed_ms = (time.perf_counter() - ctx.started_at) * 1000.0
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
-                if mc is not None:
-                    flag_low_confidence(ctx.results, mc)
+                apply_confidence_gate(ctx.results, mc)
             try:
                 dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
@@ -1497,7 +1496,11 @@ class Agent(HookRegistry):
                     usage[key] = val
         usage["output_tokens"] = 0
         usage["windows"] = len(results)
-        return {"model": "laya-rl-agent", "answers": answers, "usage": usage}
+        result = {"model": "laya-rl-agent", "answers": answers, "usage": usage}
+        # `predict_long` accepts no `min_confidence` -- the window loop has no single confidence to
+        # gate on -- so every answer reports that it ran ungated rather than reporting nothing.
+        apply_confidence_gate([result], None)
+        return result
 
     @torch.no_grad()
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]], lang: Optional[str] = None,

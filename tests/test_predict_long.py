@@ -257,7 +257,11 @@ stub = _LongStub()
 out = _router(stub).predict_long({"body": "y" * 300}, Q, model="english",
                                  window=64, stride=32, batch_size=8, lang="de")
 check("router/routing key attached", out["routing"]["model"], "english")
-check("router/answers come from the scan", out["answers"], {"scanned": {"noul": 0.5}})
+# `predict_long` takes no `min_confidence` -- a window scan has no single confidence to gate on --
+# so the gate writes nothing and the scan's answers come back exactly as produced. A long-document
+# result is not a gated decision, and now it does not claim to be one.
+check("router/answers come from the scan", out["answers"],
+      {"scanned": {"noul": 0.5}})
 check("router/window forwarded", stub.calls[0]["window"], 64)
 check("router/stride forwarded", stub.calls[0]["stride"], 32)
 check("router/batch_size forwarded", stub.calls[0]["batch_size"], 8)
@@ -306,7 +310,8 @@ class _Recorder:
 recorder_stub = _LongStub()
 _router(recorder_stub).predict_long({"body": "y" * 300}, Q, model="english",
                                     on_predict_end=_Recorder().on_predict_end)
-check("router/per-call end hook sees the scan", ended["answers"], {"scanned": {"noul": 0.5}})
+check("router/per-call end hook sees the scan", ended["answers"],
+      {"scanned": {"noul": 0.5}})
 
 # 8. an agent with no predict_long is a named caller error, not a bare AttributeError
 class _NoScan:

@@ -30,7 +30,7 @@ from laya.common import (
     TEMP_MAX,
     clamp_temperature,
 )
-from laya.confidence import check_min_confidence, flag_low_confidence
+from laya.confidence import apply_confidence_gate, check_min_confidence
 
 
 class ONNXAgent(HookRegistry):
@@ -374,8 +374,7 @@ class ONNXAgent(HookRegistry):
             ctx.elapsed_ms = (time.perf_counter() - ctx.started_at) * 1000.0
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
-                if mc is not None:
-                    flag_low_confidence(ctx.results, mc)
+                apply_confidence_gate(ctx.results, mc)
             try:
                 dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
@@ -554,7 +553,10 @@ class ONNXAgent(HookRegistry):
                     usage[key] = val
         usage["output_tokens"] = 0
         usage["windows"] = len(results)
-        return {"model": "laya-rl-agent-onnx", "answers": answers, "usage": usage}
+        result = {"model": "laya-rl-agent-onnx", "answers": answers, "usage": usage}
+        # As in `Agent.predict_long`: no `min_confidence` here, so say so on every answer.
+        apply_confidence_gate([result], None)
+        return result
 
     def _infer(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
                max_len: Optional[int] = None, head_max_len: Optional[int] = None,

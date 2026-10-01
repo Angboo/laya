@@ -97,7 +97,7 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 ## What's new in 0.3.21
 
 * **ONNX catches up with PyTorch.** `ONNXAgent` gains `predict_batch` (with `sort_by_length`), `predict_long` and `decide_batch`, `scripts/export_onnx.py --quantize` writes a per-channel INT8 copy for CPU, and `laya-evals run --onnx` scores an export with the same gates as the torch path.
-* **Opt-in abstention.** `min_confidence=` on `predict`, `predict_batch`, `decide` and `decide_batch` flags answers below a threshold on `answer_confidence` with `low_confidence: True`, and `decide` returns `None` for them.
+* **Opt-in abstention.** `min_confidence=` on `predict`, `predict_batch`, `decide` and `decide_batch` flags answers below a threshold on `answer_confidence` with `low_confidence: True`, and `decide` returns `None` for them. When a threshold is set, every answer also reports `abstention` — `passed`, `abstained` or `unevaluated` — so a caller can tell a gate that cleared from a gate that never ran; with no threshold, nothing is added at all.
 * **Batch everywhere.** `decide_batch`, `Router.predict_long`, `laya --batch FILE`, the MCP `laya_predict_batch` / `laya_route_batch` / `laya_decide` tools, and LangChain `batch()` / `abatch()` all run on shared forward passes. New `LayaDecision` (LangChain), LlamaIndex selectors (`laya[llamaindex]`) and CrewAI routing (`laya[crewai]`).
 * **Per-request token budget.** `max_len` / `head_max_len` now reach every surface: `laya-serve` (capped by `LAYA_MAX_TOKEN_BUDGET`), `Router.predict_batch` requests, the CLI (`--questions`, `--max-len`, `--head-max-len`), MCP tools and LangChain nodes.
 * **Operations.** `LAYA_MAX_LOADED`, `LAYA_REVISION` and per-checkpoint SHA-256 maps; `/health` reports the device a checkpoint really runs on and its CPU-fallback count; the 503 busy answer carries `Retry-After`; `compile=True` no longer recompiles for every request shape.
@@ -814,6 +814,18 @@ else:
 ```
 
 The threshold reads `answer_confidence` (`max(p)`) — the calibrated quantity, invariant to the number of options — never the entropy `confidence`. With `decide(..., min_confidence=...)` a low-confidence field comes back as `None` in the schema output, while `return_details=True` keeps the answer and its confidence. [LangChain `LayaRouter`](docs/langchain.md)'s `confidence_threshold` reads the same value: `answer_confidence` when the answer carries it, `confidence` otherwise. Left unset, `min_confidence` changes nothing.
+
+A gate is a policy, and a policy whose application you cannot observe is not one. `low_confidence` is written only when the gate fires, so its absence cannot tell you "a gate ran and this answer cleared it" apart from "no gate ran at all" — you could neither compute an abstention rate nor prove the gate was in effect. **When you pass `min_confidence`,** every answer therefore also reports `abstention`:
+
+| `abstention` | meaning |
+|---|---|
+| `passed` | a gate ran and this answer's `answer_confidence` cleared it |
+| `abstained` | a gate ran and this answer's `answer_confidence` fell below it |
+| `unevaluated` | a gate ran and this answer carried no usable confidence, so the gate could not decide |
+
+`abstention_threshold` echoes the threshold whenever a gate ran, so a log can be re-split by the gate that produced it instead of by whatever the caller happened to remember passing. `unevaluated` is the case a boolean cannot express — reporting it as a pass would be as wrong as reporting it as a flag, so a NaN, a missing confidence or a `bool` lands in its own state. The raw answer, probabilities and confidence are untouched either way.
+
+Left without `min_confidence`, the response is byte-for-byte what it was before any of this: no `abstention`, no `abstention_threshold`, no flag. That is deliberate — a field on every answer that only some calls populate is a schema change for callers who never asked to be gated. The presence of `abstention` is how you tell a gated run from an ungated one; a `min_confidence` of exactly `0.0` still counts as set, so it reports states, and `flag_low_confidence` treats `0.0` as a no-op because nothing can fall below it.
 
 ---
 

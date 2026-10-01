@@ -36,7 +36,7 @@ import time
 from collections.abc import Sequence as SequenceABC
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from .confidence import check_min_confidence, flag_low_confidence
+from .confidence import apply_confidence_gate, check_min_confidence
 from .hooks import (
     HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
     validate_timeout,
@@ -809,8 +809,7 @@ class Router(HookRegistry):
             ctx.elapsed_ms = (time.perf_counter() - ctx.started_at) * 1000.0
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
-                if mc is not None:
-                    flag_low_confidence(ctx.results, mc)
+                apply_confidence_gate(ctx.results, mc)
             try:
                 dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
@@ -1159,14 +1158,14 @@ class Router(HookRegistry):
                 # had already run. Each is still ended, so a hook that opens something in start
                 # (a span, an in-flight count) always sees the matching end.
                 for ctx in started:
-                    if mc is not None and ctx.results:
-                        flag_low_confidence(ctx.results, mc)
+                    if ctx.results:
+                        apply_confidence_gate(ctx.results, mc)
                 self._end_contexts(active, started, raise_errors, timeout, error=exc)
                 raise
 
             for ctx in started:
-                if mc is not None and ctx.results:
-                    flag_low_confidence(ctx.results, mc)
+                if ctx.results:
+                    apply_confidence_gate(ctx.results, mc)
             self._end_contexts(active, started, raise_errors, timeout)
             for i, ctx in zip(indices, started):
                 results[i] = ctx.results[0]
