@@ -129,6 +129,7 @@ jobs:
           python tests/test_question_token_reuse.py
           python tests/test_lazy_import.py
           python tests/test_runtime_fixes.py
+          python tests/test_agent_gate.py
           python tests/test_option_collapse.py
           python tests/test_lang_guess.py
           python tests/test_identifier_complexity.py
