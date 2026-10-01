@@ -134,24 +134,28 @@ other value -- including a Jev id like `jev-1` -- means "let the router choose",
   "model": "laya-rl-agent",
   "answers": {
     "queue": {"type": "choice", "choice": "billing",
-              "probabilities": {"billing": 0.9281, "tech": 0.0412, "other": 0.0307},
-              "confidence": 0.4534, "answer_confidence": 0.9281,
+              "probabilities": {"billing": 0.9519, "tech": 0.0327, "other": 0.0154},
+              "confidence": 0.797, "answer_confidence": 0.9519,
               "action": {"act_probability": 1.0}},
-    "urgency": {"type": "score", "score": 2.6389,
+    "urgency": {"type": "score", "score": 1.6994,
                 "legend": {"0": "calm", "1": "firm", "2": "angry", "3": "furious"},
-                "probabilities": {"0": 0.0099, "1": 0.0713, "2": 0.536, "3": 0.3828},
-                "confidence": 0.3542, "answer_confidence": 0.536,
+                "probabilities": {"0": 0.0249, "1": 0.4136, "2": 0.3985, "3": 0.1629},
+                "confidence": 0.1925, "answer_confidence": 0.4136,
                 "action": {"act_probability": 1.0}}
   },
-  "usage": {"input_tokens": 74, "output_tokens": 0},
+  "usage": {"input_tokens": 83, "output_tokens": 0, "state_tokens": 12,
+            "state_tokens_dropped": 0, "truncated": false, "truncated_questions": []},
   "routing": {"model": "english", "repo": "convaiinnovations/laya", "reason": "English Latin text",
-              "detection": {"script": "latin", "language": "en", "is_english": true, "non_latin_fraction": 0.0}}
+              "detection": {"script": "latin", "script_profile": {"latin": 1.0}, "language": "en",
+                            "is_english": true, "language_undecided": false, "diacritic_rate": 0.0,
+                            "non_latin_fraction": 0.0, "mixed_segment": null},
+              "workflow": null}
 }
 ```
 
-`answers` and `usage` are the keys Jev clients decode; `model` is the constant name of the decision
-head, and the checkpoint that answered is in `routing` (`model`, `repo`, `reason`, and the
-`detection` or `lang_guess` evidence behind it).
+The sample is one answer this server gave, verbatim: the request above, the cached `english`
+checkpoint on CPU. `answers` and `usage` are the keys Jev clients decode; `model` is the constant
+name of the decision head, and the checkpoint that answered is in `routing`.
 
 | answer type | keys |
 |---|---|
@@ -159,6 +163,39 @@ head, and the checkpoint that answered is in `routing` (`model`, `repo`, `reason
 | `score` | `score` (expected level index, may fall between levels), `probabilities` keyed `"0".. "k-1"`, `legend` mapping index to the level text |
 | `noul` | `noul`, the probability of the yes option |
 | all | `confidence`, `answer_confidence`, and `action.act_probability` |
+
+`usage` reports what the forward pass was built from. How much of a state the model reads is a token
+budget, not a character count, and the budget moves with `max_len`, `head_max_len` and every
+question's own option prompt (#174), so these keys are the only place that fact is visible:
+
+| `usage` key | meaning |
+|---|---|
+| `input_tokens` | non-pad tokens of the state's rows -- one row per question, so it grows with the questions rather than being a context length |
+| `output_tokens` | always `0` -- the head answers in one pass, it generates nothing |
+| `state_tokens` | tokens the whole serialized state needs |
+| `state_tokens_dropped` | tokens of it at least one question did not get: the worst case over the questions, since each leaves the state a different room |
+| `truncated` | `true` when that worst case dropped anything |
+| `truncated_questions` | the ids of the questions whose own window was cut, `[]` when none |
+| `options` | present only when some question's options no longer have a token span each: keyed by question id, with `total` (the options that question defines), `distinct` (the spans that reached the sequence) and `tokens_per_option` |
+
+A truncated answer is still an answer -- the head decides on the evidence it was given -- but a
+caller sizing states by character count cannot see the cut anywhere else in the response.
+
+`routing` records which checkpoint answered and why:
+
+| `routing` key | meaning |
+|---|---|
+| `model` | the checkpoint that answered: `english`, `multilingual` or `typed-decisions` |
+| `repo` | its public Hugging Face id |
+| `reason` | the sentence for the choice, naming the evidence it acted on |
+| `detection` | `laya.lang.analyse()` on the state -- `script`, `script_profile`, `language`, `is_english`, `language_undecided`, `diacritic_rate`, `non_latin_fraction`, `mixed_segment` -- or `null` when the route decided before reading the text |
+| `workflow` | the typed-decisions workflow the question ids match, or `null` |
+
+`detection` is `null` on every path that decides without reading the state: one forced by `model` or
+`task`, one answered by `lang` or `lang_guess`, or one that matched a typed-decisions workflow from
+the question ids. A `lang_guess` leaves no key of its own -- the hint it acted on is named in
+`reason`. The `model` and `task` branches report `workflow` as `null` too, because they answer
+before the question ids are read.
 
 ### Confidence: two numbers, not interchangeable
 
