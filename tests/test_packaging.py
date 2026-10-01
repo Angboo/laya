@@ -3,6 +3,7 @@
 Text parsing, not tomllib: the floor is 3.10 and tomllib arrives in 3.11.
 """
 import ast
+import fnmatch
 import os
 import re
 import shlex
@@ -160,6 +161,15 @@ def _invoked_workflow_tests(yaml_text):
                 invoked.update(re.findall(r"\btests/(test_[a-zA-Z0-9_]+\.py)\b", part))
             elif re.search(r"\bpython(?:\d+(?:\.\d+)?)?\s+.*?tests/(test_[a-zA-Z0-9_]+\.py)\b", part):
                 invoked.update(re.findall(r"\btests/(test_[a-zA-Z0-9_]+\.py)\b", part))
+            else:
+                # `unittest discover` runs a whole glob rather than naming files, so expand it
+                # against the tree. A lane that discovers `test_zh_*.py` has wired every suite
+                # the glob matches, and naming them again in the workflow would only drift.
+                found = re.search(r"\bunittest\s+discover\b.*?-s\s+tests\b"
+                                  r".*?-p\s+'?\"?([^'\" ]+)", part)
+                if found:
+                    invoked.update(fnmatch.filter(os.listdir(os.path.join(ROOT, "tests")),
+                                                  found.group(1)))
     return invoked
 
 
