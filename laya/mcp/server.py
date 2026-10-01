@@ -15,6 +15,9 @@ Environment (same meaning as laya.serve where it exists):
   LAYA_AUTO_TASK  "1" lets a request auto-route to the typed-decisions checkpoint
                   (same as laya.serve). It does not preload it: LAYA_MODELS still
                   decides what is built at startup.
+  LAYA_DEFAULT_MODEL  the checkpoint a state with no language evidence falls back to
+                  (same as laya.serve, including its aliases); an unset value leaves
+                  it to Router, an unresolvable one is a tool error.
 """
 
 from __future__ import annotations
@@ -36,8 +39,8 @@ except ImportError as exc:  # mcp extra not installed
     ) from exc
 
 # laya.serve only imports os/typing at module level, so reusing its helpers
-# keeps one meaning for LAYA_PRELOAD / LAYA_THREADS across the package.
-from laya.serve import _apply_thread_limit, _env_bool
+# keeps one meaning for LAYA_PRELOAD / LAYA_THREADS / LAYA_DEFAULT_MODEL across the package.
+from laya.serve import _apply_thread_limit, _default_model_option, _env_bool
 
 from .device import env_device
 from .tools import (
@@ -123,12 +126,14 @@ def _models_from_env() -> list[str]:
 def _ensure_router() -> Any:
     """Build the Router from the environment, following the laya.serve contract.
 
-    LAYA_DEVICE / LAYA_PRELOAD / LAYA_THREADS / LAYA_AUTO_TASK keep the same meaning as
-    in laya.serve (the helpers are reused, not duplicated). LAYA_MODELS follows the
-    serve comma-list but defaults to english+multilingual here, so typed-decisions stays
-    lazy: LAYA_AUTO_TASK=1 only lets a matching question schema route to it, and it is
-    then loaded on demand. The global is only set once the router is fully built, so a
-    failed preload stays retriable on the next tool call, and construction errors
+    LAYA_DEVICE / LAYA_PRELOAD / LAYA_THREADS / LAYA_AUTO_TASK / LAYA_DEFAULT_MODEL keep the
+    same meaning as in laya.serve (the helpers are reused, not duplicated). The last one
+    differs only in what an unresolvable value costs: serve refuses to start, while a stdio
+    server has no startup to refuse, so the ValueError rides on into the ToolError below.
+    LAYA_MODELS follows the serve comma-list but defaults to english+multilingual here, so
+    typed-decisions stays lazy: LAYA_AUTO_TASK=1 only lets a matching question schema route
+    to it, and it is then loaded on demand. The global is only set once the router is fully
+    built, so a failed preload stays retriable on the next tool call, and construction errors
     surface as ToolError payloads instead of being swallowed.
     """
     global _ROUTER
@@ -144,7 +149,8 @@ def _ensure_router() -> Any:
         try:
             _apply_thread_limit()
             router = Router(device=env_device(),
-                            auto_task_detection=_env_bool("LAYA_AUTO_TASK", False))
+                            auto_task_detection=_env_bool("LAYA_AUTO_TASK", False),
+                            **_default_model_option())
             if _env_bool("LAYA_PRELOAD", True):
                 router.preload(_models_from_env())
         except Exception as exc:

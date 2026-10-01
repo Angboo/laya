@@ -28,6 +28,7 @@ Everything is environment variables, so one image serves a laptop dev run and a 
 | `LAYA_MODELS` | comma list to preload (`english,multilingual,typed-decisions`); empty = all | all |
 | `LAYA_THREADS` | cap torch intra-op threads on CPU; keep it <= physical cores -- oversubscribing logical cores is a large regression | torch default |
 | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint | `0` |
+| `LAYA_DEFAULT_MODEL` | checkpoint a state with no language evidence falls back to; aliases such as `ml` resolve the way core resolves them, and an unresolvable name stops the server at startup | `english` |
 | `LAYA_API_KEY` | if set, require `Authorization: Bearer <key>` | none |
 | `LAYA_LOG_LEVEL` | uvicorn log level | `info` |
 | `LAYA_MAX_CONCURRENT` | requests admitted past auth at once; excess gets `503` | `16` |

@@ -47,6 +47,10 @@ services:
       LAYA_MODELS: "${LAYA_MODELS:-}"
       LAYA_THREADS: "${LAYA_THREADS:-${OMP_NUM_THREADS:-4}}"
       LAYA_AUTO_TASK: "${LAYA_AUTO_TASK:-0}"
+      # The checkpoint a state with no language evidence falls back to. Empty keeps Router's own
+      # default (english); set `multilingual` for mostly-non-English traffic. An unresolvable
+      # name stops the container at startup rather than serving a configuration nobody asked for.
+      LAYA_DEFAULT_MODEL: "${LAYA_DEFAULT_MODEL:-}"
       # Empty keeps Router's own default (2). Set 3 when LAYA_AUTO_TASK is on: that adds a
       # third checkpoint routing can choose on demand, and a cap below it reloads one per switch.
       LAYA_MAX_LOADED: "${LAYA_MAX_LOADED:-}"

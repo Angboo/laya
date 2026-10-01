@@ -414,6 +414,11 @@ router.route({"body": "Esqueci minha senha"}).model                 # -> multili
 router.route({"body": "Please refund the duplicate charge"}).model  # -> english
 ```
 
+Running one of the shipped servers rather than your own `Router`, the same setting is
+`LAYA_DEFAULT_MODEL=multilingual` — in the environment of `laya-serve`, the MCP server or the
+`laya-serve` container ([docs/docker.md](docs/docker.md)). It is the routing fallback only: text
+the detector can place is routed on what it detects, whatever this is set to.
+
 ### Heterogeneous routed batches
 
 If a lazy router receives an interleaved workload whose requests route to different checkpoints, calling `predict()` in a loop can still cause unnecessary checkpoint churn when the required checkpoints exceed the resident cache, for example with `max_loaded=1` or when `typed-decisions` is also used.
@@ -561,7 +566,9 @@ The endpoint shares forward passes via `Router.predict_batch` and returns an arr
 Configuration is by environment variable: `LAYA_HOST`, `LAYA_PORT`,
 `LAYA_DEVICE`, `LAYA_PRELOAD`, `LAYA_MODELS` (comma list to preload),
 `LAYA_THREADS` (cap torch intra-op threads for CPU inference — keep at or below
-physical cores), `LAYA_AUTO_TASK`, `LAYA_MAX_LOADED` (checkpoints resident at
+physical cores), `LAYA_AUTO_TASK`, `LAYA_DEFAULT_MODEL` (the checkpoint a state with no
+language evidence falls back to, `english` by default; set it to `multilingual` when most of
+your traffic is not English), `LAYA_MAX_LOADED` (checkpoints resident at
 once, 2 by default; raise it to 3 when `LAYA_AUTO_TASK` makes a third one
 reachable on demand, or the server rebuilds one every time routing switches),
 and `LAYA_API_KEY` (when set, clients must

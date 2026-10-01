@@ -24,6 +24,8 @@ env var                    meaning                                        defaul
                            Keep <= physical cores; oversubscribing the     default)
                            logical/hyperthread count is a large regression.
 ``LAYA_AUTO_TASK``         auto-route to the typed-decisions checkpoint   0
+``LAYA_DEFAULT_MODEL``     fallback checkpoint when a state carries no   (english)
+                           language evidence; aliases like ml work
 ``LAYA_MAX_LOADED``        checkpoints kept resident at once. Below what  2
                            routing can choose, one reloads per switch.
 ``LAYA_API_KEY``           if set, require ``Authorization: Bearer <it>``  (none)
@@ -262,6 +264,35 @@ def _resolve_max_loaded() -> Optional[int]:
     except ValueError:
         return None
     return n if n > 0 else None
+
+
+def _default_model_option() -> Dict[str, str]:
+    """Routing fallback from ``LAYA_DEFAULT_MODEL``, as a ``Router`` keyword; unset sends nothing.
+
+    ``Router.default`` answers the two states that carry no language evidence at all: no letters,
+    and Latin script too short to identify ("Quero cancelar", "Esqueci minha senha"). The README
+    tells a deployment whose traffic is mostly non-English to set ``Router(default="multilingual")``,
+    and this is the only way such a deployment can say so without writing its own server. Left out
+    of the constructor when unset, so the value cannot drift from ``Router``'s own default -- the
+    same reasoning as ``_resolve_max_loaded`` above.
+
+    The name goes through ``normalise_name``, so the accepted set and its aliases are core's and
+    not a list restated here. Unlike the numeric knobs, a typo here has no harmless fallback: a
+    silently-ignored value would keep routing the ambiguous states to the checkpoint the operator
+    just said cannot read them, so this raises and the caller refuses to start rather than serve a
+    configuration nobody asked for. ``laya.mcp.server`` turns the same error into a ``ToolError``,
+    because a stdio server has no startup to refuse.
+    """
+    raw = os.environ.get("LAYA_DEFAULT_MODEL")
+    if raw is None or not raw.strip():
+        return {}
+    from .router import normalise_name
+
+    try:
+        name = normalise_name(raw)
+    except ValueError as error:
+        raise ValueError("invalid LAYA_DEFAULT_MODEL %r: %s" % (raw.strip(), error)) from None
+    return {"default": name}
 
 
 def _resolve_port() -> int:
@@ -566,6 +597,12 @@ def build_router():
     max_loaded = _resolve_max_loaded()
     if max_loaded is not None:
         options["max_loaded"] = max_loaded
+    # Resolved before the Router is built: a name `Router` would reject is a configuration error,
+    # and `_resolve_port`'s idiom applies -- exit with the message, not a traceback.
+    try:
+        options.update(_default_model_option())
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     router = Router(**options)
     if _env_bool("LAYA_PRELOAD", True):
         router.preload(preload_names)
