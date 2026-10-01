@@ -16,14 +16,16 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-if "torch" not in sys.modules:
+try:
+    import torch
+except ImportError:
     t = types.ModuleType("torch")
-    t.cuda = types.ModuleType("torch.cuda")
-    t.cuda.OutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
     # laya/common.py annotates `proper_reward` with both at module scope, so importing
     # laya.agent through this stub needs them present even though no test touches a tensor.
     t.Tensor = type("Tensor", (), {})
     t.dtype = type("dtype", (), {})
+    t.cuda = types.ModuleType("torch.cuda")
+    t.cuda.OutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
     t.nn = types.ModuleType("torch.nn")
     t.nn.Module = type("Module", (), {})
     t.nn.MultiheadAttention = type("MultiheadAttention", (), {})
@@ -42,6 +44,7 @@ if "torch" not in sys.modules:
     sys.modules["torch.nn.functional"] = t.nn.functional
     sys.modules["torch.utils"] = t.utils
     sys.modules["torch.utils.checkpoint"] = t.utils.checkpoint
+
 
 from laya.agent import _InferenceGate
 
