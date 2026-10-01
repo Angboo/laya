@@ -6,7 +6,9 @@ FROM ${PYTHON_IMAGE} AS build
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN python -m venv /opt/venv
+# The virtualenv is copied into the runtime image. Upgrade its bundled installers
+# so an up-to-date base does not still ship ensurepip's older pip/setuptools (#739).
+RUN python -m venv --upgrade-deps /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # CPU by default on AMD64 and ARM64. The CUDA override selects cu128 and the
