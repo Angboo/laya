@@ -298,7 +298,8 @@ from laya.integrations import langchain as langchain_module
 from laya.integrations import llamaindex as llamaindex_module
 from laya.router import Router
 
-CONTROLS = tuple(_controls.PREDICT_CONTROLS) + tuple(_controls.HOOK_CONTROLS)
+CONTROLS = (tuple(_controls.PREDICT_CONTROLS) + tuple(_controls.DECISION_CONTROLS)
+            + tuple(_controls.HOOK_CONTROLS))
 
 
 def _params(fn):
@@ -308,6 +309,8 @@ def _params(fn):
 # The shared tuples name the arguments the shared builders accept, in both directions.
 check("controls/budget tuple names budget_kwargs",
       set(_params(_controls.budget_kwargs)), set(_controls.PREDICT_CONTROLS))
+check("controls/decision tuple names decision_kwargs",
+      set(_params(_controls.decision_kwargs)), set(_controls.DECISION_CONTROLS))
 check("controls/hook tuple names hook_kwargs",
       set(_params(_controls.hook_kwargs)), set(_controls.HOOK_CONTROLS))
 
@@ -354,7 +357,8 @@ class RecordingAgent:
         }
 
 
-ALL_CONTROLS = {"max_len": 1024, "head_max_len": 512, "hooks": ["H"], "on_predict_start": "S",
+ALL_CONTROLS = {"max_len": 1024, "head_max_len": 512, "lang": "fr", "min_confidence": 0.4,
+                "hooks": ["H"], "on_predict_start": "S",
                 "on_predict_end": "E", "hooks_raise": True, "hooks_timeout": 0.5}
 
 
@@ -384,13 +388,16 @@ def guard_call(**controls):
 
 for label, call in (("router", crew_call), ("guard", guard_call)):
     check("controls/%s with nothing set sends nothing" % label, call(), {})
-    check("controls/%s forwards all seven" % label, call(**ALL_CONTROLS), ALL_CONTROLS)
+    check("controls/%s forwards every control" % label, call(**ALL_CONTROLS), ALL_CONTROLS)
     check("controls/%s forwards one budget alone" % label, call(head_max_len=256),
           {"head_max_len": 256})
+    check("controls/%s forwards lang alone" % label, call(lang="fr"), {"lang": "fr"})
+    check("controls/%s forwards min_confidence alone" % label, call(min_confidence=0.4),
+          {"min_confidence": 0.4})
     # 0 and [] are decisions, not absences: truthiness tests here would drop them.
     check("controls/%s keeps falsy values" % label,
-          call(head_max_len=0, hooks=[], hooks_raise=False),
-          {"head_max_len": 0, "hooks": [], "hooks_raise": False})
+          call(head_max_len=0, hooks=[], hooks_raise=False, min_confidence=0.0),
+          {"head_max_len": 0, "hooks": [], "hooks_raise": False, "min_confidence": 0.0})
     check("controls/%s alongside model" % label,
           call(model="laya-multilingual", max_len=1024),
           {"model": "laya-multilingual", "max_len": 1024})
@@ -426,6 +433,16 @@ check("controls/remote body omits unset budgets",
       [k for k in remote_body({}) if k in _controls.PREDICT_CONTROLS], [])
 check("controls/remote body keeps a zero",
       remote_body({"head_max_len": 0}).get("head_max_len"), 0)
+# `lang` / `min_confidence` are laya-serve `BODY_CONTROLS` too, so the same override reaches the
+# remote node -- and an unset one stays out of the body rather than shadowing the deployment.
+check("controls/remote body carries the decision controls",
+      {k: v for k, v in remote_body({"lang": "es", "min_confidence": 0.3}).items()
+       if k in _controls.DECISION_CONTROLS},
+      {"lang": "es", "min_confidence": 0.3})
+check("controls/remote body omits unset decision controls",
+      [k for k in remote_body({}) if k in _controls.DECISION_CONTROLS], [])
+check("controls/remote body keeps min_confidence=0.0",
+      remote_body({"min_confidence": 0.0}).get("min_confidence"), 0.0)
 
 # A hook is a Python callable that runs inside `predict`; a serve node cannot receive one. Saying
 # so beats reporting success after never calling it.

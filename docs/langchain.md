@@ -8,7 +8,7 @@ Laya provides fast, non-autoregressive decision components for **LangChain** and
 * **`LayaEvaluator`**: Rubric-based output grading and hallucination evaluation.
 * **`LayaDecision`**: Schema-driven decisions -- a JSON schema or pydantic model in, schema-shaped values out.
 
-Every node also takes core's five per-call prediction-hook arguments (`hooks`, `on_predict_start`, `on_predict_end`, `hooks_raise`, `hooks_timeout`).
+Every node also takes core's per-call decision controls -- the two token budgets (`max_len`, `head_max_len`), the language and abstention controls (`lang`, `min_confidence`), and the five prediction-hook arguments (`hooks`, `on_predict_start`, `on_predict_end`, `hooks_raise`, `hooks_timeout`).
 
 Supports both **local in-process inference** (`Agent` or `Router`) and **remote HTTP inference** against your own `laya-serve` without requiring PyTorch on edge clients.
 
@@ -350,6 +350,28 @@ checkpoint's defaults, which is the point of not raising `agent.cfg["head_max_le
 **Remote mode forwards it.** A node with a `base_url` sends `max_len` / `head_max_len` in the
 request body, and `laya-serve` applies them up to its `LAYA_MAX_TOKEN_BUDGET` ceiling (8192 by
 default); a larger value comes back as a 422.
+
+### Language and abstention
+
+Every runnable also takes `lang` and `min_confidence`, the two per-request controls `Agent.predict`
+and `Router.predict` both read and `laya-serve` both accepts in the body. `lang` pins the language
+the state is routed and answered in -- select the answering checkpoint's per-language calibration
+rather than relying on built-in detection -- and `min_confidence` is core's abstention gate: a
+decision under it comes back as an abstention instead of a forced choice. Both are forwarded on the
+local and the remote path, and an unset one is omitted rather than sent as `None` so it cannot
+shadow a checkpoint's own default. `min_confidence=0.0` and `lang=""` are real values, not absences,
+and are forwarded as given.
+
+```python
+router = LayaRouter(
+    criteria={"billing": "invoices", "tech": "bugs"},
+    lang="es",                        # route and answer in Spanish
+    min_confidence=0.3,               # abstain below a 0.3 calibrated confidence
+)
+```
+
+Unlike `task` and `lang_guess` -- Router-only routing keywords a direct `Agent.predict` rejects --
+these two are safe on every runner and every deployment.
 
 ---
 
