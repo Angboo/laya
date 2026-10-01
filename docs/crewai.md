@@ -159,7 +159,7 @@ to their own agent; both repeats gave the same count.
 | Tasks on their own agent | 2/59 | 7/59 | 16/59 |
 | Median ms per task | 146 | 190 | 265 |
 
-Before this, the same run could not be asked at all: `LayaCrewRouter.__init__() got an unexpected
+Before this, the same run could not be made at all: `LayaCrewRouter.__init__() got an unexpected
 keyword argument 'max_len'`.
 
 Absolute accuracy is not the claim here -- the checkpoint is not a MASSIVE classifier and 59 similar
