@@ -8,10 +8,17 @@ too large, so a regression in one is a regression in the only diagnostic they ge
 No network: the checkpoint is a tiny local one built here, the same shape
 `tests/test_download.py` uses.
 
+Section 7 spends that same tiny agent on `examples/39_error_handling.py`: it runs the page and holds
+what it promises to what it prints.
+
 Run: python tests/test_load_errors.py
 """
+import ast
+import contextlib
+import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -30,6 +37,7 @@ from transformers import BertConfig, BertModel, PreTrainedTokenizerFast  # noqa:
 
 from laya import load  # noqa: E402
 from laya.common import DecisionModel  # noqa: E402
+from laya.router import Router  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -218,6 +226,190 @@ err = load_error(short_temp)
 check_true("short temperature/raises ValueError", isinstance(err, ValueError), repr(err))
 check_true("short temperature/names the field", "temperature" in str(err), str(err))
 check_true("short temperature/says the shape", "list of 3" in str(err), str(err))
+
+
+# ------------------------------------ 7. examples/39 must run, and must promise what it prints
+# Two defects on one page, and no job could see either: examples are not executed by the test job,
+# and nothing read a page's prose.
+#
+#   * The file stopped at case 2 in a checkout without a vendored `models/` directory -- which is
+#     every checkout, since `models/` is not in the repository. `os.path.dirname` was handed
+#     `MODELS["english"]`, a `Router` spec, and `examples/_common.py`'s `checkpoint` returns that as
+#     the tuple `(repo, subfolder)` when the directory is missing: `TypeError: expected str, bytes
+#     or os.PathLike object, not tuple`, with cases 3, 4 and 5 never reached -- under a docstring
+#     that says "Every case below is executed".
+#   * Banner item 3 promised "a low-level RuntimeError" for a `choice` question with empty criteria,
+#     three lines above the output that prints `ValueError`, and its conclusion said both shapes
+#     "reach the scorer with zero options and blow up in top-k". They reach neither; the validator
+#     measured one section up rejects them by name before the state is encoded.
+#
+# So the page is run here on the tiny checkpoint built above, and its own output is the witness: for
+# each numbered case, the exception types the banner lists must be exactly the types that case's own
+# section prints.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
+import _common  # noqa: E402 -- the helpers the example imports
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "39_error_handling.py"
+SOURCE = EXAMPLE.read_text(encoding="utf-8")
+TREE = ast.parse(SOURCE)
+AGENT_SRC = (Path(__file__).resolve().parents[1] / "laya" / "agent.py").read_text(encoding="utf-8")
+
+ERR_TOKEN = re.compile(r"\b[A-Z][A-Za-z]+(?:Error|Exception)\b")
+# what a section shows it was given: the line the page prints from `type(e).__name__`, or from its
+# own `except <Type>` clause. The banner is excluded by slicing the output per heading.
+EVIDENCE = re.compile(r"(?:raised|->)\s+([A-Z][A-Za-z]+(?:Error|Exception))\b")
+# A rejected question never reaches the decision head, so a page may not send the reader there.
+LIE_WORDS = ("top-k", "reach the scorer", "reaches the scorer", "blow up", "blows up")
+
+
+def _types(text):
+    return sorted(set(ERR_TOKEN.findall(text)))
+
+
+def _banner_blurb():
+    for node in ast.walk(TREE):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "banner":
+            for arg in node.args[2:]:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    return arg.value
+    return ""
+
+
+def _printed_prose():
+    """Every string the page prints -- its claims, as opposed to the code that makes them."""
+    parts = []
+    for node in ast.walk(TREE):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "print":
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    parts.append(arg.value)
+    return " ".join(parts)
+
+
+BLURB = _banner_blurb()
+ITEM = {}
+for _line in BLURB.splitlines():
+    _m = re.match(r"^\s*(\d)\..*?->\s*(.*)$", _line)
+    if _m:
+        ITEM[int(_m.group(1))] = _m.group(2)
+# Everything the page asserts -- its five banner lines and its printed conclusions. `EVIDENCE` is
+# only searched over the per-case sections, so the banner cannot vouch for itself.
+CLAIMS = PROSE = _printed_prose() + " " + BLURB
+
+# `Router` specs and checkpoint directories are different types, and only one of them is a path.
+_has_local = _common.has_local
+_common.has_local = lambda name="english": False
+SPEC_WITHOUT_MODELS = _common.checkpoint("english")
+_common.has_local = _has_local
+check("39/a Router spec with no models/ directory is not a usable path",
+      isinstance(SPEC_WITHOUT_MODELS, str) and os.path.isdir(SPEC_WITHOUT_MODELS), False)
+
+# Section 5's checkpoint is the one to answer the page's `load("english")` with: it ships the
+# shipped budgets (`max_len=512`, `head_max_len=192`), so the page's four inference cases take the
+# same code paths they take against the English checkpoint.
+example_agent = load(str(wide), device="cpu")
+_real_load = _common.load
+_common.load = lambda name=None, *args, **kwargs: example_agent
+_ran, _crash, _stdout = False, "", io.StringIO()
+try:
+    with contextlib.redirect_stdout(_stdout):
+        exec(compile(SOURCE, str(EXAMPLE), "exec"),
+             {"__name__": "example_39", "__file__": str(EXAMPLE)})
+    _ran = True
+except BaseException as exc:  # noqa: BLE001 -- running the page is the test
+    _crash = "%s: %s" % (type(exc).__name__, exc)
+finally:
+    _common.load = _real_load
+
+check_true("39/the whole page runs to its last case", _ran, _crash)
+OUT = _stdout.getvalue()
+_marks = list(re.finditer(r"-- (\d)\. [^\n]*? --", OUT))
+SECTION = {}
+for _i, _m in enumerate(_marks):
+    _stop = _marks[_i + 1].start() if _i + 1 < len(_marks) else len(OUT)
+    SECTION[int(_m.group(1))] = OUT[_m.end():_stop]
+check("39/its own output shows all five cases ran", sorted(SECTION), [1, 2, 3, 4, 5])
+check("39/the banner lists five cases", sorted(ITEM), [1, 2, 3, 4, 5])
+
+for _case in (1, 2, 3, 4, 5):
+    check("39/case %d promises the exception it prints" % _case,
+          _types(ITEM.get(_case, "")), sorted(set(EVIDENCE.findall(SECTION.get(_case, "")))))
+SHOWN = sorted({t for section in SECTION.values() for t in EVIDENCE.findall(section)})
+check("39/the page claims no exception its output never shows",
+      sorted(set(_types(CLAIMS)) - set(SHOWN)), [])
+check("39/no sentence sends a rejected question to the decision head",
+      [w for w in LIE_WORDS if w in CLAIMS], [])
+
+# case 3's message comes from one validator, so the page has to name it: "ValueError" alone would
+# fit a hundred other raises, and the reader is left pattern-matching the traceback.
+check_true("39/case 3 names the validator that rejects it", "_check_question" in CLAIMS, CLAIMS[:120])
+check_true("39/naming it is possible: the validator is in the runtime",
+           "def _check_question" in AGENT_SRC, "")
+check_true("39/what it reports is the question, as the page says",
+           "'q'" in SECTION.get(3, ""), SECTION.get(3, "")[:120])
+
+# case 4 quotes the guard as an expression, so the expression has to be the code's -- under any
+# name `render_options` is bound to, and any name its count is stored in.
+_assign = re.search(r"(\w+) = len\(render_options\((\w+)\)\)", AGENT_SRC)
+check_true("39/the guard it quotes is the guard the code compares",
+           _assign is not None and "len(markers) != %s:" % _assign.group(1) in AGENT_SRC,
+           AGENT_SRC[AGENT_SRC.find("len(markers)"):][:60] if "len(markers)" in AGENT_SRC else "")
+check_true("39/quoted rather than paraphrased",
+           "len(markers)" in PROSE and "render_options" in PROSE, "")
+
+# the crash class, statically: `MODELS` values can be `(repo, subfolder)` (witnessed above), so no
+# filesystem call may take one, and the missing-path case must come from `LOCAL_MODELS`.
+_IN_OSPATH = []
+_MISSING = ""
+for node in ast.walk(TREE):
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "os.path"):
+        if any(isinstance(n, ast.Name) and n.id == "MODELS" for n in ast.walk(node)):
+            _IN_OSPATH.append("os.path.%s" % node.func.attr)
+    if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "missing" for t in node.targets):
+        _MISSING = ast.unparse(node.value)
+check("39/no filesystem call is handed a Router spec", _IN_OSPATH, [])
+check_true("39/the missing path is built from the checkpoint directory",
+           "LOCAL_MODELS" in _MISSING, _MISSING)
+
+# the counts in its prose are the counts in its code, and each label names the dict it says.
+SIZES_BY_NAME = {}
+for node in ast.walk(TREE):
+    if isinstance(node, ast.Assign) and node.targets and isinstance(node.targets[0], ast.Name):
+        for call in ast.walk(node.value):
+            if (isinstance(call, ast.Call) and getattr(call.func, "id", "") == "range"
+                    and call.args and isinstance(call.args[0], ast.Constant)):
+                SIZES_BY_NAME[node.targets[0].id] = call.args[0].value
+                break
+check_true("39/the two option budgets it sets up are named",
+           len(SIZES_BY_NAME) >= 2, str(SIZES_BY_NAME))
+check("39/it states no option count it does not build",
+      sorted(n for n in {int(x) for x in re.findall(r"(\d+) options", PROSE)}
+             if n not in set(SIZES_BY_NAME.values())), [])
+_MISPAIRED = []
+for node in ast.walk(TREE):
+    if isinstance(node, ast.Tuple) and len(node.elts) == 2:
+        _label, _var = node.elts
+        if (isinstance(_label, ast.Constant) and isinstance(_label.value, str)
+                and re.fullmatch(r"\d+ options", _label.value.strip())
+                and isinstance(_var, ast.Name) and _var.id in SIZES_BY_NAME
+                and int(_label.value.split()[0]) != SIZES_BY_NAME[_var.id]):
+            _MISPAIRED.append("%s with %s=%d" % (_label.value.strip(), _var.id, SIZES_BY_NAME[_var.id]))
+check("39/each option-count label names the dict of that size", _MISPAIRED, [])
+
+# Controls: the two sentences this section replaced are kept verbatim, so a rule that matches
+# nothing cannot pass for being empty.
+HISTORIC_BANNER_3 = "a low-level RuntimeError, not an answer;"
+HISTORIC_PRINT_3 = ("   -> both the empty dict and the empty list reach the scorer with zero options "
+                    "and blow      up in top-k. No answer dict is returned; treat an empty schema as "
+                    "a caller bug.")
+check("39/the case rule still rejects the banner line it replaced",
+      _types(HISTORIC_BANNER_3) == sorted(set(EVIDENCE.findall(SECTION.get(3, "")))), False)
+check("39/the sentence rule still rejects the conclusion it replaced",
+      bool([w for w in LIE_WORDS if w in HISTORIC_PRINT_3]), True)
+check("39/the exception-name rule still rejects a type the run never showed",
+      sorted(set(_types(HISTORIC_BANNER_3)) - set(SHOWN)), ["RuntimeError"])
 
 
 TMP.cleanup()
