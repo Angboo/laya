@@ -2555,3 +2555,132 @@ def test_http_api_page_documents_the_decision_response_keys():
     assert usage["truncated"] == (usage["state_tokens_dropped"] > 0), usage
     assert (usage["truncated_questions"] == []) == (not usage["truncated"]), usage
     assert 0 < usage["state_tokens"] and usage["state_tokens_dropped"] < usage["state_tokens"], usage
+
+
+def _answer_literal_keys(rel):
+    """What one agent stamps on each answer, read out of its own dict literals.
+
+    The three `answers[qid] = {...}` literals of the decode step, keyed by the `"type"` each one
+    writes. From the source rather than transcribed, for the same reason as `_decision_response_site`:
+    a hand-copied list would be a third copy of the contract to keep in step.
+    """
+    path = os.path.join(ROOT, rel)
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not node.targets:
+            continue
+        target = node.targets[0]
+        if not (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                and target.value.id == "answers" and isinstance(node.value, ast.Dict)):
+            continue
+        names = [k.value for k in node.value.keys
+                 if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        stamp = next((v.value for k, v in zip(node.value.keys, node.value.values)
+                      if isinstance(k, ast.Constant) and k.value == "type" and isinstance(v, ast.Constant)),
+                     None)
+        if stamp in ("choice", "score", "noul"):
+            found.setdefault(stamp, set()).update(names)
+    assert set(found) == {"choice", "score", "noul"}, "%s builds no answer literal for %s" % (
+        rel, sorted({"choice", "score", "noul"} - set(found)))
+    return {qtype: sorted(keys) for qtype, keys in found.items()}
+
+
+def _gate_written_keys():
+    """Every key the abstention gate writes onto an answer, from `laya/confidence.py` itself."""
+    path = os.path.join(ROOT, "laya", "confidence.py")
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    written = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not node.targets:
+            continue
+        target = node.targets[0]
+        if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                and target.value.id == "a" and isinstance(target.slice, ast.Constant)):
+            written.add(target.slice.value)
+    return sorted(written)
+
+
+def _md_answer_table(section):
+    """The `| answer type | keys |` table as rows: which keys the page says an answer carries.
+
+    Only backticks name keys, and only a lowercase identifier among them: prose in a cell is
+    description, and `"0".. "k-1"` names the shape of `probabilities` rather than a field. A dotted
+    name is one key reached through another -- `action.act_probability` is the `action` dict -- so it
+    counts as its head.
+    """
+    lines = section.splitlines()
+    start = lines.index("| answer type | keys |")
+    rows = {}
+    for line in lines[start + 2:]:
+        if not line.strip():
+            break
+        cells = line.split("|")
+        names = set()
+        for token in cells[2].split("`")[1::2]:
+            head = token.split(".")[0]
+            if head.isidentifier() and head == head.lower():
+                names.add(head)
+        rows[cells[1].strip().strip("`")] = names
+    assert set(rows) == {"choice", "score", "noul", "all", "gate"}, (
+        "the answer table rows are %s; this gate reads one row per question type, one for the keys "
+        "every answer shares, and one for the gate report" % sorted(rows))
+    return rows
+
+
+def test_http_api_page_documents_the_gate_report_on_an_answer():
+    r"""The page documents every key an answer can carry, including the three the gate adds (#361).
+
+    `### Response` describes the answer key set in a table and the request controls in another, and the
+    usage and routing tables of the same page are already held to the code in both directions. The
+    answer table was the one left out, and it had drifted in the way only a table nobody checks drifts:
+    it named the three keys an agent builds and the three `apply_confidence_gate` writes onto the very
+    same answers in none of them. A caller could set `min_confidence` from the request table and then
+    read a response page that said the answer had been "marked" without saying what the mark is called,
+    what state the answer is in, or what threshold produced it.
+
+    So the table is compared against both writers: the `answers[qid] = {...}` literals of each agent,
+    and the `a[...] = ...` assignments of the gate. Both directions, and against the printed sample too
+    -- which must carry no gate report, because the request the page prints sets no threshold.
+    """
+    page = open(os.path.join(ROOT, "docs", "http-api.md"), encoding="utf-8").read()
+    section = page[page.index("### Response"):page.index("### Confidence")]
+    rows = _md_answer_table(section)
+
+    torch_site = _answer_literal_keys(os.path.join("laya", "agent.py"))
+    onnx_site = _answer_literal_keys(os.path.join("laya", "onnx_agent.py"))
+    assert torch_site == onnx_site, (
+        "the two agents build different answers, so the page cannot describe both: torch %s, onnx %s"
+        % (torch_site, onnx_site))
+
+    gate = _gate_written_keys()
+    assert gate, "the gate writes no `a[...] = ...` in laya/confidence.py; retarget this"
+    assert sorted(rows["gate"]) == gate, (
+        "the gate report says %s, `apply_confidence_gate` and `flag_low_confidence` write %s"
+        % (sorted(rows["gate"]), gate))
+
+    # The row's first column is the discriminator every answer stamps, so it is documented by the row
+    # that documents the type rather than as a key inside the cell.
+    discriminator = {"type"}
+    for qtype, built in torch_site.items():
+        documented = rows[qtype] | rows["all"] | rows["gate"] | discriminator
+        assert documented == set(built) | set(gate), (
+            "the %s rows say an answer carries %s, the agents build %s and the gate adds %s" % (
+                qtype, sorted(documented), built, gate))
+
+    # And the sample is one answer to the request the page itself prints, which sends no threshold:
+    # so its answers show the always-on keys and no gate report at all.
+    curl = page[page.index("### `POST /v1/systemone`"):page.index("### Response")]
+    assert "min_confidence" not in curl.split("```bash", 1)[1].split("```", 1)[0], (
+        "the printed request now sets a threshold, so the sample below it has to show the gate report")
+    sample = json.loads(section.split("```json", 1)[1].split("```", 1)[0])
+    assert sample["answers"], "the printed sample carries no answers"
+    for qid, answer in sample["answers"].items():
+        assert not set(gate) & set(answer), (
+            "%s is ungated in the printed request but carries the gate key %s" % (
+                qid, sorted(set(gate) & set(answer))))
+        assert set(answer) == discriminator | rows[answer["type"]] | rows["all"], (
+            "the sample's %s answer says %s, its table row plus the shared row say %s" % (
+                qid, sorted(answer), sorted(discriminator | rows[answer["type"]] | rows["all"])))
