@@ -31,6 +31,9 @@ const gatedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, answer_conf
   abstention_threshold: 0.8 };
 // @ts-expect-error The gate writes `true` or writes nothing, so a cleared answer has no flag at all.
 const clearedAnswer: ChoiceAnswer = { ...gatedAnswer, low_confidence: false };
+// An ungated call is the ordinary answer shape: no flag, no gate state, no threshold echo.
+const ungatedReport: ChoiceAnswer = { type: 'choice', confidence: 0.5, answer_confidence: 0.42,
+  choice: 'a', probabilities: { a: 0.42 } };
 // @ts-expect-error An answer must carry the calibrated confidence it was gated on.
 const uncalibratedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, choice: 'a',
   probabilities: { a: 0.5 } };
