@@ -115,6 +115,7 @@ jobs:
           python tests/test_onnx_long.py
           python tests/test_onnx_sort.py
           python tests/test_download.py
+          python tests/test_verify_checkpoints.py
           python tests/test_shortlist.py
           python tests/test_decision_model.py
           python tests/test_head_checkpointing.py
@@ -300,7 +301,7 @@ jobs:
         run: |
           for t in test_router test_criteria test_batch test_predict_long \
                    test_structured test_structured_api test_onnx_lang_parity \
-                   test_download test_shortlist test_decision_model \
+                   test_download test_verify_checkpoints test_shortlist test_decision_model \
                    test_head_checkpointing test_packaging test_doc_tables \
                    test_tokenizer_cache test_tokenizer_concurrency test_lazy_import \
                    test_runtime_fixes test_lang_guess test_identifier_complexity \
