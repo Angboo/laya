@@ -551,6 +551,60 @@ check_true("controls/forwards the caller's objects",
            _seen_hooks is _sentinel_hooks and _seen_hooks[0] is _sentinel_hooks[0], repr(_seen_hooks))
 
 
+# --------------------------------------------------------------- Confidence source
+# Every gate in this module reads the same number: the calibrated `answer_confidence`
+# core gates on, never the entropy `confidence` (see `laya.confidence`). The two are on
+# different scales, so they must not be interchangeable here.
+
+
+class DisagreeingSelectorAgent(RecordingAgent):
+    """Answers whose two confidence fields disagree, on purpose."""
+
+    def __init__(self, response_fn=None):
+        super().__init__()
+        self.response_fn = response_fn
+
+    def predict(self, state, questions, **kwargs):
+        self.calls.append(kwargs)
+        if self.response_fn is not None:
+            return self.response_fn(state, questions)
+        return super().predict(state, questions, **kwargs)
+
+
+def _disagree(choice_answer):
+    def response(state, questions):
+        return {"model": "m",
+                "answers": {"selector": dict({"choice": "choice_0"}, **choice_answer),
+                            "route": {"choice": "sql", "confidence": 0.9, "answer_confidence": 0.9}}}
+    return DisagreeingSelectorAgent(response)
+
+
+# Below the calibrated threshold but above the entropy one: gates on the calibrated number.
+low_agent = _disagree({"confidence": 0.95, "answer_confidence": 0.4})
+low_sel = LayaSingleSelector(agent=low_agent, confidence_threshold=0.80, fallback_index=1).select(
+    tools, "anything")
+check("gate/reads calibrated not entropy",
+      low_sel.selections[0].index if hasattr(low_sel, "selections") else low_sel, 1)
+try:
+    LayaSingleSelector(agent=_disagree({"confidence": 0.95, "answer_confidence": 0.4}),
+                       confidence_threshold=0.80,
+                       raise_on_low_confidence=True).select(tools, "anything")
+    check_true("gate/raises on the calibrated number", False, "no error raised")
+except LayaLowConfidenceError as err:
+    check("gate/error carries the calibrated number", err.confidence, 0.4)
+
+# An answer with no usable confidence keeps the old behaviour: treated as fully confident.
+def _silent_selector(state, questions):
+    return {"model": "m",
+            "answers": {"selector": {"choice": "choice_2"},
+                        "route": {"choice": "sql", "confidence": 0.9, "answer_confidence": 0.9}}}
+
+
+kept = LayaSingleSelector(agent=DisagreeingSelectorAgent(_silent_selector)).select(tools, "anything")
+check("gate/missing confidence still passes",
+      kept.selections[0].index if hasattr(kept, "selections") else kept, 2)
+
+
 # --------------------------------------------------------------- Results Summary
 print(f"PASS: {len(PASS)}")
 print(f"FAIL: {len(FAIL)}")

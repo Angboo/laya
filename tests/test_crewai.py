@@ -452,6 +452,67 @@ except Exception as exc:
     check_true("controls/guard remote refuses hooks", False, type(exc).__name__)
 
 
+# --------------------------------------------------------------- Confidence source
+# The threshold gates on core's own gate number (`_gate_confidence`): `answer_confidence` first,
+# falling back to the entropy `confidence` so an answer that carries only the older field is
+# still gated rather than silently passed (fail-closed). The entropy-only checks below are the
+# ones that regress-protect that fallback: a "read `answer_confidence` or treat as fully
+# confident" rule -- which is what `answer_confidence_value` returns -- would let a 0.10 entropy
+# answer through a 0.80 gate, and those checks would go RED.
+
+
+class DisagreeingAgent(MockLayaAgent):
+    """Answers whose two confidence fields disagree, on purpose."""
+
+
+def _disagreeing_router(**kwargs):
+    def response(state, questions):
+        return {"model": "mock-crew-router",
+                "answers": {"delegation": {"choice": "agent_0", "confidence": 0.95,
+                                           "answer_confidence": 0.4}}}
+    return LayaCrewRouter(agent=DisagreeingAgent(response), **kwargs)
+
+
+# Below the calibrated threshold but above the entropy one: gates on the calibrated number.
+low = _disagreeing_router(confidence_threshold=0.80, fallback_agent_index=1)
+decided = low.route("anything", agents)
+check("gate/reads calibrated not entropy", decided.agent_index, 1)
+try:
+    _disagreeing_router(confidence_threshold=0.80, raise_on_low_confidence=True).route("anything",
+                                                                                       agents)
+    check_true("gate/raises on the calibrated number", False, "no error raised")
+except LayaLowConfidenceError as err:
+    check("gate/error carries the calibrated number", err.confidence, 0.4)
+
+
+# Fail-closed: an answer carrying ONLY the entropy field, below the threshold, is still gated.
+# This is the case a "calibrated number or nothing" reading gets wrong -- it would see no
+# `answer_confidence`, treat the answer as fully confident, and let a 0.10 answer past a 0.80
+# gate. Above the threshold the same shape passes.
+def _entropy_router(conf, **kwargs):
+    def response(state, questions):
+        return {"model": "mock-crew-router",
+                "answers": {"delegation": {"choice": "agent_0", "confidence": conf}}}
+    return LayaCrewRouter(agent=DisagreeingAgent(response), **kwargs)
+
+
+ent_low = _entropy_router(0.10, confidence_threshold=0.80, fallback_agent_index=1).route(
+    "anything", agents)
+check("gate/entropy-only below threshold is still gated (fail-closed)", ent_low.agent_index, 1)
+ent_high = _entropy_router(0.95, confidence_threshold=0.80, fallback_agent_index=1).route(
+    "anything", agents)
+check("gate/entropy-only above threshold passes", ent_high.agent_index, 0)
+
+# An answer with no usable confidence keeps the old behaviour: treated as fully confident.
+def _silent(state, questions):
+    return {"model": "mock-crew-router", "answers": {"delegation": {"choice": "agent_2"}}}
+
+
+kept = LayaCrewRouter(agent=DisagreeingAgent(_silent), confidence_threshold=0.80).route(
+    "anything", agents)
+check("gate/missing confidence still passes", kept.agent_index, 2)
+
+
 # --------------------------------------------------------------- Results Summary
 print(f"PASS: {len(PASS)}")
 print(f"FAIL: {len(FAIL)}")

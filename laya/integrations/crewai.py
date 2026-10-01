@@ -56,6 +56,7 @@ class LayaTaskGuardError(ValueError):
 # them came to forward only `model`.
 from ._controls import budget_kwargs as _budget_kwargs, hook_kwargs as _hook_kwargs  # noqa: E402
 from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as _reject_remote_hooks  # noqa: E402
+from ..confidence import _gate_confidence  # noqa: E402
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
@@ -307,7 +308,13 @@ class LayaCrewRouter:
 
         ans = res.get("answers", {}).get("delegation", {})
         chosen_key = ans.get("choice")
-        conf = ans.get("answer_confidence", ans.get("confidence", 1.0))
+        # Gate on the same number core's `flag_low_confidence` gates on: `answer_confidence`
+        # first, falling back to the entropy `confidence` so an answer that carries only the
+        # older field is still gated rather than silently passed (fail-closed). An answer with
+        # no usable number at all is treated as fully confident.
+        conf = _gate_confidence(ans)
+        if conf is None:
+            conf = 1.0
 
         # Map agent_i back to integer index i
         chosen_idx: int = 0
