@@ -239,6 +239,20 @@ def cached_embed_fn(
                     % (len(missing), tuple(fresh.shape))
                 )
             fresh = np.nan_to_num(fresh, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+            if rows_by_text:
+                # Rows stored under one dimensionality cannot be stacked against rows of
+                # another: a changed embedder (or one whose dimension drifts between calls)
+                # would otherwise surface rows of mixed width, which `_rank` reads as one
+                # matrix. Deciding by identity is what the docstring already asks of the
+                # caller ("clear the cache if the model changes") -- this refuses the call
+                # instead of returning a matrix that silently mixes both.
+                want = next(iter(rows_by_text.values())).shape[0]
+                if fresh.shape[1] != want:
+                    raise ValueError(
+                        "embed_fn returned dim %d, but the cache holds dim %d; "
+                        "call cache_clear() if the model behind embed_fn changed"
+                        % (fresh.shape[1], want)
+                    )
             with lock:
                 for key, row in zip(missing, fresh):
                     rows_by_text[key] = row
