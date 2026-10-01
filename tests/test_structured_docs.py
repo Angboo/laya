@@ -135,11 +135,15 @@ def _own_nodes(func: ast.AST) -> List[ast.AST]:
     return [n for n in ast.walk(func) if id(n) not in skip]
 
 
-def usage_shape(path: str) -> Tuple[str, List[str], List[str]]:
-    """(function, keys always built, keys added only sometimes) for an answered call's usage.
+def usage_shape(path: str) -> Tuple[str, List[str], List[str], List[str]]:
+    """(keys always built, keys added only sometimes, keys with no questions).
 
-    Restricted to the one function holding the `usage = {...}` literal, because `predict_long` adds
-    `windows` to an aggregated usage in its own body and `decide` cannot return that shape.
+    All three from the one function holding the `usage = {...}` literal: `predict_long` also builds
+    a result whose `answers` is empty and whose usage carries `windows`, in its own body, and
+    `decide` can only ever return the single-call shape the pages document. The empty-questions
+    shape is found by structure -- the result literal whose `answers` is `{}` -- because pinning its
+    keys here would make the `README.md` control tautological: an undocumented key added to that
+    literal would just redefine what this returns, and the gate would stay green.
     """
     tree = ast.parse(read(path))
     hits = []
@@ -156,22 +160,22 @@ def usage_shape(path: str) -> Tuple[str, List[str], List[str]]:
                         and isinstance(n.targets[0].value, ast.Name)
                         and n.targets[0].value.id == "usage"
                         and isinstance(n.targets[0].slice, ast.Constant)})
-        hits.append((func.name, always, added))
+        empty = []
+        for node in nodes:
+            if not (isinstance(node, ast.Dict)
+                    and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.keys)):
+                continue
+            pairs = dict(zip([k.value for k in node.keys], node.values))
+            usage = pairs.get("usage")
+            if {"model", "answers"} <= set(pairs) and isinstance(pairs["answers"], ast.Dict) \
+                    and not pairs["answers"].keys and isinstance(usage, ast.Dict):
+                empty.append(sorted({k.value for k in usage.keys if k is not None}))
+        if len(set(map(tuple, empty))) != 1:
+            raise AssertionError("%s: %s has %d empty-answers shapes: %r" % (path, func.name, len(empty), empty))
+        hits.append((func.name, always, added, empty[0]))
     if len(hits) != 1:
         raise AssertionError("expected one `usage = {...}` in %s, found %r" % (path, hits))
-    return hits[0]
-
-
-def empty_questions_usage(path: str) -> List[str]:
-    """The keys of the usage a call with no questions returns -- zeros, no forward pass."""
-    tree = ast.parse(read(path))
-    lits = [n for n in ast.walk(tree) if isinstance(n, ast.Dict)
-            and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in n.keys)
-            and {k.value for k in n.keys} == {"input_tokens", "output_tokens"}
-            and all(isinstance(v, ast.Constant) and v.value == 0 for v in n.values)]
-    if not lits:
-        raise AssertionError("no all-zero usage literal in %s" % path)
-    return sorted({k.value for k in lits[0].keys})
+    return hits[0][1:]
 
 
 def documented_shape(text: str, anchor: str, start: int = 0) -> List[str]:
@@ -505,18 +509,17 @@ def main() -> int:
                "the docstring names title; the compiler does not read it")
 
     # ------------------------------------------------------- the `usage` shape, one check per path
-    t_name, always, added = usage_shape(AGENT_PY)
-    o_name, onnx_always, onnx_added = usage_shape(ONNX_PY)
+    always, added, empty_t = usage_shape(AGENT_PY)
+    onnx_always, onnx_added, empty_o = usage_shape(ONNX_PY)
     check("usage/onnx_agent builds the same keys as agent", onnx_always, always)
     check("usage/onnx_agent adds the same keys as agent", onnx_added, added)
     check("usage/the only sometimes key is options", added, ["options"])
     check_true("usage/options is not also always built", "options" not in always,
-               "%s in %s (%s)" % ("options", always, t_name))
+               "`options` is also in the always keys %s" % (always,))
     check_true("usage/an answer carries the truncation report",
                {"state_tokens", "state_tokens_dropped", "truncated", "truncated_questions"}
                <= set(always), "got %s" % (always,))
 
-    empty_t, empty_o = empty_questions_usage(AGENT_PY), empty_questions_usage(ONNX_PY)
     check("usage/no-questions shape matches between agents", empty_o, empty_t)
     check_true("usage/no-questions is a different shape from an answer",
                set(empty_t) < set(always), "empty %s answered %s" % (empty_t, always))
