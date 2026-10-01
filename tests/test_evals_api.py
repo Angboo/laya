@@ -2,9 +2,11 @@
 
 Run: python tests/test_evals_api.py
 """
+import argparse
 import dataclasses
 import inspect
 import os
+import re
 import subprocess
 import sys
 
@@ -93,6 +95,73 @@ probe = subprocess.run(
      "import sys; import laya.evals; sys.exit(1 if 'torch' in sys.modules else 0)"],
     cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 check("import laya.evals does not import torch", probe.returncode, 0)
+
+# --------------------------------------------------------------- argument documentation
+# `_build_parser` is what a caller reads before running anything: argparse prints each
+# declaration's help into `--help`, and docs/evals.md is the page that explains the command. On
+# `main` five of its 22 declarations carried no help at all -- `run --on-error` printed as bare
+# `--on-error {fail,skip}`, `compare --baseline` printed bare while being the one argument that
+# call requires, and `validate`/`run`'s `dataset` and `compare`'s `report` had nothing under them
+# -- while the page described `on_error=skip`'s effect on the batch counters without ever naming
+# the flag that sets it. These read the parser the CLI really builds, so a flag added tomorrow is
+# held to the same three rules as `--on-error` is today.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Backslash continuations are folded first, so a flag on the second line of a multi-line example is
+# still attributed to the subcommand that started it.
+_PAGE = re.sub(r"\\\n\s*", " ",
+               open(os.path.join(_ROOT, "docs", "evals.md"), encoding="utf-8").read())
+# Greedy, so `--min-accuracy` is one token and never also yields `--min`.
+_PAGE_FLAGS = set(re.findall(r"--[A-Za-z0-9][A-Za-z0-9_-]*", _PAGE))
+
+
+def _subparsers(parser):
+    """{subcommand name: its parser}, read off the subparsers action the parser holds."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
+_subs = _subparsers(evals_cli._build_parser())
+check("laya-evals subcommands", sorted(_subs), ["compare", "run", "validate"])
+
+_unhelped, _unstated, _options = [], [], {}
+for _sub, _parser in sorted(_subs.items()):
+    for action in _parser._actions:
+        if action.dest == "help":
+            continue
+        site = "%s %s" % (_sub, " ".join(action.option_strings) or action.dest)
+        _options.setdefault(_sub, set()).update(action.option_strings)
+        if not (action.help or "").strip():
+            _unhelped.append(site)
+        elif action.default not in (None, False):
+            # argparse prints a flag's default nowhere unless its own help text does, so a default
+            # that matters has to be said: `--on-error` is documented as a choice, and the run it
+            # aborts rather than reports is the half a caller cannot guess. The word `default` and
+            # the quoted value must share a clause, because a help string that simply names both
+            # choices -- which is what `--on-error`'s does -- would otherwise still read as if the
+            # other one were the fallback after a flip.
+            value = re.escape(str(action.default))
+            if not re.search(r"'%s'[^;:]*\bdefault|\bdefault\b[^;:]*'%s'" % (value, value),
+                             action.help):
+                _unstated.append("%s (default %r)" % (site, action.default))
+
+check("every laya-evals argument carries a help string", sorted(_unhelped), [])
+check("every laya-evals default is stated in its own help", sorted(_unstated), [])
+
+_documented = sorted("%s %s" % (sub, opt) for sub, opts in _options.items() for opt in opts
+                     if opt not in _PAGE_FLAGS)
+check("every laya-evals option is named in docs/evals.md", _documented, [])
+
+_advertised = []
+for line in _PAGE.splitlines():
+    match = re.search(r"laya-evals\s+([a-z]+)", line)
+    if not match or match.group(1) not in _options:
+        continue
+    _advertised += ["%s %s" % (match.group(1), flag)
+                    for flag in re.findall(r"--[A-Za-z0-9][A-Za-z0-9_-]*", line)
+                    if flag not in _options[match.group(1)]]
+check("docs/evals.md advertises only options the parser defines", sorted(_advertised), [])
 
 # --------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
