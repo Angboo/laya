@@ -48,11 +48,34 @@ Always open (no auth), and stays responsive during inference because the CPU-bou
 runs on its own worker, not the event loop.
 
 ```json
-{"status": "ok", "loaded": ["english", "multilingual"], "revisions": {"english": "..."}, "device": "auto"}
+{"status": "ok", "loaded": ["english", "multilingual"], "revisions": {"english": "...", "multilingual": "..."},
+ "device": "cuda", "device_is_preference": false,
+ "checkpoint_devices": {"english": "cuda", "multilingual": "cuda"},
+ "cpu_fallbacks": {"english": {"count": 0, "last_reason": null}, "multilingual": {"count": 0, "last_reason": null}}}
 ```
 
-`loaded` lists the checkpoints resident in memory and `revisions` the artifact revision each was
-loaded from, so a deployment can confirm what it is actually serving.
+One server's answer, so the blocks agree with each other: every key of `revisions`,
+`checkpoint_devices` and `cpu_fallbacks` is a name in `loaded`. `tests/test_serve.py` holds this
+sample to the handler that produces it, field by field.
+
+- `status` is `ok` whenever the process answers at all. It says nothing about the checkpoints.
+- `loaded` lists the checkpoints resident in memory. It is empty until a request builds one, which is
+  what `LAYA_PRELOAD=0` leaves the process doing.
+- `revisions` is the artifact revision each resident checkpoint was loaded from, keyed by the same
+  names as `loaded`, so a deployment can confirm what it is actually serving.
+- `device` is the device a resident checkpoint really computes on, which is not always what
+  `LAYA_DEVICE` asked for: a checkpoint that wants a GPU it cannot get falls back to CPU silently and
+  still answers correctly. With nothing resident it is the configured preference instead.
+- `device_is_preference` is `true` exactly while nothing is resident, and `false` as soon as the
+  handler can measure. That is the difference between a server reporting its configuration and a
+  server reporting where its work is: one that quietly lost its GPU says `false` with `device`
+  `cpu`, rather than going on answering `cuda`.
+- `checkpoint_devices` gives the measurement per checkpoint, keyed by the names in `loaded`;
+  `device` is the first of those values.
+- `cpu_fallbacks` counts, per resident checkpoint, the requests that exhausted GPU memory and were
+  retried once on CPU: `count` since the process started, and `last_reason` carrying the error text
+  of the latest one. The demotion is scoped to the request that failed, so a checkpoint built on CPU
+  because the GPU was never available is not a fallback and counts `0` here -- that shows in `device`.
 
 ### `POST /v1/systemone`
 
