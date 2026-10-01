@@ -161,17 +161,20 @@ check_true("usage/keeps the existing token counts",
            '"input_tokens": n_tokens' in _src and '"output_tokens": 0' in _src)
 
 
-# --------------------------------------------------------------- example 15 teaches this exact dict
-# examples/15_truncation_basics.py is the page that teaches the report: it prints the dict off a call
-# that really truncated. tests/test_structured_docs.py already holds examples/03's drawn shape to the
-# same literal, so this covers only what that gate cannot see -- that 15 reads and names every key the
-# agents publish. The key set is read out of `laya/agent.py` by AST rather than repeated here, so a key
-# added to the dict has to be taught and one renamed fails the example still pointing at it.
+# --------------------------------------------------------- the truncation examples teach this dict
+# examples/15 and examples/37 are the two pages that teach the report: each prints it off a call that
+# really truncated. tests/test_structured_docs.py already holds examples/03's drawn shape to the same
+# literal, so this covers only what that gate cannot see -- that each example reads and names every
+# key the agents publish, and that the prose about which end of the state survives matches the code
+# that decides it. The key set is read out of `laya/agent.py` by AST rather than repeated here, so a
+# key added to the dict has to be taught and one renamed fails the example still pointing at it.
 import ast  # noqa: E402
 import re  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EX15 = "examples/15_truncation_basics.py"
+EX37 = "examples/37_long_document.py"
+EXAMPLES = (("15", EX15), ("37", EX37))
 
 
 def _tree(rel):
@@ -222,23 +225,49 @@ report = tuple(k for k in published if k not in ("input_tokens", "output_tokens"
 check_true("report/the report is more than the two token totals",
            len(report) >= 4, "(%r)" % (report,))
 
-missing = tuple(k for k in report if k not in _usage_reads(EX15))
-check("15/prints every key of the report from a live call", missing, ())
-extra = tuple(k for k in _usage_reads(EX15) if k not in published)
-check("15/reads no key the agents do not publish", extra, ())
-prose = " ".join(_strings(EX15))
-for key in report:
-    check_true("15/names `%s` so a reader can grep for it" % key, "`%s`" % key in prose)
-
-# The claim that made this example wrong when it was written: it told the reader truncation is silent
-# and "nothing warns you", one line after printing `truncated`. A sentence may still say the cut is
-# invisible -- the two answers really are indistinguishable -- but only if it names the key saying so.
 UNREPORTED = re.compile(r"nothing warns|is silent|silent in|no warning|not reported"
                         r"|nothing says|never says|cannot be seen", re.I)
-for sentence in [s for text in _strings(EX15) for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]:
-    if UNREPORTED.search(sentence):
-        check_true("15/a claim that the cut is invisible must name the key that reports it",
-                   "`truncated`" in sentence, "(%r)" % sentence[:120])
+
+for tag, rel in EXAMPLES:
+    missing = tuple(k for k in report if k not in _usage_reads(rel))
+    check("%s/prints every key of the report from a live call" % tag, missing, ())
+    extra = tuple(k for k in _usage_reads(rel) if k not in published)
+    check("%s/reads no key the agents do not publish" % tag, extra, ())
+    prose = " ".join(_strings(rel))
+    for key in report:
+        check_true("%s/names `%s` so a reader can grep for it" % (tag, key), "`%s`" % key in prose)
+
+    # The claim that made 15 wrong when it was written: it told the reader truncation is silent and
+    # "nothing warns you", one line after printing `truncated`. A sentence may still say the cut is
+    # invisible -- the two answers really are indistinguishable -- but only if it names the key that
+    # says otherwise.
+    for text in _strings(rel):
+        for sentence in [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]:
+            if UNREPORTED.search(sentence):
+                check_true("%s/a claim that the cut is invisible must name the key that reports it" % tag,
+                           "`truncated`" in sentence, "(%r)" % sentence[:120])
+            # Which end of the state survives is a property of the state's type, not of a parameter a
+            # caller passes. 37 said `predict` "does not expose" `truncate_left`, which is only true
+            # of the keyword: the rule is reachable, and it is `list`.
+            if "`truncate_left`" in sentence or "truncate_left=" in sentence:
+                check_true("%s/a sentence about `truncate_left` names the type that sets it" % tag,
+                           "list" in sentence, "(%r)" % sentence[:120])
+
+# ------------------------------------------------- and the rule the examples teach is the one shipped
+# Both agents pick the clamp side the same way, from the state's type, because a conversation list
+# serializes newest-last and a left-keeping clamp is the only one that preserves the newest turn.
+# Read as a pattern rather than a string: #687 moves the same expression inline into the
+# `build_sequence` call, and the examples' claim has to survive that reformatting or keep its meaning.
+CLAMP = re.compile(r"truncate_left[^\n]*?isinstance\(state, ?list\)")
+for rel in ("laya/agent.py", "laya/onnx_agent.py"):
+    with open(os.path.join(ROOT, rel)) as fh:
+        src = fh.read()
+    check_true("clamp/%s clamps from the state's type" % rel, CLAMP.search(src) is not None,
+               "no `truncate_left = isinstance(state, list)`")
+# ...and 37 is the page that teaches it, so the rule above has something to police: a page that
+# dropped the name would pass every sentence check by never raising one.
+check_true("37/teaches the clamp by its real name",
+           any("truncate_left" in text for text in _strings(EX37)), "never mentions `truncate_left`")
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
