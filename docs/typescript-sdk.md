@@ -39,6 +39,11 @@ before transport.
 Responses preserve `model`, `answers`, and token `usage`. Laya's `routing` and
 answer `action` fields are optional extensions; Noul confidence is optional too.
 Choice and Score confidence, distributions, and Score legends remain required.
+Every answer carries `answer_confidence`, the `max(p)` mass on the reported answer,
+which is the same quantity on all three question types. A call that passed
+`min_confidence` reports `abstention` and `abstention_threshold` on each of its
+answers and `low_confidence: true` on the ones below the threshold; with no
+threshold set, none of those three keys are sent, and that absence is the report.
 Optional extensions are validated when present.
 
 `/v1/systemone` does not expose Python's standalone routing method or `task` and
