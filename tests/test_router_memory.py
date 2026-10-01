@@ -9,8 +9,13 @@ loads nothing, so none of this needs weights.
 """
 import ast
 import re
+import sys
 import unittest
 from pathlib import Path
+
+# The page under test lives in this checkout, so the library it is compared against has to come
+# from here too: an installed `laya` would let the page and a stale default agree.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from laya.router import Router
 
