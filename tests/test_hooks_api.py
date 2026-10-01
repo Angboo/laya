@@ -145,6 +145,11 @@ for param in ("max_len", "head_max_len"):
     check("Router.predict_batch/%s is per-request, not a call argument" % param,
           param in sig(Router.predict_batch), False)
 
+# shortlist_choice returns bare labels by default; return_scores=True also hands back the
+# rank-order cosines, so the flag is keyword-only and defaults to off
+check_param("shortlist_choice", laya.shortlist_choice, "return_scores", False,
+            inspect.Parameter.KEYWORD_ONLY)
+
 # route() takes per-call hooks so a hook can pin a checkpoint for one call
 check_param("Router.route", Router.route, "hooks", None)
 check_param("Router.route", Router.route, "hooks_raise", None)

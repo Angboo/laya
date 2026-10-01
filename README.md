@@ -1335,7 +1335,7 @@ result = laya.predict_shortlist(
 result["shortlist"]["intent"]["labels"]  # the top 20 labels sent to the model
 ```
 
-`embed_fn(texts)` returns one vector per string. `embed_fn_from_agent` mean-pools the encoder already loaded on the agent; the decision head runs in the following `predict` / `system_one` call. Probabilities on a shortlisted choice are over those `k` labels. When `k` is at least the number of labels, the original question is passed through and `embed_fn` is not called.
+`embed_fn(texts)` returns one vector per string. `embed_fn_from_agent` mean-pools the encoder already loaded on the agent; the decision head runs in the following `predict` / `system_one` call. Probabilities on a shortlisted choice are over those `k` labels. When `k` is at least the number of labels, the original question is passed through and `embed_fn` is not called. `laya.shortlist_choice` returns bare labels; pass `return_scores=True` for the `(labels, scores)` pair in rank order (`None` when nothing was dropped), the same cosines `predict_shortlist` reports in its `shortlist` metadata.
 
 Shortlisting the same option set on every request re-embeds option texts that do not change. Wrap the embedder once with `laya.cached_embed_fn(embed_fn)` and repeat calls embed only the new query text: lookups are exact string matches into an LRU of at most 4,096 entries (about `maxsize * dim * 4` bytes, so ~12 MB at the default with a 768-dim encoder), and texts missing from the cache are still embedded in one batched call. The wrapper's `cache_info()` reports hits and misses; call `cache_clear()` if the model behind `embed_fn` changes.
 

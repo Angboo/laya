@@ -223,6 +223,28 @@ check("pass/k == n returns every label in order", shortlist_choice("pay me", CRI
 check("pass/k > n returns every label in order", shortlist_choice("pay me", CRITERIA, boom, k=20), list(CRITERIA))
 
 
+# ---------------------------------------------------------------- return_scores
+score_embed = _embed_for("pay me", OPTION_TEXTS)
+pair = shortlist_choice("pay me", CRITERIA, score_embed, k=2, return_scores=True)
+check("scores/labels match the bare call", pair[0], ["alpha", "delta"])
+check("scores/cosines are in rank order", pair[1], [1.0, 1.0])
+trio = shortlist_choice("pay me", CRITERIA, _embed_for("pay me", OPTION_TEXTS), k=3, return_scores=True)
+check("scores/third label is gamma", trio[0], ["alpha", "delta", "gamma"])
+check("scores/third cosine rounds to gamma", [round(s, 9) for s in trio[1]], [1.0, 1.0, 0.6])
+bare = shortlist_choice("pay me", CRITERIA, _embed_for("pay me", OPTION_TEXTS), k=2)
+check("scores/default still returns bare labels", bare, ["alpha", "delta"])
+pass_pair = shortlist_choice("pay me", CRITERIA, BoomEmbed(), k=20, return_scores=True)
+check("scores/passthrough keeps every label", pass_pair[0], list(CRITERIA))
+check("scores/passthrough reports no scores", pass_pair[1], None)
+meta_agent = Recorder()
+meta_out = predict_shortlist(
+    meta_agent, "pay me", {"intent": {"type": "choice", "criteria": CRITERIA}},
+    _embed_for("pay me", OPTION_TEXTS), k=2,
+)
+check("scores/agree with predict_shortlist metadata",
+      pair[1], meta_out["shortlist"]["intent"]["scores"])
+
+
 # ---------------------------------------------------------------- mock predict sees only k criteria
 sentinel = {"desc": "payments"}
 full = {"billing": sentinel, "tech": "bugs", "sales": None, "other": "misc"}
