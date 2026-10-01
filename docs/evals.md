@@ -29,6 +29,50 @@ Exit codes: `0` on success, `1` when a threshold or a baseline tolerance fails, 
 usage error. `run` prints the overall metrics and any requested slices to stdout, and writes
 the full report and a Markdown summary when `--json` / `--markdown` are given.
 
+## Attributing shortlist errors
+
+For a labelled high-cardinality choice set, `laya.evals_shortlist.evaluate_shortlist`
+uses the existing `predict_shortlist` path and the regular evaluation harness. It
+answers two separate questions: did retrieval keep the gold label, and did Laya
+choose it when it was present? This is an opt-in Python API for choice labels;
+ordinary `laya-evals run` reports are unchanged.
+
+```python
+import laya
+from laya.evals import Dataset
+from laya.evals_shortlist import evaluate_shortlist
+from laya.shortlist import embed_fn_from_agent
+
+agent = laya.load()
+dataset_path = "intents.jsonl"
+dataset = Dataset.from_jsonl(dataset_path)
+report = evaluate_shortlist(
+    agent, dataset, embed_fn_from_agent(agent), k=20,
+    checkpoint_id="my-checkpoint@revision", embedder_id="my-encoder@revision",
+    dataset_path=dataset_path,
+)
+print(report.overall)
+print(report.cases[0]["shortlist_status"])
+```
+
+Use the same embedding function and checkpoint as the deployment being measured.
+The two identifiers are supplied by the caller and should name immutable revisions;
+the report cannot infer the weights behind an arbitrary callable. `dataset_path`
+records the file's SHA256 alongside the existing question fingerprint. Each case
+keeps the actual shortlist labels and one of `correct`, `retrieval_miss`, or
+`decision_miss`. `shortlist_recall_at_k` is the fraction of gold labels retained.
+`shortlist_accuracy_on_recalled` is correct decisions divided by retained cases;
+it is omitted when none were retained. The existing `choice_accuracy` remains
+end-to-end accuracy over all cases, including retrieval misses. The shortlist
+metrics appear in the same language, model, question and tag slices. Request
+latency includes embedding and the decision call; the report does not isolate
+stage timings. With `k >= n`, the original question passes through and retrieval
+recall is 1 without calling the embedder.
+
+This does not reproduce the BANKING77 results in [issue #102](https://github.com/NandhaKishorM/laya/issues/102):
+those numbers depend on its dataset, checkpoint and bi-encoder. This API makes the
+same kind of diagnosis repeatable on a caller's own labelled set.
+
 ## Evaluating an ONNX export
 
 `run --onnx PATH` scores an exported ONNX model through `ONNXAgent` instead of the torch
