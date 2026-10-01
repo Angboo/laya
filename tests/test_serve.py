@@ -31,6 +31,7 @@ from laya.serve import (  # noqa: E402
     _apply_thread_limit,
     _check_request_limits,
     _env_bool,
+    _LONE_SURROGATE_DETAIL,
     _resolve_max_token_budget,
     _resolve_max_loaded,
     _resolve_model,
@@ -1370,6 +1371,97 @@ def test_an_unpaired_surrogate_is_a_caller_error_not_a_server_fault():
                       headers={"content-type": "application/json"})
     assert res.status_code == 200, (res.status_code, res.text)
     assert seen and "\U0001f600" in str(seen[0]), seen
+
+
+def _lone_surrogate_bodies(batch):
+    r"""Every slot 06462bf lists a `\udXXX` escape can hide in, shaped for the route asked about.
+
+    Built from one table rather than copied from the single-route test above, because the point is
+    that both routes see the same strings -- and a batch carries more than one state, so an escape
+    in the second of them is enough to reach the tokenizer. Each body is otherwise a request that
+    answers 200, so a refusal can only be about the escape.
+    """
+    plain = {"q": {"type": "noul", "instructions": "x"}}
+    slots = {
+        "state": {"states": ["ok", "\ud800"], "questions": plain} if batch
+        else {"state": "\ud800", "questions": plain},
+        "instructions": {"questions": {"q": {"type": "noul", "instructions": "\udfff"}}},
+        "criteria label": {"questions": {"q": {"type": "choice", "instructions": "x",
+                                               "criteria": {"\ud800": "a", "b": "c"}}}},
+    }
+    for label, body in slots.items():
+        if label != "state":
+            body["states" if batch else "state"] = ["ok"] if batch else "ok"
+    return slots
+
+
+def _surrogate_client():
+    router = BatchCapableFakeRouter()
+    return TestClient(create_app(router=router), raise_server_exceptions=False), router
+
+
+@pytest.mark.parametrize("path,batch",
+                         [("/v1/systemone", False), ("/v1/systemone/batch", True)],
+                         ids=["single", "batch"])
+@pytest.mark.parametrize("slot", sorted(_lone_surrogate_bodies(False)))
+def test_both_decision_routes_refuse_the_escape_before_the_router_sees_it(path, batch, slot,
+                                                                         monkeypatch):
+    r"""`/v1/systemone/batch` tokenizes the same body and had no guard on it.
+
+    06462bf turned a lone `\udXXX` escape into a `400` on the single route and recorded what it had
+    not covered: "only `/v1/systemone` is checked". The batch route went on walking no guard, so the
+    identical string reached the tokenizer there. Measured on the cached `english` checkpoint, CPU,
+    before this change:
+
+    ```
+    slot              Router.predict        Router.predict_batch     HTTP single  HTTP batch
+    state             TypeError             TypeError                400          200
+    instructions      TypeError             TypeError                400          200
+    criteria label    TypeError             TypeError                400          200
+    paired emoji      ok (1 answers)        ok (1 answers)           200          200
+    ```
+
+    None of those batch `200`s mean the escape is harmless. The HTTP columns were measured with a
+    stub router that does not tokenize -- the handler builds one request per state and hands them to
+    `predict_batch`, which raises the `TypeError` above for all three slots on the real one, so each
+    is a `500 inference failed` on a live server plus a `_log.exception` traceback per request. That
+    is exactly the shape 06462bf was written to stop. So each slot is its own case, the message is
+    read from `laya.serve` rather than retyped here, and the router is asserted to have seen
+    nothing: the refusal has to land before the forward pass it exists to prevent.
+    """
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client, router = _surrogate_client()
+    body = _lone_surrogate_bodies(batch)[slot]
+    # `json.dumps` escapes the unpaired surrogate by default, which is what a client sending one of
+    # these puts on the wire: pure ASCII that `json.loads` turns back into an unencodable character.
+    res = client.post(path, content=json.dumps(body).encode("ascii"),
+                      headers={"content-type": "application/json"})
+    assert res.status_code == 400, (slot, res.status_code, res.text)
+    assert _LONE_SURROGATE_DETAIL in res.text, (slot, res.text)
+    assert not router.calls and not router.batch_calls, (
+        "%s was refused after it reached inference: %r %r" % (slot, router.calls, router.batch_calls))
+
+
+@pytest.mark.parametrize("path,batch",
+                         [("/v1/systemone", False), ("/v1/systemone/batch", True)],
+                         ids=["single", "batch"])
+def test_an_emoji_still_reaches_both_decision_routes(path, batch, monkeypatch):
+    """A *paired* surrogate is one astral character by the time the parser is done.
+
+    The other half of the guard: a check keyed on surrogate code points rather than on
+    unpairedness would reject every emoji a state contains, which is why 06462bf asserts it for the
+    single route and it is asserted here for both.
+    """
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client, router = _surrogate_client()
+    body = {"states": ["hi \U0001f600"]} if batch else {"state": "hi \U0001f600"}
+    body["questions"] = {"q": {"type": "noul", "instructions": "x"}}
+    res = client.post(path, content=json.dumps(body).encode("utf-8"),
+                      headers={"content-type": "application/json"})
+    assert res.status_code == 200, (res.status_code, res.text)
+    states = ([r["state"] for r in router.batch_calls[-1]] if batch
+              else [router.calls[-1]["state"]])
+    assert any("\U0001f600" in str(s) for s in states), states
 
 
 def test_a_deeply_nested_state_is_not_a_recursion_error():

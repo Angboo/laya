@@ -199,12 +199,20 @@ requests in-process without the HTTP layer.
 
 | status | when | body `detail` |
 |---|---|---|
-| `400` | body is not valid JSON, not an object, has no `questions`, `state` is missing or `null`, or `questions` is not an object | what is wrong |
+| `400` | body is not valid JSON, not an object, has no `questions`, `state` is missing or `null`, `questions` is not an object, or a string anywhere in the body holds an unpaired `\udXXX` surrogate escape | what is wrong |
 | `401` | `LAYA_API_KEY` is set and the bearer token is missing or wrong | `invalid or missing bearer token` |
 | `413` | any limit above | which limit and by how much |
 | `422` | the question is well-formed JSON but invalid to Laya (unknown type, options over the head budget), or a request control (`lang`, `min_confidence`, a hook argument) is not in the form this endpoint accepts | names the question or the field and what to fix |
 | `500` | inference failed for any other reason | `inference failed` -- always this string, so paths, weights and memory state never leak; the cause is in the server log |
 | `503` | `LAYA_MAX_CONCURRENT` requests are already in flight | `server busy, try again later` |
+
+The unpaired-surrogate `400` is the one that looks unusual. `\udXXX` with no pair is legal JSON, but
+the character it names cannot be UTF-8 encoded, so the tokenizer raises `TypeError` on it -- the
+caller's own string arriving as a server fault, with a traceback per request. Both decision routes
+therefore walk the parsed body for lone surrogates and refuse one before it reaches inference. The
+walk runs after the size checks, so an oversized body is still refused first and the character and
+question limits bound what it can reach. A *paired* surrogate is one ordinary astral character by
+the time the parser is done, so an emoji in a state is unaffected.
 
 Over-cap load is refused, not queued: clients holding an admission slot while streaming a slow body
 cannot starve `/health`, and a retry can take the slot a refused client left.
@@ -220,7 +228,11 @@ admission slot but never an inference slot.
 
 ## Not (yet) here
 
-This server speaks one protocol on purpose. There is no OpenAI-compatible endpoint and no batch
-endpoint; run several questions in one request instead, since they share a single forward pass per
-question set. The `laya` CLI and MCP server cover local use -- see the
+This server speaks one protocol on purpose. There is no OpenAI-compatible endpoint; run several
+questions in one request instead, since they share a single forward pass per question set. The one
+other route is `POST /v1/systemone/batch`, which answers one `questions` set over an array of
+`states`. It has no section on this page yet -- its request shape is in the README's self-hosting
+section -- and every check above applies to it as it does to `POST /v1/systemone`: the same shape
+`400`s, the same unpaired-surrogate refusal, the same auth, admission, size limits, body-control
+validation and `500` mapping. The `laya` CLI and MCP server cover local use -- see the
 [README](https://github.com/NandhaKishorM/laya#readme).

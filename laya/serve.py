@@ -5,8 +5,8 @@ API -- ``choice`` / ``score`` / ``noul`` answers and a ``{input_tokens,
 output_tokens}`` usage block -- so a client written against Jev (for example the
 `hs-jev` Haskell client) can point its ``baseUrl`` at this server and keep
 working unchanged. All this module adds is the HTTP surface Laya itself does not
-ship: a ``POST /v1/systemone`` route, an optional bearer check, and a health
-probe.
+ship: a ``POST /v1/systemone`` route and its ``POST /v1/systemone/batch`` sibling,
+an optional bearer check, and a health probe.
 
 Configuration is entirely via environment variables so the same entry point
 serves a laptop dev run and a systemd unit:
@@ -560,6 +560,11 @@ def _check_batch_limits(states: Any, questions: Any) -> None:
 # replaced cost ~170 ms on a near-cap body on the event loop.
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
+# The answer both decision routes give to the same malformed body, written once so they cannot
+# drift: `tests/test_serve.py` asserts this text on `/v1/systemone` and on `/v1/systemone/batch`.
+_LONE_SURROGATE_DETAIL = ("request body contains an unpaired surrogate escape; "
+                          "those cannot be encoded as UTF-8")
+
 
 def _has_lone_surrogate(value: Any) -> bool:
     """True if any string in the parsed body contains an unpaired surrogate code point.
@@ -832,9 +837,7 @@ def create_app(router: Optional[Any] = None):
         # "inference failed". A *paired* surrogate is an ordinary astral character (an emoji) by
         # the time `json.loads` is done, so only lone ones are rejected here.
         if _has_lone_surrogate(body):
-            raise HTTPException(status_code=400,
-                                detail="request body contains an unpaired surrogate escape; "
-                                       "those cannot be encoded as UTF-8")
+            raise HTTPException(status_code=400, detail=_LONE_SURROGATE_DETAIL)
         model = _resolve_model(body.get("model"))
         max_budget_cap = _resolve_max_token_budget()
         max_len = _validate_budget_param(body, "max_len", max_budget_cap)
@@ -921,6 +924,15 @@ def create_app(router: Optional[Any] = None):
         # so without this call a batch body would silently hand a caller a shorter deadline for
         # the operator's own hooks.
         _refuse_body_refusals(body)
+        # The same guard `/v1/systemone` runs, for the same reason, and it has to walk the whole
+        # body rather than one state because that is what the batch carries: `predict_batch`
+        # tokenizes every state and every question here, so a lone `\udXXX` escape in any of them
+        # raises `TypeError` from the tokenizer and this route's `except Exception` reports the
+        # caller's own string as a 500 "inference failed" -- with a traceback per request. Ordered
+        # as on the single route: after the size checks, so `MAX_BATCH_STATES`, `MAX_STATE_CHARS`
+        # and `MAX_QUESTIONS` bound what the walk can reach.
+        if _has_lone_surrogate(body):
+            raise HTTPException(status_code=400, detail=_LONE_SURROGATE_DETAIL)
         model = _resolve_model(body.get("model"))
         max_budget_cap = _resolve_max_token_budget()
         max_len = _validate_budget_param(body, "max_len", max_budget_cap)
