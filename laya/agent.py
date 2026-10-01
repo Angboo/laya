@@ -1643,6 +1643,26 @@ class Agent(HookRegistry):
 RLAgent = Agent
 
 
+def _is_local_checkpoint_arg(model_id_or_path: str) -> bool:
+    """True when `model_id_or_path` should be treated as a local path, not a registry name.
+
+    A bare word with no path separator reads as a name/alias. Only treat it as a path when
+    it looks like one (contains a separator, or starts with `.` / `~`) or when the named
+    directory actually holds a Laya checkpoint (`rl_agent_config.json`). That way
+    `load("laya")` resolves the alias from the repo root, while `load("./laya")` and a
+    real checkpoint directory still load from disk.
+    """
+    if not model_id_or_path:
+        return False
+    if model_id_or_path.startswith((".", "~")):
+        return True
+    if os.sep in model_id_or_path or "/" in model_id_or_path or "\\" in model_id_or_path:
+        return True
+    return os.path.isdir(model_id_or_path) and os.path.isfile(
+        os.path.join(model_id_or_path, "rl_agent_config.json")
+    )
+
+
 def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str] = None,
          token: Optional[str] = None, subfolder: Optional[str] = None, fast: bool = False,
          compile: bool = False,
@@ -1676,9 +1696,11 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
     # A registry name or alias resolves to the same (repo, subfolder) the Router would
     # pick, instead of being handed to the Hub as a repo id. A caller who spelled out a
     # subfolder is loading that subfolder of whatever repo they named, so the name is only
-    # resolved when it is the whole argument -- and an existing directory always wins over a
-    # name, so a local checkpoint that happens to be called `english` still loads from disk.
-    if subfolder is None and not os.path.exists(model_id_or_path):
+    # resolved when it is the whole argument. Treat the argument as a local path only when
+    # it looks like one (separator, or starts with `.`/`~`) or when the directory actually
+    # holds a checkpoint (`rl_agent_config.json`); a bare word like `laya` therefore
+    # resolves the alias even when a same-named package directory sits in the cwd.
+    if subfolder is None and not _is_local_checkpoint_arg(model_id_or_path):
         from .router import resolve_model_spec
 
         spec = resolve_model_spec(model_id_or_path)
