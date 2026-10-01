@@ -802,6 +802,8 @@ check("clamp/none falls back to neutral", clamp_temperature(None), 1.0)
 check("clamp/garbage falls back to neutral", clamp_temperature("x"), 1.0)
 check("clamp/nan falls back to neutral", clamp_temperature(float("nan")), 1.0)
 check("clamp/inf falls back to neutral", clamp_temperature(float("inf")), 1.0)
+check("clamp/bools are not temperatures", clamp_temperature(True), 1.0)
+check("clamp/False is not a sharpening zero", clamp_temperature(False), 1.0)
 check("clamp/bounds are sane", TEMP_MIN <= 1.0 <= TEMP_MAX, True)
 # 13 options is the bucket the reported skill-router landed in
 check("clamp/13 options is the 11+ bucket", temp_bucket(QTYPES["choice"], 13), "choice:11+")

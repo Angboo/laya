@@ -708,7 +708,14 @@ TEMP_MAX = 5.0
 
 
 def clamp_temperature(t, lo: float = TEMP_MIN, hi: float = TEMP_MAX) -> float:
-    """A usable temperature: `t` confined to [lo, hi], falling back to 1.0 if it is not a number."""
+    """A usable temperature: `t` confined to [lo, hi], falling back to 1.0 if it is not a number.
+
+    A bool is not a number either: `True`/`False` used to float to 1.0/0.0 here and read as
+    fitted/sharpening temperatures, the same class of quiet acceptance `check_min_confidence`
+    already refuses. A custom `lo`/`hi` still bounds either way.
+    """
+    if isinstance(t, bool):
+        return 1.0
     try:
         t = float(t)
     except (TypeError, ValueError):
