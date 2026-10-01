@@ -102,6 +102,9 @@ _CONTROLS_DOC = (
     "refused on a call that also pins model, since the pin would win and the task would be ignored. "
     "lang: a language code ('de', 'en-US') -- routes non-English text to the multilingual "
     "checkpoint and selects that checkpoint's per-language calibration. "
+    "lang_guess: a soft language code -- a probable-but-uncertain language that participates in "
+    "routing (checked after lang, before built-in detection) rather than forcing the checkpoint the "
+    "way lang does; like task it only routes, so it is refused on a call that pins model. "
     "max_len / head_max_len: positive integers overriding the answering token budget for this call "
     "only -- head_max_len is the option-and-instructions budget, so raise it when a choice question "
     "has many options and the answers look like the labels blur together. "
@@ -210,7 +213,7 @@ def laya_status_tool() -> str:
     description=(
         "Decide which Laya checkpoint would answer, without running a forward pass. "
         "Use this to explain routing (english vs multilingual vs typed-decisions) to the user. "
-        "Passing a laya_predict call's model/task/lang here reproduces the routing block it "
+        "Passing a laya_predict call's model/task/lang/lang_guess here reproduces the routing block it "
         "reported, without paying for the forward pass; leaving model unset (or 'auto') routes as "
         "normal. "
         + _GUARDRAILS
@@ -223,6 +226,7 @@ def laya_route_tool(
     model: str | None = None,
     task: str | None = None,
     lang: str | None = None,
+    lang_guess: str | None = None,
 ) -> str:
     """Decide which Laya checkpoint would answer, without running a forward pass."""
     router = _router_or_error()
@@ -233,6 +237,7 @@ def laya_route_tool(
         model=model,
         task=task,
         lang=lang,
+        lang_guess=lang_guess,
         router=router,
     )
 
@@ -256,6 +261,7 @@ def laya_predict_tool(
     model: str = "auto",
     task: str | None = None,
     lang: str | None = None,
+    lang_guess: str | None = None,
     max_len: int | None = None,
     head_max_len: int | None = None,
     min_confidence: float | None = None,
@@ -269,6 +275,7 @@ def laya_predict_tool(
         model=model,
         task=task,
         lang=lang,
+        lang_guess=lang_guess,
         max_len=max_len,
         head_max_len=head_max_len,
         min_confidence=min_confidence,
@@ -359,6 +366,7 @@ def laya_shortlist_tool(
     k: int = 20,
     task: str | None = None,
     lang: str | None = None,
+    lang_guess: str | None = None,
     max_len: int | None = None,
     head_max_len: int | None = None,
     min_confidence: float | None = None,
@@ -377,6 +385,7 @@ def laya_shortlist_tool(
         k=k,
         task=task,
         lang=lang,
+        lang_guess=lang_guess,
         max_len=max_len,
         head_max_len=head_max_len,
         min_confidence=min_confidence,
@@ -416,6 +425,7 @@ def laya_preset_tool(
     state: dict,
     task: str | None = None,
     lang: str | None = None,
+    lang_guess: str | None = None,
     max_len: int | None = None,
     head_max_len: int | None = None,
     min_confidence: float | None = None,
@@ -428,6 +438,7 @@ def laya_preset_tool(
         state=state,
         task=task,
         lang=lang,
+        lang_guess=lang_guess,
         max_len=max_len,
         head_max_len=head_max_len,
         min_confidence=min_confidence,

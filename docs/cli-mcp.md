@@ -149,11 +149,11 @@ Laya does not open a network port.
 | Tool | What it does | Main inputs |
 |---|---|---|
 | `laya_status` | Reports the configured or actual device, CUDA availability, loaded checkpoints, preload state, readiness, and package versions. | none |
-| `laya_route` | Selects a checkpoint and returns its model, repository, and reason without running a forward pass. | `state`, `questions` |
-| `laya_predict` | Runs typed questions and returns answers, routing metadata, latency, and the answering device when readable. | `state`, `questions`, optional `model` (`auto`, `english`, `multilingual`, or `typed-decisions`) |
-| `laya_shortlist` | Shortlists a many-option choice question, then answers it and returns the shortlist metadata. | `state`, `questions`, optional `model`, optional `k` (default `20`) |
-| `laya_preset` | Runs a built-in workflow using its built-in question set. | `preset`, `state` |
-| `laya_predict_batch` | Answers many requests in one call. Requests are routed first and grouped by checkpoint, so matching question schemas share forward passes; answers come back in input order. | `requests`, each `{state, questions, model?, task?, lang?}`, optional `batch_size` |
+| `laya_route` | Selects a checkpoint and returns its model, repository, and reason without running a forward pass. | `state`, `questions`, optional `model`, `task`, `lang`, `lang_guess` |
+| `laya_predict` | Runs typed questions and returns answers, routing metadata, latency, and the answering device when readable. | `state`, `questions`, optional `model` (`auto`, `english`, `multilingual`, or `typed-decisions`), `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
+| `laya_shortlist` | Shortlists a many-option choice question, then answers it and returns the shortlist metadata. | `state`, `questions`, optional `model`, `k` (default `20`), `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
+| `laya_preset` | Runs a built-in workflow using its built-in question set. | `preset`, `state`, optional `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
+| `laya_predict_batch` | Answers many requests in one call. Requests are routed first and grouped by checkpoint, so matching question schemas share forward passes; answers come back in input order. | `requests`, each `{state, questions, model?, task?, lang?, lang_guess?, max_len?, head_max_len?}`, optional `batch_size` |
 | `laya_route_batch` | Decides which checkpoint would answer each request, with no forward pass and no checkpoint load. | `requests`, same shape as `laya_predict_batch` |
 | `laya_decide` | Answers a JSON-schema-shaped decision in one forward pass and returns the decided values with per-field confidence, instead of an answer map to parse. Schema properties may be enum choices, booleans, or integers with a minimum and maximum; free strings, arrays, and nested objects are rejected by path. | `state`, `schema`, optional `model` |
 
@@ -176,6 +176,15 @@ works here too; the canonical key is the one that comes back in the result. Give
 exactly one string, `laya_preset` places it under the field that preset's questions name, the
 same placement the CLI does, so a caller does not have to guess the key. Anything richer than one
 string is the caller's own shape and is passed through untouched.
+
+Every single-request tool takes the same per-call routing controls the batch requests do. Alongside
+`model`, a request may set `task` (name a checkpoint by the work), `lang` (force a language code),
+and `lang_guess` (a soft language hint that sits below `lang` and above the built-in detector, so a
+probable-but-uncertain code can nudge which checkpoint is chosen without forcing it the way `lang`
+does). `lang_guess` only participates in routing, so like `task` it is refused on a call that pins
+`model` -- a pinned checkpoint has nothing left to route. `laya_predict` and `laya_shortlist` also
+take `max_len`/`head_max_len` for the answering token budget and `min_confidence` for the abstention
+gate.
 
 A prediction call has the same shape as the SDK's typed call:
 

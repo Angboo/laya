@@ -48,6 +48,7 @@ from laya.mcp.tools import (  # noqa: E402
     validate_batch_requests,
     validate_budget,
     validate_lang,
+    validate_lang_guess,
     validate_min_confidence,
     validate_model,
     validate_preset,
@@ -1714,9 +1715,9 @@ def test_controls_signature_and_schema():
     """
     import inspect
 
-    controls = ["task", "lang", "max_len", "head_max_len"]
+    controls = ["task", "lang", "lang_guess", "max_len", "head_max_len"]
     for fn, want in ((laya_predict, controls), (laya_shortlist, controls),
-                     (laya_preset, controls), (laya_route, ["model", "task", "lang"])):
+                     (laya_preset, controls), (laya_route, ["model", "task", "lang", "lang_guess"])):
         params = inspect.signature(fn).parameters
         for name in want:
             ok("signature/%s_has_%s" % (fn.__name__, name), name in params, repr(sorted(params)))
@@ -1747,6 +1748,132 @@ def test_controls_signature_and_schema():
         ok("schema/%s_required_unchanged" % name,
            required == (["preset", "state"] if name == "laya_preset" else ["state", "questions"]),
            repr(required))
+
+
+def test_lang_guess_control():
+    """`lang_guess` -- core's soft routing hint (#489 family) -- reaches the single-request tools.
+
+    The batch surface already forwards it (``BATCH_ITEM_OVERRIDES`` advertises the key, and
+    ``laya_predict_batch``/``laya_route_batch`` hand it to ``Router.*_batch``), and ``laya-serve`` and
+    the CLI forward it, so a client scoring one state over MCP could ask for a probable language to
+    nudge the checkpoint only by sending a batch of one. `lang_guess` is routing-only, so it is
+    treated like ``task``: forwarded to a router call, refused on a pinned model (a pinned call has
+    nothing to route), and stripped on a direct agent (``Agent.predict`` does not accept it).
+    """
+    import inspect
+
+    # The validator mirrors validate_lang: a code passes through verbatim, a non-string is refused in
+    # this layer's words. A callable is core's other accepted form but an MCP client carries JSON.
+    ok("langguess/none_is_unset", validate_lang_guess(None) is None)
+    for code in ("de", "en-US", "pt", "", "  ", "DE"):
+        ok("langguess/verbatim_%r" % code, validate_lang_guess(code) == code)
+    for bad in (5, ["de"], {"lang": "de"}, True):
+        expect_tool_error("langguess/rejected_%r" % (bad,),
+                          lambda b=bad: validate_lang_guess(b), "invalid_lang_guess")
+    # A callable is legal in core but not expressible over the wire; the MCP boundary refuses it
+    # rather than silently dropping the hint.
+    expect_tool_error("langguess/callable_rejected",
+                      lambda: validate_lang_guess(lambda state: "de"), "invalid_lang_guess")
+
+    # laya_predict forwards lang_guess to core's predict, and only when set: a call with no hint
+    # reaches core exactly as before the keyword was exposed here.
+    router = ControlRouter()
+    laya_predict(STATE, QUESTIONS, router=router)
+    ok("predict/langguess_unset_absent", router.predict_calls == [{}], repr(router.predict_calls))
+    router = ControlRouter()
+    laya_predict(STATE, QUESTIONS, lang_guess="de", router=router)
+    ok("predict/langguess_forwarded", router.predict_calls == [{"lang_guess": "de"}],
+       repr(router.predict_calls))
+    router = ControlRouter()
+    laya_predict(STATE, QUESTIONS, lang_guess="de", task="typed_decisions", router=router)
+    ok("predict/langguess_alongside_task",
+       router.predict_calls == [{"task": "typed_decisions", "lang_guess": "de"}],
+       repr(router.predict_calls))
+    # An explicit lang and a soft hint are distinct keywords: both reach core, and core orders them.
+    router = ControlRouter()
+    laya_predict(STATE, QUESTIONS, lang="fr", lang_guess="de", router=router)
+    ok("predict/lang_and_langguess_distinct",
+       router.predict_calls == [{"lang": "fr", "lang_guess": "de"}], repr(router.predict_calls))
+
+    # Pinned: refused before core, exactly like task -- there is nothing to route.
+    for model in ("english", "laya", "ML"):
+        router = ControlRouter()
+        expect_tool_error("predict/model_plus_langguess_%s" % model,
+                          lambda m=model: laya_predict(STATE, QUESTIONS, model=m,
+                                                       lang_guess="de", router=router),
+                          "invalid_lang_guess")
+        ok("predict/model_plus_langguess_no_call_%s" % model, router.predict_calls == [],
+           repr(router.predict_calls))
+    router = ControlRouter()
+    expect_tool_error("predict/bad_langguess_before_core",
+                      lambda: laya_predict(STATE, QUESTIONS, lang_guess=["de"], router=router),
+                      "invalid_lang_guess")
+    ok("predict/bad_langguess_no_call", router.predict_calls == [], repr(router.predict_calls))
+
+    # The direct-agent branch: Agent.predict does not accept lang_guess, so it is stripped -- a
+    # no-router auto call answers through the agent without ever naming the hint to core.
+    agent = ControlAgent()
+    laya_predict(STATE, QUESTIONS, lang_guess="de", agent=agent)
+    ok("predict/agent_langguess_stripped", agent.calls == [{}], repr(agent.calls))
+    agent = ControlAgent()
+    laya_predict(STATE, QUESTIONS, lang="de", lang_guess="en", agent=agent)
+    ok("predict/agent_keeps_lang_drops_langguess", agent.calls == [{"lang": "de"}],
+       repr(agent.calls))
+
+    # laya_route: a routing tool, so lang_guess reaches route and is refused on a pin.
+    router = ControlRouter(routed="multilingual")
+    out = laya_route(STATE, QUESTIONS, lang_guess="de", router=router)
+    ok("route/langguess_forwarded", router.route_calls == [{"lang_guess": "de"}],
+       repr(router.route_calls))
+    ok("route/langguess_decision_shape", set(out) == {"model", "repo", "reason"}, repr(out))
+    router = ControlRouter()
+    expect_tool_error("route/model_plus_langguess",
+                      lambda: laya_route(STATE, QUESTIONS, model="english",
+                                         lang_guess="de", router=router),
+                      "invalid_lang_guess")
+    ok("route/refused_langguess_before_core", router.route_calls == [], repr(router.route_calls))
+
+    # laya_shortlist: lang_guess reaches the route that chose the checkpoint, and is stripped from
+    # the answering pass (which pins the routed model, so the hint has nothing left to decide).
+    small = {"dept": {"type": "choice", "instructions": "pick",
+                      "criteria": {"a": "A", "b": "B", "c": "C", "d": "D", "e": "E"}}}
+    router = ControlRouter(routed="multilingual")
+    laya_shortlist(STATE, small, k=2, lang_guess="de", router=router, embed_fn=_tie_embed)
+    ok("shortlist/route_sees_langguess", router.route_calls == [{"lang_guess": "de"}],
+       repr(router.route_calls))
+    ok("shortlist/predict_drops_langguess",
+       router.predict_calls == [{"model": "multilingual"}], repr(router.predict_calls))
+    router = ControlRouter()
+    expect_tool_error("shortlist/pinned_plus_langguess",
+                      lambda: laya_shortlist(STATE, small, k=2, model="english",
+                                             lang_guess="de", router=router,
+                                             embed_fn=_tie_embed),
+                      "invalid_lang_guess")
+    ok("shortlist/pinned_plus_langguess_no_call", router.predict_calls == [],
+       repr(router.predict_calls))
+
+    # laya_preset threads it through laya_predict (always auto, so never refused).
+    def builder(attr):
+        return {"probe": {"type": "noul", "instructions": "Does the `body` need a human?"}}
+    router = ControlRouter()
+    laya_preset("guard", STATE, lang_guess="de", router=router, preset_builder=builder)
+    ok("preset/langguess_forwarded", router.predict_calls == [{"lang_guess": "de"}],
+       repr(router.predict_calls))
+
+    # Cross-surface drift guard: lang_guess is a real core routing control (serve forwards it as a
+    # body control; the batch item overrides already name it) and Router.route/predict accept it, so
+    # this layer can never advertise a keyword core would reject.
+    from laya import serve as serve_mod
+
+    ok("drift/langguess_in_body_controls", "lang_guess" in serve_mod.BODY_CONTROLS,
+       repr(serve_mod.BODY_CONTROLS))
+    ok("drift/langguess_in_batch_overrides", "lang_guess" in BATCH_ITEM_OVERRIDES,
+       repr(BATCH_ITEM_OVERRIDES))
+    for method in ("route", "predict"):
+        params = inspect.signature(getattr(__import__("laya.router", fromlist=["Router"]).Router,
+                                           method)).parameters
+        ok("drift/router_%s_accepts_langguess" % method, "lang_guess" in params,
+           repr(sorted(params)))
 
 
 def test_min_confidence_control():
@@ -2337,6 +2464,7 @@ test_controls_route()
 test_controls_shortlist()
 test_controls_preset()
 test_controls_signature_and_schema()
+test_lang_guess_control()
 test_min_confidence_control()
 test_question_validation_matches_the_agent()
 test_a_bad_question_is_a_caller_error_not_a_server_fault()
