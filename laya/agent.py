@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 import warnings
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional, Union
 
@@ -157,6 +157,54 @@ def _verify_compatibility(model: torch.nn.Module, cfg: Dict, weights: Dict[str, 
 
 _TOKENIZERS: Dict[tuple, Any] = {}
 _TOKENIZERS_LOCK = threading.Lock()
+
+class _InferenceGate:
+    """Read-write synchronization gate protecting shared model device placement (#649).
+
+    Normal inference acquires the read lock so multiple threads can evaluate the model
+    concurrently without serialization. When a thread encounters GPU OOM and needs
+    to temporarily migrate the model to CPU for a scoped fallback, it acquires the write
+    lock. This ensures all in-flight requests finish safely before the model is moved,
+    and blocks new requests until the model and device state are restored.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writers = 0
+        self._waiting_writers = 0
+
+    @contextmanager
+    def read_lock(self):
+        with self._cond:
+            while self._writers > 0 or self._waiting_writers > 0:
+                self._cond.wait()
+            self._readers += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._cond.notify_all()
+
+    @contextmanager
+    def write_lock(self):
+        with self._cond:
+            self._waiting_writers += 1
+            try:
+                while self._readers > 0 or self._writers > 0:
+                    self._cond.wait()
+                self._writers = 1
+            finally:
+                self._waiting_writers -= 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writers = 0
+                self._cond.notify_all()
+
 
 # The per-inference CPU fallback rewrites shared runtime state (device, dtype, amp) and moves the
 # model while other threads may be running their own forward, so the demotion and the restore are
@@ -423,6 +471,7 @@ class Agent(HookRegistry):
     last_fallback_reason = None
     # Set when `compile=True` wrapped the model in torch.compile.
     _compiled = False
+    _gate = _InferenceGate()
 
     def __init__(
         self,
@@ -670,6 +719,7 @@ class Agent(HookRegistry):
                 self.dtype = cpu_amp
 
         self._fast = None
+        self._gate = _InferenceGate()
 
         # 2. Place on device with graceful fallback to CPU on memory error
         fell_back_from = fell_back_why = None
@@ -1060,7 +1110,8 @@ class Agent(HookRegistry):
                 )
 
         try:
-            out = run()
+            with self._gate.read_lock():
+                out = run()
         except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
             low = str(e).lower()
             # An OOM is `torch.cuda.OutOfMemoryError` or says so in its message. The bare
@@ -1070,13 +1121,16 @@ class Agent(HookRegistry):
                 print("Warning: GPU memory exceeded during inference. Retrying this request on CPU...")
                 # Scoped, not permanent: the demotion used to rewrite device/dtype/amp and move
                 # the model for the life of the process, so one oversized request left every
-                # later call ~10-15x slower on CPU. Demote under the lock, answer this request
-                # on CPU, then put the runtime back the way it was.
-                with _OOM_FALLBACK_LOCK:
+                # later call ~10-15x slower on CPU. Demote under the write lock (#649) so any
+                # concurrent in-flight GPU requests finish before the model is moved to CPU,
+                # and put the runtime back before allowing new requests to start.
+                with self._gate.write_lock(), _OOM_FALLBACK_LOCK:
                     # Recorded on entry, under the same lock as the demotion: the count and
                     # reason must be readable by /health without racing a concurrent fallback.
                     self.cpu_fallback_count += 1
                     self.last_fallback_reason = str(e)
+                    if self.device.type == "cpu":
+                        return run()
                     held_device, held_dtype, held_amp = self.device, self.dtype, self.amp_enabled
                     had_fast = self._fast is not None
                     # Only our batch scope can retain BF16 copies after this failed forward.
@@ -1102,15 +1156,16 @@ class Agent(HookRegistry):
                 # request in full precision. One miss must not turn AMP off; a build that
                 # lacks the op fails the same way every time, so after a short streak the
                 # process drops to full precision instead of paying for two forwards (#351).
-                try:
-                    return run(enabled=False)
-                finally:
-                    self._amp_failures += 1
-                    if self._amp_failures >= _AMP_FAIL_LIMIT:
-                        print("Warning: autocast failed %d times in a row. Disabling mixed precision."
-                              % self._amp_failures)
-                        self.amp_enabled = False
-                        self.dtype = torch.float32
+                with self._gate.read_lock():
+                    try:
+                        return run(enabled=False)
+                    finally:
+                        self._amp_failures += 1
+                        if self._amp_failures >= _AMP_FAIL_LIMIT:
+                            print("Warning: autocast failed %d times in a row. Disabling mixed precision."
+                                  % self._amp_failures)
+                            self.amp_enabled = False
+                            self.dtype = torch.float32
             raise
         else:
             self._amp_failures = 0
