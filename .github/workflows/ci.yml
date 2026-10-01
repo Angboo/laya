@@ -150,6 +150,7 @@ jobs:
           python tests/test_confidence.py
           python tests/test_cli.py
           python tests/test_mcp.py
+          python tests/test_mcp_device.py
           python tests/test_langchain.py
           python tests/test_portability.py
           python tests/test_training.py
@@ -317,6 +318,7 @@ jobs:
                    test_criteria_normalization test_docker_entrypoint \
                    test_empty_questions test_router_memory test_shortlist_cosine \
                    test_temperature_loading test_confidence test_cli test_mcp \
+                   test_mcp_device \
                    test_langchain test_portability test_training \
                    test_example_server_limits test_blank_lang_routing \
                    test_export_onnx_safety test_load_errors test_revision_pinning; do
