@@ -3,6 +3,7 @@
 A fake Router is injected so nothing loads a checkpoint; we only assert that the
 HTTP layer maps requests/responses and enforces auth as hs-jev expects.
 """
+import ast
 import inspect
 import json
 import logging
@@ -1747,3 +1748,94 @@ def test_http_api_page_documents_exactly_the_forwarded_controls():
     prose = page[page.index("`model`, `task`, `lang`, `lang_guess`"):]
     for key in BODY_REFUSALS:
         assert "`%s`" % key in prose, "%s is not named where the refusal is explained" % key
+
+
+def _health_return_keys():
+    """The keys `health()` hands back, read out of its own `return` statement."""
+    path = os.path.join(ROOT, "laya", "serve.py")
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "health":
+            for stmt in node.body:
+                if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Dict):
+                    return node, [k.value for k in stmt.value.keys
+                                  if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+    raise AssertionError("no `def health()` returning a dict literal in laya/serve.py")
+
+
+def test_http_api_page_documents_exactly_the_health_fields():
+    """The payload `/health` documents has to be the payload the handler builds.
+
+    The page showed four keys while the handler returned seven: `device_is_preference`,
+    `checkpoint_devices` and `cpu_fallbacks` arrived with the device-fact reporting and #574's
+    fallback counters, and both were written up in docs/docker.md -- the page a reader opens before
+    pointing a probe at a server was the one page nobody updated. Its sample also printed
+    `"device": "auto"`, which is what `LAYA_DEVICE` defaults to, not a value the handler can return.
+
+    So the key list is read out of `health()`'s `return` rather than typed here, in both directions
+    like the request-body gate above, and the sample is checked for internal coherence too: it is one
+    server's answer, so every per-checkpoint block is keyed by the names in `loaded`, and
+    `device_is_preference` and `device` follow the two rules the handler states.
+    """
+    health, returned = _health_return_keys()
+    assert returned, "health() returns no literal keys; retarget this"
+
+    page = open(os.path.join(ROOT, "docs", "http-api.md"), encoding="utf-8").read()
+    section = page[page.index("### `GET /health`"):page.index("### `POST")]
+    sample = json.loads(section.split("```json", 1)[1].split("```", 1)[0])
+
+    assert sorted(sample) == sorted(returned), "the sample says %s, health() returns %s" % (
+        sorted(sample), sorted(returned))
+    for key in returned:
+        assert "\n- `%s` " % key in section, (
+            "%s is in the sample with no bullet defining it, so the field is listed and not "
+            "explained" % key)
+
+    # The per-checkpoint blocks all key on the same resident checkpoints. A fourth dict-valued key
+    # means the handler grew one and this list has to grow with it, deliberately.
+    resident = set(sample["loaded"])
+    assert resident, "the sample shows no resident checkpoint, so the blocks below prove nothing"
+    blocks = [k for k, v in sample.items() if isinstance(v, dict) and v]
+    assert len(blocks) == 3, "dict-valued blocks are %s; retarget this if the payload grew" % blocks
+    for block in blocks:
+        assert set(sample[block]) == resident, "%s is keyed %r, loaded says %r" % (
+            block, sorted(sample[block]), sorted(resident))
+
+    # `device` is a device label, not the configuration word: the labels come from the only function
+    # that can produce one when nothing is resident.
+    dev_path = os.path.join(ROOT, "laya", "mcp", "device.py")
+    with open(dev_path, encoding="utf-8") as handle:
+        dev_tree = ast.parse(handle.read(), filename=dev_path)
+    labels = set()
+    for node in ast.walk(dev_tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_device":
+            labels = {stmt.value.value for stmt in ast.walk(node)
+                      if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Constant)
+                      and isinstance(stmt.value.value, str)}
+    assert labels, "resolve_device() returns no literal device label; retarget this"
+    assert sample["device"] in labels, "%r is not a device label resolve_device can return (%s)" % (
+        sample["device"], sorted(labels))
+
+    # The handler's two rules about those fields: the preference flag is true exactly while nothing
+    # is resident, and the top-level answer is the first resident checkpoint's own device.
+    assert sample["device_is_preference"] == (not sample["checkpoint_devices"]), (
+        "device_is_preference says %r with checkpoint_devices %r" % (
+            sample["device_is_preference"], sample["checkpoint_devices"]))
+    if sample["checkpoint_devices"]:
+        assert sample["device"] == next(iter(sample["checkpoint_devices"].values())), (
+            "device must be the first resident checkpoint's device, as serve.py computes it")
+
+    # And the shape of a fallback entry, which no page has ever spelled out: read from the dict the
+    # handler builds per checkpoint.
+    counters = None
+    for node in ast.walk(health):
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript) \
+                and isinstance(node.value, ast.Dict):
+            counters = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
+    assert counters, "health() builds no per-checkpoint dict literal; retarget this"
+    for name in resident:
+        assert sorted(sample["cpu_fallbacks"][name]) == sorted(counters), (
+            "cpu_fallbacks entries say %s, the handler builds %s" % (
+                sorted(sample["cpu_fallbacks"][name]), sorted(counters)))
+
