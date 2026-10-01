@@ -94,7 +94,8 @@ EMPTY_OR = 'os.environ.get("{name}") or '
 # A resolver that returns its own default from the empty string: the read, then a falsy test on
 # the next line, then the value it hands back. Only the first two lines are looked at, so a
 # reader that ignores an empty value and keeps going is still reported.
-EMPTY_RESOLVER = (r'os\.environ\.get\("{name}"(,\s*""\s*)?\)\s*\n\s*if not \w+\b')
+EMPTY_RESOLVER = (r'os\.environ\.get\("{name}"(,\s*""\s*)?\)\s*\n'
+                  r'\s*if (not \w+|\w+ is None or not \w+)\b')
 
 
 def empty_unsafe_reads(name: str) -> List[str]:

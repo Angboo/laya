@@ -20,6 +20,10 @@ if "torch" not in sys.modules:
     t = types.ModuleType("torch")
     t.cuda = types.ModuleType("torch.cuda")
     t.cuda.OutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
+    # laya/common.py annotates `proper_reward` with both at module scope, so importing
+    # laya.agent through this stub needs them present even though no test touches a tensor.
+    t.Tensor = type("Tensor", (), {})
+    t.dtype = type("dtype", (), {})
     t.nn = types.ModuleType("torch.nn")
     t.nn.Module = type("Module", (), {})
     t.nn.MultiheadAttention = type("MultiheadAttention", (), {})

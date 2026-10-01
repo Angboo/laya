@@ -697,12 +697,12 @@ code, out, err, stub = run_cli(["--predict", "--model", "english", "--task", "mu
 check("drift: every control the parser names a flag for arrives in the call",
       all(control in stub.kwargs for control in (PREDICT_CONTROLS & NAMED)),
       "missing %s" % sorted((PREDICT_CONTROLS & NAMED) - set(stub.kwargs)))
-# `lang_guess` is the weaker form of a flag the CLI already has, and both are call-level, so
-# `--lang` dominates it for a command line; `hooks_raise` / `hooks_timeout` govern hooks, and
-# `make_router` installs none, so there is nothing in this process for them to change.
-check("drift: the controls with no flag are exactly the accepted six",
+# `lang_guess` has had its own flag since #795, so what is left is the hook arguments:
+# `hooks_raise` / `hooks_timeout` govern hooks and `make_router` installs none, so there is
+# nothing in this process for them to change, and the three callables cannot come off a shell.
+check("drift: the controls with no flag are exactly the accepted five",
       sorted(PREDICT_CONTROLS - NAMED)
-      == ["hooks", "hooks_raise", "hooks_timeout", "lang_guess",
+      == ["hooks", "hooks_raise", "hooks_timeout",
           "on_predict_end", "on_predict_start"],
       sorted(PREDICT_CONTROLS - NAMED))
 
