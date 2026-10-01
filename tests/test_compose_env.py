@@ -193,31 +193,41 @@ for name in names:
 #     the operator enables the local-checkpoint mount the same file shows -- so the one line nobody
 #     annotated both silences language routing and breaks the mount the file exists to demonstrate.
 #
-#     A file may still deviate: the deviation has to be *said*, in a comment in that same file --
-#     the operator reads the file, not this gate. That is what makes `english` the finding rather
-#     than `cuda` in `compose.cuda.yaml`, whose row prints `cpu` / `cuda` both, or the offline pin
-#     an override file that bakes checkpoints from another mirror needs. A word that appears in no
-#     prose in the file is a value nobody chose on purpose.
+#     A file may still deviate, and the test for that is *where the deviation is said*: the entry
+#     has to carry its own comment, on the line or in the block directly above it. The operator
+#     reads the file at that line, so that is where a deliberate choice has to appear; a word that
+#     happens to sit in some other comment in the same file is not a choice about this value. That
+#     locality is what makes `english` the finding rather than `cuda` in `compose.cuda.yaml`, whose
+#     row prints `cpu` / `cuda` both, and it is what lets an override file that bakes checkpoints
+#     from another mirror pin `HF_HUB_OFFLINE=1` against a row that prints `0`, because that pin
+#     sits under its own explanation. The stated choice covers the same variable's second copy in
+#     the same file -- an override that forwards it to both services repeats one decision, not two.
+#     The cost is honest: any comment on the line clears this, so the gate enforces that a deviation
+#     is annotated where it is set, not that the annotation is true. Whether it is true is a
+#     reviewer's call, and the line is now in front of one.
 ALL_COMPOSE = tuple(sorted(f for f in os.listdir(ROOT)
                            if f.startswith("compose") and f.endswith((".yaml", ".yml"))))
-# The two scopes have to stay two scopes: a sixth file appearing is a decision about which sweep it
-# belongs to, and a silent omission is the bug this section was written because of.
-check("compose/files outside the dtype sweep are exactly the ones excluded",
-      sorted(set(ALL_COMPOSE) - set(COMPOSE_FILES)), ["compose.example.yml"])
 
-PINNED = re.compile(r'^([A-Z][A-Z0-9_]+):\s*"\$\{([A-Z][A-Z0-9_]+):-([^"}]+)\}"$')
+PINNED = re.compile(r'^([A-Z][A-Z0-9_]+):\s*"\$\{([A-Z][A-Z0-9_]+):-([^"}]+)\}"'
+                    r'(?:\s+(#.*))?$')
 
 
 def pins(text: str) -> List[tuple]:
-    """`(service, name, pinned default)` for every `"${NAME:-value}"` entry in an environment block.
+    """`(service, name, pinned default, annotation)` for each `"${NAME:-value}"` env entry.
 
     Same indent walk as `env_blocks`, and the same reason for it: a key at this indent under
     `environment:` is what the container gets, and nothing else is.
+
+    The annotation is everything the entry itself carries: a trailing comment on its line plus the
+    contiguous comment block directly above it. Group 4 has to be part of the match rather than a
+    second pass, because the alternative is a shape that matches nothing -- an entry with a trailing
+    comment would drop out of the sweep entirely instead of arriving annotated.
     """
     out: List[tuple] = []
+    lines = text.splitlines()
     in_services = service = None
     in_env = False
-    for raw in text.splitlines():
+    for i, raw in enumerate(lines):
         if not raw.strip():
             continue
         indent = len(raw) - len(raw.lstrip())
@@ -243,14 +253,34 @@ def pins(text: str) -> List[tuple]:
             match = PINNED.match(stripped)
             # The key and the interpolated name are the same variable here; a file that forwards
             # `FOO: "${BAR:-x}"` is a different drift, and the passthrough checks above own it.
-            if match and match.group(1) == match.group(2):
-                out.append((service, match.group(1), match.group(3)))
+            if not (match and match.group(1) == match.group(2)):
+                continue
+            above = []
+            j = i - 1
+            while j >= 0 and lines[j].lstrip().startswith("#"):
+                above.insert(0, lines[j].strip())
+                j -= 1
+            out.append((service, match.group(1), match.group(3),
+                        "\n".join(above + [(match.group(4) or "").strip()])))
     return out
 
 
-def comments(text: str) -> str:
-    """Everything a Compose file says about itself, and nothing it says to Compose."""
-    return "\n".join(line[line.rindex("#"):] for line in text.splitlines() if "#" in line.lstrip())
+# The two scopes have to stay two scopes, and the boundary has to be a reason rather than a list:
+# what puts a file in the dtype sweep is that it can select a device the base file does not, which
+# is the same fact that keeps the MPS row out of it. Derived, so a file another author adds is not a
+# failure on its own -- an override that bakes weights and names no device joins neither sweep --
+# while a hypothetical `compose.tpu.yaml` that pinned a device without joining the sweep would drop
+# every dtype passthrough in it, which is the bug this whole file was written because of.
+_devices = {v for _s, n, v, _a in pins(read("compose.yaml")) if n == "LAYA_DEVICE"}
+check_true("compose/base file pins a device to compare against", _devices != set(),
+           "compose.yaml has no LAYA_DEVICE default; retarget this if that changes")
+check("compose/every file that selects a device the base file does not is in the dtype sweep",
+      [rel for rel in ALL_COMPOSE
+       if rel != "compose.yaml"
+       and any(n == "LAYA_DEVICE" and v not in _devices for _s, n, v, _a in pins(read(rel)))
+       and rel not in COMPOSE_FILES], [])
+NOTES.append("compose/files outside the dtype sweep: %s"
+             % sorted(set(ALL_COMPOSE) - set(COMPOSE_FILES)))
 
 
 # name -> every default cell the page prints for it, across all of docker.md's tables. A row whose
@@ -266,10 +296,18 @@ for _line in docker_md.splitlines():
         doc_rows.setdefault(_n, set()).add(_cells[1])
 
 pinned_compared = 0
+pinned_exempt = 0
 for rel in ALL_COMPOSE:
-    _text = read(rel)
-    _say = comments(_text)
-    for service, name, value in pins(_text):
+    _found = pins(read(rel))
+    # A deviation stated once covers every entry that repeats it in the same file: an override for
+    # two services forwards the same variable twice, and the second copy carries no new decision.
+    # Unioned per name, not per file -- the comment blocks inside `compose.yaml`'s environment
+    # describe a *different* variable each, and treating them as cover for this one is how an
+    # unexamined default passes a gate written to catch it.
+    _said = {}
+    for _s, n, _v, a in _found:
+        _said[n] = (_said.get(n, "") + a).strip()
+    for service, name, value, _annotated in _found:
         if name not in doc_rows:
             continue
         literals = {t for cell in doc_rows[name] for t in re.findall(r"`([^`]+)`", cell)}
@@ -278,17 +316,26 @@ for rel in ALL_COMPOSE:
             # compare against. Counted below so the skip cannot quietly become the whole sweep.
             continue
         pinned_compared += 1
+        if value not in literals and _said[name]:
+            pinned_exempt += 1
         check_true("compose/%s/%s/%s default is what docs/docker.md prints" % (rel, service, name),
-                   value in literals or value in _say,
-                   "the page's `%s` row prints %s, this file ships %r without ever naming it, and "
-                   "an operator following the page gets it anyway"
+                   value in literals or _said[name] != "",
+                   "the page's `%s` row prints %s, this file ships %r with no comment on its line "
+                   "to say the choice is deliberate, and an operator following the page gets it "
+                   "anyway"
                    % (name, sorted(literals), value))
-# Non-vacuity: the comparison has to have run. Twenty-six of these hold on the current tree; the
-# floor is low enough to survive a table edit and high enough that a broken row parser or an
-# empty `ALL_COMPOSE` reports itself instead of passing.
+# Non-vacuity: the comparison has to have run. Twenty-one of these hold on the current tree, all
+# of them on-row; the floor is low enough to survive a table edit and high enough that a broken row
+# parser or an empty `ALL_COMPOSE` reports itself instead of passing.
 check_true("core/the default comparison compared the pinned entries", pinned_compared >= 15,
            "compared %d of %d Compose files; doc rows: %d" % (pinned_compared, len(ALL_COMPOSE),
                                                               len(doc_rows)))
+# Recorded rather than asserted: today the tree clears zero of these on a comment, and the one file
+# that will need the exemption is an override that bakes checkpoints from another mirror. Pinning
+# the number to zero would fail that author's merge; leaving it unprinted would hide the day the
+# exemption starts doing the work.
+NOTES.append("compose/%d of %d pinned defaults are off-row and cleared by a comment on their line"
+             % (pinned_exempt, pinned_compared))
 
 # 5. the exclusion this file relies on stays falsifiable: MPS's row gate is not forwarded because
 #    no Compose file here can select MPS. The day one does, this check fails and the decision has
