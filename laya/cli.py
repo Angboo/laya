@@ -11,6 +11,7 @@
     cat tickets.txt | laya --batch - --predict --json   # stdin, one JSON line of answers each
     laya "Where is my card" --questions intents.json    # your own questions, from a JSON file
     laya "Where is my card" --questions intents.json --head-max-len 384
+    laya "Where is my card" --questions intents.json --min-confidence 0.7
 
 Routing (the default) never downloads a checkpoint, so it works offline and
 returns in milliseconds. --predict loads the routed checkpoint on first use,
@@ -20,7 +21,9 @@ ready-made question presets from laya.presets and implies --predict.
 process, so the states share checkpoint loads and forward passes; --json prints JSONL.
 ready-made question presets from laya.presets and implies --predict. --questions
 answers the question set in a JSON file instead; --max-len and --head-max-len
-raise its token budget for the request, which is what a many-label question needs.
+raise its token budget for the request, which is what a many-label question needs,
+and --min-confidence marks an answer whose confidence falls below the threshold
+instead of changing it (it needs an answering mode: routing has no confidence to gate).
 """
 
 import argparse
@@ -70,6 +73,27 @@ def model_name(value):
         raise argparse.ArgumentTypeError("%s, or 'auto'" % error) from None
 
 
+def min_confidence_value(value):
+    """Resolve a `--min-confidence` argument through core's own validator, so the range is core's.
+
+    ``laya.confidence.check_min_confidence`` is what ``Router.predict`` and ``Router.predict_batch``
+    run this argument through, so a threshold this flag accepts is exactly one the call accepts --
+    including the boolean and the infinite value that ``float()`` alone waves through
+    (``--min-confidence inf`` would ask for a gate no answer can clear).
+    """
+    from laya.confidence import check_min_confidence
+
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "expected a number in [0.0, 1.0], got %r" % value) from None
+    try:
+        return check_min_confidence(number)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="laya",
@@ -99,6 +123,11 @@ def build_parser():
     parser.add_argument("--head-max-len", type=int, dest="head_max_len", metavar="N",
                         help="token budget the choice options share; raise it when a question has many"
                              " labels, so each keeps enough tokens to stay distinct")
+    parser.add_argument("--min-confidence", type=min_confidence_value, dest="min_confidence",
+                        metavar="P",
+                        help="flag an answer whose calibrated confidence falls below P (0.0-1.0) as"
+                             " low-confidence; the answer itself is kept, so this asks for a warning"
+                             " rather than a refusal. Needs --predict, --preset or --questions.")
     parser.add_argument("--device", help="torch device, e.g. cpu or cuda")
     parser.add_argument("--json", action="store_true", help="print the raw result as JSON")
     parser.add_argument("--batch", metavar="FILE",
@@ -176,6 +205,10 @@ def show_answers(result):
             detail = "%.3f" % answer["noul"]
         else:
             detail = json.dumps(answer, ensure_ascii=False)
+        # The gate marks an unsure answer and keeps it; without this line the mark was only ever
+        # readable through --json, so a gated run at a terminal looked exactly like an ungated one.
+        if answer.get("low_confidence"):
+            detail += "  [low-confidence]"
         print("%-12s: %s" % (qid, detail))
 
 
@@ -191,6 +224,19 @@ def budget_overrides(args):
         if value is not None:
             overrides[flag] = value
     return overrides
+
+
+def abstention_override(args):
+    """`--min-confidence` as a `predict` / `predict_batch` keyword argument, absent when unset.
+
+    Separate from ``budget_overrides`` because the two reach the batch call differently: a token
+    budget is per request, so it goes inside each request dict, while ``predict_batch`` validates
+    one threshold for the whole batch and takes it as its own argument. Unset has to stay unsent
+    for the same reason as the budgets -- a ``None`` here would overwrite a Router built with its
+    own ``min_confidence``, and ``0.0`` is a real threshold, not an absence.
+    """
+    value = getattr(args, "min_confidence", None)
+    return {} if value is None else {"min_confidence": value}
 
 
 def resolve_questions(args):
@@ -222,7 +268,7 @@ def run(text, args, router=None):
             result = router.predict(state, questions,
                                     model=args.model, task=args.task, lang=args.lang,
                                     lang_guess=args.lang_guess,
-                                    **budget_overrides(args))
+                                    **budget_overrides(args), **abstention_override(args))
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
             else:
@@ -276,7 +322,7 @@ def run_batch(lines, args, router=None):
             overrides.update(budget_overrides(args))
             requests = [{"state": {key: line}, "questions": questions, **overrides}
                         for line in lines]
-            kwargs = {"batch_size": args.batch_size}
+            kwargs = {"batch_size": args.batch_size, **abstention_override(args)}
             if args.sort_by_length:
                 # Sent only when asked for, as Router.predict_batch itself forwards it: a stub or
                 # an attached agent that predates the knob keeps working for every run that does
@@ -340,6 +386,13 @@ def main(argv=None):
         return eval_main(argv[1:])
     args = build_parser().parse_args(argv)
     text = " ".join(args.text).strip()
+    # Routing answers nothing, so there is no confidence to gate: `route` does not take the
+    # threshold at all. Accepting the flag there would let `laya --min-confidence 0.9 "..."` exit 0
+    # having ignored it, which is the thing this flag exists to avoid.
+    if args.min_confidence is not None and not (args.predict or args.preset or args.questions):
+        print("laya: --min-confidence gates answers, so it needs --predict, --preset or --questions.",
+              file=sys.stderr)
+        return 2
     if args.batch:
         if text:
             print("laya: pass either a text or --batch FILE, not both.", file=sys.stderr)

@@ -225,6 +225,7 @@ laya "My payment failed twice" --preset triage       # answer a ready-made prese
 laya --batch tickets.txt --predict                   # score a file of requests, one per line, in one batch
 cat tickets.txt | laya --batch - --predict --json    # stdin; one JSON line of answers per request
 laya "Where is my card" --questions intents.json     # answer your own questions, written in a JSON file
+laya "Refund my card" --predict --min-confidence 0.9 # mark an answer the model is unsure of
 laya                                                 # interactive mode
 ```
 
@@ -859,6 +860,24 @@ A gate is a policy, and a policy whose application you cannot observe is not one
 `abstention_threshold` echoes the threshold whenever a gate ran, so a log can be re-split by the gate that produced it instead of by whatever the caller happened to remember passing. `unevaluated` is the case a boolean cannot express — reporting it as a pass would be as wrong as reporting it as a flag, so a NaN, a missing confidence or a `bool` lands in its own state. The raw answer, probabilities and confidence are untouched either way.
 
 Left without `min_confidence`, the response is byte-for-byte what it was before any of this: no `abstention`, no `abstention_threshold`, no flag. That is deliberate — a field on every answer that only some calls populate is a schema change for callers who never asked to be gated. The presence of `abstention` is how you tell a gated run from an ungated one; a `min_confidence` of exactly `0.0` still counts as set, so it reports states, and `flag_low_confidence` treats `0.0` as a no-op because nothing can fall below it.
+
+The same gate is a flag on the `laya` command:
+
+```bash
+laya "Is it the blue one or the green one" --preset triage --min-confidence 0.9
+```
+
+```text
+intent      : other (p=0.992)
+frustration : 1.06  [low-confidence]
+churn_risk  : 0.158  [low-confidence]
+```
+
+Each marked answer gets `[low-confidence]` on its printed line and the answer itself is still
+printed, so a run at a terminal reads the same way the dict does; `--json` carries the raw
+`low_confidence` and `abstention` keys. `--batch FILE` applies one threshold to the whole file, which is the shape
+`predict_batch` takes. Routing has no answer to gate, so `laya --min-confidence 0.9 "..."` without
+`--predict`, `--preset` or `--questions` is refused rather than ignored.
 
 ---
 
