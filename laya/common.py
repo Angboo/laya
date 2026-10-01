@@ -259,6 +259,12 @@ def state_room(tok, q: Dict, max_len: int = 512, head_max_len: int = 192) -> int
     return max(0, max_len - len(head) - 1)          # -1 for the [SEP] that closes the state
 
 
+#: How far the DEFAULT window may be cut before `window_budget` says so. A small clamp is ordinary
+#: and warning about it would be noise; a large one multiplies the number of forward passes by the
+#: same factor, which a caller needs to be told about because nothing in their code implies it. 2x
+#: is the point where the scan costs at least twice what the caller would estimate from `max_len`.
+_WINDOW_CLAMP_WARN_RATIO = 2
+
 # How much capping the window may multiply the window count before `window_batch_cap` starts
 # chunking. Under this, chunking would cost the single-shared-pass property for no real protection.
 _WINDOW_BATCH_BLOWUP = 2
@@ -295,7 +301,8 @@ def window_budget(tok, questions, max_len: int = 512, head_max_len: int = 192,
     if room <= 0:
         raise ValueError(
             "predict_long: the questions' options fill the whole sequence (max_len=%d,"
-            " head_max_len=%d), leaving no room for the state; no window can carry any of it"
+            " head_max_len=%d), leaving no room for the state; no window can carry any of it."
+            " A label set this large is what laya.shortlist.predict_shortlist is for"
             % (max_len, head_max_len))
     if size > room:
         if window and window > 0:
@@ -303,6 +310,27 @@ def window_budget(tok, questions, max_len: int = 512, head_max_len: int = 192,
                 "laya: predict_long: window=%d is wider than the %d state tokens these questions"
                 " leave inside max_len=%d, so every window would be truncated to %d on the way to"
                 " the model; scanning with window=%d instead" % (size, room, max_len, room, room),
+                RuntimeWarning, stacklevel=3)
+        elif size >= room * _WINDOW_CLAMP_WARN_RATIO:
+            # The DEFAULT window was cut, and cut hard. Capping it is what stops the tail of every
+            # window reaching no model, but it is not free and it must not be silent: the scan now
+            # needs about `size / room` times as many windows, each one a full forward pass, and
+            # nothing in the caller's code says why. Measured on the English checkpoint with 100
+            # four-word options: room 102 of max_len 512, so the question head alone is 409 tokens,
+            # the window falls 312 -> 102 and the scan goes 11 windows -> 36, a 3.1x wall-clock
+            # increase (1902 ms -> 5858 ms) for the same document.
+            #
+            # The cost is not the capping, it is the shape of the request: 80% of every sequence is
+            # the question, and because the encoder is bidirectional the head cannot be computed
+            # once and reused -- its representations depend on the state it is paired with. So the
+            # warning names the real remedy rather than only reporting the clamp.
+            warnings.warn(
+                "laya: predict_long: these questions leave only %d of max_len=%d for the state"
+                " (their heads take the rest), so the scan window is capped %d -> %d and roughly"
+                " %.1fx as many windows -- each a full forward pass -- are needed to read the"
+                " document. Fewer or shorter options, a larger max_len, or"
+                " laya.shortlist.predict_shortlist for a large label set will all cost less than"
+                " scanning at this width" % (room, max_len, size, room, size / room),
                 RuntimeWarning, stacklevel=3)
         size = room
     step = stride if (stride and stride > 0) else max(1, size // 2)

@@ -662,6 +662,7 @@ check("docs/predict_long's docstring says the key is total",
 # the window was cut short on the way to the model while `answer["window"]["token_end"]` still
 # reported the whole span, and once the room fell under the stride, spans of the document were
 # read by no window at all.
+from laya import common as common_mod  # noqa: E402
 from laya.common import build_sequence, serialize_state  # noqa: E402
 
 TOK = _Tok()
@@ -1055,6 +1056,65 @@ check_true("no room/the refusal names the budget that caused it",
 # And one option fewer still scans, so this pins the boundary rather than "big questions fail".
 check_true("no room/a question that leaves room is still scanned",
            room_for(q_many(2)) > 0 and len(scan({"a": q_many(2)})[1]) > 0, "")
+
+
+# ------------------------------------------- a hard clamp of the DEFAULT window must not be silent
+# Capping the window at the room is what stops the tail of every window reaching no model, but it is
+# not free: the scan needs about `requested / room` times as many windows, each a full forward pass.
+# Measured on the English checkpoint with 100 four-word options -- room 102 of max_len 512, window
+# 312 -> 102, 11 windows -> 36, 1902 ms -> 5858 ms. Nothing in the caller's code implies that, so
+# `window_budget` says so. Only on a HARD clamp: warning about every small one would be noise, and
+# noise is how a warning that matters gets filtered out.
+check_true("clamp warning/the threshold is a ratio above 1 and not absurd",
+           1 < common_mod._WINDOW_CLAMP_WARN_RATIO <= 4, common_mod._WINDOW_CLAMP_WARN_RATIO)
+
+_default_window = max(64, MAX_LEN - HEAD_MAX_LEN - 8)
+
+
+def _clamp_warnings(qdef, **kw):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        window_budget(TOK, [Agent._to_internal(qdef)], MAX_LEN, HEAD_MAX_LEN,
+                      window=kw.get("window"), stride=kw.get("stride"))
+    return [str(c.message) for c in caught]
+
+
+# A question whose head leaves less than half the default window: found by search rather than by
+# hard-coding an option count, so a change to the fake tokenizer cannot quietly stop this reaching
+# the branch.
+_hard = next((n for n in range(2, 400)
+              if 0 < room_for(q_many(n)) * common_mod._WINDOW_CLAMP_WARN_RATIO <= _default_window),
+             None)
+check_true("clamp warning/a hard-clamp fixture exists", _hard is not None, "")
+# ... and one whose clamp is mild or absent, which must stay silent.
+_mild = next((n for n in range(2, 400) if room_for(q_many(n)) >= _default_window), None)
+check_true("clamp warning/a mild fixture exists", _mild is not None, "")
+
+if _hard is not None and _mild is not None:
+    _hard_msgs = _clamp_warnings(q_many(_hard))
+    check("clamp warning/fires once on a hard clamp of the default window", len(_hard_msgs), 1)
+    _m = _hard_msgs[0] if _hard_msgs else ""
+    check_true("clamp warning/names the room it was cut to", str(room_for(q_many(_hard))) in _m, _m)
+    check_true("clamp warning/names max_len", "max_len=%d" % MAX_LEN in _m, _m)
+    check_true("clamp warning/names how much more scanning it costs", "as many windows" in _m, _m)
+    check_true("clamp warning/points at the tool for a large label set",
+               "predict_shortlist" in _m, _m)
+
+    check("clamp warning/stays silent when the clamp is mild or absent",
+          _clamp_warnings(q_many(_mild)), [])
+
+    # An explicit `window=` keeps its own message and does not also get this one -- the caller who
+    # named a width is told their width was reduced, which is a different statement.
+    _explicit = _clamp_warnings(q_many(_hard), window=_default_window)
+    check("clamp warning/an explicit window gets exactly one message", len(_explicit), 1)
+    check_true("clamp warning/and it is the explicit-window one",
+               _explicit and "is wider than the" in _explicit[0], _explicit)
+
+# The refusal for a question with no room at all points at the same remedy.
+_no_room_msg = _attempt(lambda: window_budget(TOK, [Agent._to_internal(q_many(400))],
+                                              MAX_LEN, HEAD_MAX_LEN, window=None, stride=None))
+check_true("clamp warning/the no-room refusal names predict_shortlist too",
+           "predict_shortlist" in str(_no_room_msg), str(_no_room_msg)[:140])
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
