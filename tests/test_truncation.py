@@ -161,6 +161,86 @@ check_true("usage/keeps the existing token counts",
            '"input_tokens": n_tokens' in _src and '"output_tokens": 0' in _src)
 
 
+# --------------------------------------------------------------- example 15 teaches this exact dict
+# examples/15_truncation_basics.py is the page that teaches the report: it prints the dict off a call
+# that really truncated. tests/test_structured_docs.py already holds examples/03's drawn shape to the
+# same literal, so this covers only what that gate cannot see -- that 15 reads and names every key the
+# agents publish. The key set is read out of `laya/agent.py` by AST rather than repeated here, so a key
+# added to the dict has to be taught and one renamed fails the example still pointing at it.
+import ast  # noqa: E402
+import re  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EX15 = "examples/15_truncation_basics.py"
+
+
+def _tree(rel):
+    with open(os.path.join(ROOT, rel)) as fh:
+        return ast.parse(fh.read(), filename=rel)
+
+
+def _published(rel):
+    """The keys of the `usage = {..}` literal the module builds for an answered call."""
+    found = [tuple(k.value for k in node.value.keys if isinstance(k, ast.Constant))
+             for node in ast.walk(_tree(rel))
+             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+             and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "usage"]
+    # Exactly one. A call with no questions builds its two keys inside the result literal rather than
+    # by a Name assignment, and `predict_long` aggregates into an annotated dict: this must read the
+    # answered shape, or the example would be held to the wrong one.
+    check_true("report/one usage dict is built in %s" % rel, len(found) == 1, "(found %d)" % len(found))
+    return found[0] if found else ()
+
+
+def _strings(rel):
+    """Every string the example carries: the module docstring, the banner, each printed line."""
+    return [node.value for node in ast.walk(_tree(rel))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def _usage_reads(rel):
+    """The usage keys the example reads, as code rather than prose: `usage["k"]`, `x["usage"]["k"]`."""
+    found = set()
+    for node in ast.walk(_tree(rel)):
+        if not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Constant):
+            continue
+        key = node.slice.value
+        if not isinstance(key, str):
+            continue
+        base = node.value
+        if isinstance(base, ast.Name) and base.id == "usage":
+            found.add(key)
+        if (isinstance(base, ast.Subscript) and isinstance(base.slice, ast.Constant)
+                and base.slice.value == "usage"):
+            found.add(key)
+    return tuple(sorted(found))
+
+
+published = _published("laya/agent.py")
+# The two token totals are example 03's subject; everything else in the dict is this report (#174).
+report = tuple(k for k in published if k not in ("input_tokens", "output_tokens"))
+check_true("report/the report is more than the two token totals",
+           len(report) >= 4, "(%r)" % (report,))
+
+missing = tuple(k for k in report if k not in _usage_reads(EX15))
+check("15/prints every key of the report from a live call", missing, ())
+extra = tuple(k for k in _usage_reads(EX15) if k not in published)
+check("15/reads no key the agents do not publish", extra, ())
+prose = " ".join(_strings(EX15))
+for key in report:
+    check_true("15/names `%s` so a reader can grep for it" % key, "`%s`" % key in prose)
+
+# The claim that made this example wrong when it was written: it told the reader truncation is silent
+# and "nothing warns you", one line after printing `truncated`. A sentence may still say the cut is
+# invisible -- the two answers really are indistinguishable -- but only if it names the key saying so.
+UNREPORTED = re.compile(r"nothing warns|is silent|silent in|no warning|not reported"
+                        r"|nothing says|never says|cannot be seen", re.I)
+for sentence in [s for text in _strings(EX15) for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]:
+    if UNREPORTED.search(sentence):
+        check_true("15/a claim that the cut is invisible must name the key that reports it",
+                   "`truncated`" in sentence, "(%r)" % sentence[:120])
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)
