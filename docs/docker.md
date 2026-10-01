@@ -310,7 +310,9 @@ Compose files.
 The port is published on `127.0.0.1` only. The API has no authentication until
 `LAYA_API_KEY` is set, so set a key before exposing it with
 `LAYA_BIND_ADDRESS=0.0.0.0`, and put a TLS reverse proxy in front for remote clients.
-`/health` does not require authentication in either case.
+`/health` does not require authentication in either case, so the healthcheck below keeps
+working; with a key set it answers an unauthenticated caller `{"status": "ok"}` and withholds the
+checkpoint, revision and device fields, which need the bearer.
 
 The service has a healthcheck on `/health`. The server preloads before it starts
 listening, so with `LAYA_PRELOAD=1` a healthy container has its checkpoints loaded.

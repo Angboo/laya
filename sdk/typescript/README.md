@@ -223,7 +223,7 @@ authenticated gateway. A shared server key embedded in browser code is public.
 
 Laya's server binds to `0.0.0.0` by default; the quickstart sets `LAYA_HOST=127.0.0.1`
 for local use. Set `LAYA_API_KEY` in its environment to require Bearer
-authentication for predictions. `/health` remains public. `HF_TOKEN`, if needed
+authentication for predictions. `/health` remains public for liveness; `loaded` and `device` need the bearer. `HF_TOKEN`, if needed
 for checkpoint downloads, is a separate server-only credential. Configure CORS
 and TLS at your application proxy or gateway.
 
@@ -231,7 +231,7 @@ and TLS at your application proxy or gateway.
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
-| `GET /health` | None | `{status, loaded, device}` |
+| `GET /health` | None for liveness | `{status}`, plus `loaded` and `device` with the bearer |
 | `POST /v1/systemone` | `{state, questions, model?}` | `{model, answers, usage}` plus optional `routing` |
 
 Laya errors use FastAPI's `{detail: ...}` body: 400 for malformed requests, 401

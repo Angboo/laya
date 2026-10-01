@@ -104,11 +104,17 @@ export interface Prediction<Q extends Questions = Questions> {
   /** Optional routing metadata returned by Laya. */
   routing?: RouteDecision;
 }
-/** Laya's self-hosted health probe. */
+/** Laya's self-hosted health probe.
+ *
+ * `status` is always present. The rest is only answered to a caller the server can authenticate:
+ * on a deployment that set `LAYA_API_KEY`, an anonymous probe gets `{status: 'ok'}` and nothing
+ * else, because the other fields name resident checkpoints, their revision SHAs and the host's
+ * device state. A deployment with no key set answers every field to everyone.
+ */
 export interface Health {
   status: 'ok';
-  loaded: ModelName[];
-  device: string;
+  loaded?: ModelName[];
+  device?: string;
 }
 
 /** Preserve question IDs, primitive types, and literal choice labels when declaring a schema. */

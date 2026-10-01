@@ -36,6 +36,24 @@ test('systemone request preserves Unicode/JSON, auth, model override and proxy p
   assert.equal(calls, 1);
 });
 
+test('health accepts the liveness-only answer a locked-down server gives an anonymous probe', async () => {
+  // A server with LAYA_API_KEY set answers an unauthenticated /health with {status: 'ok'} and
+  // withholds loaded/device, because those name resident checkpoints, their revision SHAs and
+  // the host device state. That is a healthy response and must not be a LayaResponseError.
+  const client = new Laya({ fetch: async () => json({ status: 'ok' }) });
+  assert.deepEqual(await client.health(), { status: 'ok' });
+
+  // the detail is still validated whenever the server does send it
+  const bad = new Laya({ fetch: async () => json({ status: 'ok', loaded: ['nope'], device: 'cpu' }) });
+  await assert.rejects(bad.health(), LayaResponseError);
+  const badDevice = new Laya({ fetch: async () => json({ status: 'ok', device: 7 }) });
+  await assert.rejects(badDevice.health(), LayaResponseError);
+  // and a missing or wrong status is still a failure
+  for (const payload of [{}, { status: 'degraded' }]) {
+    await assert.rejects(new Laya({ fetch: async () => json(payload) }).health(), LayaResponseError);
+  }
+});
+
 test('Laya health uses GET and accepts the existing server response', async () => {
   const calls = [];
   const client = new Laya({ fetch: async (url, init) => {
