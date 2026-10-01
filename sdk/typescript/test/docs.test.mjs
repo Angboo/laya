@@ -71,11 +71,11 @@ test('the design page names every control the client puts on the wire, and only 
   // The fixture is what exercises each row, so it must stay the same size as the table: a row nobody
   // sets would be an untested mapping, and an option the table omits would be an undocumented one.
   assert.deepEqual([...table.keys()].sort(), Object.keys(OPTION_VALUES).sort(),
-    'the table names options %s, this fixture exercises %s',
-    [...table.keys()].sort(), Object.keys(OPTION_VALUES).sort());
+    'the table names options ' + JSON.stringify([...table.keys()].sort())
+    + ', this fixture exercises ' + JSON.stringify(Object.keys(OPTION_VALUES).sort()));
   assert.deepEqual(sent, [...table.values()].sort(),
-    'the page lists %s as the request fields, the client sends %s for the same options',
-    [...table.values()].sort(), sent);
+    'the page lists ' + JSON.stringify([...table.values()].sort()) + ' as the request fields, the '
+    + 'client sends ' + JSON.stringify(sent) + ' for the same options');
 
   // An option that is dropped on the floor would still be listed and still be accepted, so the mapping
   // is checked one option at a time: setting only `langGuess` must arrive as `lang_guess` and nothing else.
