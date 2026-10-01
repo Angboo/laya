@@ -409,7 +409,8 @@ from laya.integrations import langchain as langchain_module
 from laya.integrations import llamaindex as llamaindex_module
 from laya.router import Router
 
-CONTROLS = tuple(_controls.PREDICT_CONTROLS) + tuple(_controls.HOOK_CONTROLS)
+CONTROLS = (tuple(_controls.PREDICT_CONTROLS) + tuple(_controls.DECISION_CONTROLS)
+            + tuple(_controls.HOOK_CONTROLS))
 
 
 def _params(fn):
@@ -418,6 +419,8 @@ def _params(fn):
 
 check("controls/budget tuple names budget_kwargs",
       set(_params(_controls.budget_kwargs)), set(_controls.PREDICT_CONTROLS))
+check("controls/decision tuple names decision_kwargs",
+      set(_params(_controls.decision_kwargs)), set(_controls.DECISION_CONTROLS))
 check("controls/hook tuple names hook_kwargs",
       set(_params(_controls.hook_kwargs)), set(_controls.HOOK_CONTROLS))
 
@@ -464,7 +467,8 @@ class RecordingAgent:
         }
 
 
-ALL_CONTROLS = {"max_len": 1024, "head_max_len": 512, "hooks": ["H"], "on_predict_start": "S",
+ALL_CONTROLS = {"max_len": 1024, "head_max_len": 512, "lang": "fr", "min_confidence": 0.4,
+                "hooks": ["H"], "on_predict_start": "S",
                 "on_predict_end": "E", "hooks_raise": True, "hooks_timeout": 0.5}
 
 # One entry per class that can take a decision here: (label, class, constructor extras, one call).
@@ -508,14 +512,19 @@ def remote_body(cls, extra, run, **controls):
 for _label, _cls, _extra, _run in SURFACES:
     check("controls/%s with nothing set sends nothing" % _label,
           local_kwargs(_cls, _extra, _run), {})
-    check("controls/%s forwards all seven" % _label,
+    check("controls/%s forwards every control" % _label,
           local_kwargs(_cls, _extra, _run, **ALL_CONTROLS), ALL_CONTROLS)
     check("controls/%s forwards one budget alone" % _label,
           local_kwargs(_cls, _extra, _run, head_max_len=256), {"head_max_len": 256})
+    check("controls/%s forwards lang alone" % _label,
+          local_kwargs(_cls, _extra, _run, lang="fr"), {"lang": "fr"})
+    check("controls/%s forwards min_confidence alone" % _label,
+          local_kwargs(_cls, _extra, _run, min_confidence=0.4), {"min_confidence": 0.4})
     # 0 and [] are decisions, not absences: truthiness tests here would drop them.
     check("controls/%s keeps falsy values" % _label,
-          local_kwargs(_cls, _extra, _run, head_max_len=0, hooks=[], hooks_raise=False),
-          {"head_max_len": 0, "hooks": [], "hooks_raise": False})
+          local_kwargs(_cls, _extra, _run, head_max_len=0, hooks=[], hooks_raise=False,
+                       min_confidence=0.0),
+          {"head_max_len": 0, "hooks": [], "hooks_raise": False, "min_confidence": 0.0})
     check("controls/%s alongside model" % _label,
           local_kwargs(_cls, _extra, _run, model="laya-multilingual", max_len=1024),
           {"model": "laya-multilingual", "max_len": 1024})
@@ -528,6 +537,16 @@ for _label, _cls, _extra, _run in SURFACES:
           [k for k in remote_body(_cls, _extra, _run) if k in _controls.PREDICT_CONTROLS], [])
     check("controls/%s remote body keeps a zero" % _label,
           remote_body(_cls, _extra, _run, head_max_len=0).get("head_max_len"), 0)
+    # `lang` / `min_confidence` are laya-serve `BODY_CONTROLS`, so the same override reaches the
+    # remote node -- and an unset one stays out of the body rather than shadowing the deployment.
+    check("controls/%s remote body carries the decision controls" % _label,
+          {k: v for k, v in remote_body(_cls, _extra, _run, lang="es", min_confidence=0.3).items()
+           if k in _controls.DECISION_CONTROLS},
+          {"lang": "es", "min_confidence": 0.3})
+    check("controls/%s remote body omits unset decision controls" % _label,
+          [k for k in remote_body(_cls, _extra, _run) if k in _controls.DECISION_CONTROLS], [])
+    check("controls/%s remote body keeps min_confidence=0.0" % _label,
+          remote_body(_cls, _extra, _run, min_confidence=0.0).get("min_confidence"), 0.0)
     # A hook is a Python callable that runs inside `predict`; a serve node cannot receive one.
     for _c, _sample in HOOK_SAMPLES:
         try:
