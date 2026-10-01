@@ -651,6 +651,39 @@ for _wf in _concurrency_workflows:
         "a ref-only group collapses every push to main into one run",
     )
 
+# ------------------------------------------------- the eval gate is not cancelled mid-run
+# Scoped to evals.yml on purpose. A general "cancel-in-progress may only be false or name
+# pull_request" rule would also have to be right about every workflow a future change adds, and
+# nothing in the repository establishes it; the workflows that run on pull requests are already
+# covered by the per-commit group checks above.
+#
+# What is true here, and only here: no evals trigger makes an in-flight run obsolete.
+# `github.ref` is the default branch for `schedule` and for a `workflow_dispatch` on it, so the
+# weekly baseline shared a group with a manual re-run, as do two dispatches on one ref, and
+# `cancel-in-progress: true` made whichever started second kill the first. `release: published`
+# never collided: its ref is the tag (`refs/tags/<tag_name>`), so each release had its own group.
+# The job spends 60 minutes downloading weights and the dataset, and a cancelled run uploads no
+# report, so a cancellation reads as a clean gate.
+_EVALS_WORKFLOW = read(os.path.join(".github", "workflows", "evals.yml"))
+# Non-vacuity, independent of the concurrency block: if evals.yml is renamed or its triggers
+# change, this reports instead of the check below passing on a file it did not understand.
+check_true("evals.yml still declares its three triggers",
+           "schedule:" in _EVALS_WORKFLOW
+           and "release:" in _EVALS_WORKFLOW
+           and "workflow_dispatch:" in _EVALS_WORKFLOW)
+
+_EVALS_CANCEL = re.search(
+    r"(?m)^[ \t]*cancel-in-progress:\s*(.+?)\s*$", _concurrency_block(_EVALS_WORKFLOW))
+# An absent key means the Actions default, which is false, so nothing is cancelled. A bare `true`
+# is the only value that discards a run in flight.
+check_true(
+    "evals.yml/cancels no in-flight run",
+    _EVALS_CANCEL is None or _EVALS_CANCEL.group(1).strip().lower() in ("false", "no", "off"),
+    "cancel-in-progress: %s discards a 60-minute run that has already started; a cancelled run "
+    "uploads no report, so it reads as a clean gate"
+    % (_EVALS_CANCEL.group(1) if _EVALS_CANCEL else "true"),
+)
+
 # --------------------------------------------------------------- the API reference
 # `laya.__all__` is what `from laya import *` ships and what the README tells people to call, so
 # an export no page under docs/ names cannot be looked up at all. `cached_embed_fn` was one: the
