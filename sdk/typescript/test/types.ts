@@ -1,4 +1,5 @@
-import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer } from 'laya-client';
+import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer,
+  type LanguageDetection } from 'laya-client';
 
 const client = new Laya();
 const questions = defineQuestions({
@@ -16,10 +17,16 @@ const noul: number = result.answers.refund.noul;
 const routingModel: string | undefined = result.routing?.model;
 const actionProbability: number | undefined = result.answers.team.action?.act_probability;
 const noulConfidence: number | undefined = result.answers.refund.confidence;
+const mixedSegment: string | null | undefined = result.routing?.detection?.mixed_segment;
 // @ts-expect-error Routing metadata is optional.
 result.routing.model;
 // @ts-expect-error Action metadata is optional.
 result.answers.team.action.act_probability;
+// @ts-expect-error The mixed segment names the text that was read, not a score.
+const mixedAsNumber: number = result.routing?.detection?.mixed_segment;
+// @ts-expect-error Every branch of analyse() reports the key, so the type does not make it optional.
+const undetermined: LanguageDetection = { script: 'latin', script_profile: { latin: 1.0 }, language: 'de',
+  is_english: false, language_undecided: false, diacritic_rate: 0.0083, non_latin_fraction: 0.0 };
 // @ts-expect-error /v1/systemone does not expose standalone routing.
 client.route('hello');
 // @ts-expect-error task must be a string.
@@ -58,4 +65,5 @@ if (answer?.type === 'choice') {
   const dynamicProbability: number | undefined = answer.probabilities.anyLabel;
   void [dynamicLabel, dynamicProbability];
 }
-void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel, actionProbability, noulConfidence];
+void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel,
+  actionProbability, noulConfidence, mixedSegment, undetermined];

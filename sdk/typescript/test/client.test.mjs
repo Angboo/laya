@@ -224,6 +224,44 @@ test('prediction validation rejects malformed required fields and optional exten
   }
 });
 
+// A live `/v1/systemone` answer's `routing.detection`, verbatim, for a state whose subject and
+// notes are English but whose customer message is German. Every branch of `laya.lang.analyse()`
+// reports the same eight keys, which is what tests/test_router.py pins on the Python side;
+// `mixed_segment` is the one that names the segment that pulled the state off English (#384).
+const mixedDetection = {
+  script: 'latin', script_profile: { latin: 1.0 }, language: 'de', is_english: false,
+  language_undecided: false, diacritic_rate: 0.0083, non_latin_fraction: 0.0,
+  mixed_segment: 'Ich möchte meine Bestellung stornieren, danke',
+};
+
+test('routing detection reports the segment that pulled a mostly-English state off English', async () => {
+  const routed = structuredClone(prediction);
+  routed.routing = { ...route, detection: mixedDetection,
+    reason: 'Latin script, mostly English, but a line or field reads as \'de\'' };
+  const client = new Laya({ fetch: async () => json(routed) });
+  const result = await client.predict('Hello', questions);
+  assert.equal(result.routing.detection.mixed_segment, 'Ich möchte meine Bestellung stornieren, danke');
+
+  // null is the ordinary answer: the route read the state as one language
+  const single = structuredClone(routed);
+  single.routing.detection.mixed_segment = null;
+  const singleClient = new Laya({ fetch: async () => json(single) });
+  assert.equal((await singleClient.predict('Hello', questions)).routing.detection.mixed_segment, null);
+
+  // a deployment predating #384 sends no such key, and one display field must not fail the call
+  const older = structuredClone(routed);
+  delete older.routing.detection.mixed_segment;
+  const olderClient = new Laya({ fetch: async () => json(older) });
+  assert.equal((await olderClient.predict('Hello', questions)).routing.detection.language, 'de');
+
+  for (const segment of [7, false, ['Ich'], {}]) {
+    const bad = structuredClone(routed);
+    bad.routing.detection.mixed_segment = segment;
+    await assert.rejects(new Laya({ fetch: async () => json(bad) }).predict('Hello', questions),
+      LayaResponseError, JSON.stringify(segment));
+  }
+});
+
 test('network errors preserve the cause', async () => {
   const cause = new TypeError('fetch failed');
   await assert.rejects(new Laya({ fetch: async () => { throw cause; } }).health(), error =>
