@@ -19,8 +19,7 @@ which needs network access to the Hugging Face hub. --preset answers one of the
 ready-made question presets from laya.presets and implies --predict.
 --batch scores a whole file (or stdin, with `-`) through Router.predict_batch in one
 process, so the states share checkpoint loads and forward passes; --json prints JSONL.
-ready-made question presets from laya.presets and implies --predict. --questions
-answers the question set in a JSON file instead; --max-len and --head-max-len
+--questions answers the question set in a JSON file instead; --max-len and --head-max-len
 raise its token budget for the request, which is what a many-label question needs,
 and --min-confidence marks an answer whose confidence falls below the threshold
 instead of changing it (it needs an answering mode: routing has no confidence to gate).

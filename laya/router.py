@@ -466,7 +466,7 @@ class Router(HookRegistry):
     against, read it back: the map handed to each `Agent` is the merge described above.
 
     Both `agent_kwargs` and `sha256_digests` are public and mutable, and a checkpoint's entry is read
-    on the load rather than at construction, so a pin assigned in afterwards -- or added to an
+    on the load rather than at construction, so a pin assigned afterwards -- or added to an
     existing entry in place -- counts.
 
     The names the Router sets for itself -- `model_id_or_path`, `device`, `token`, `subfolder`,
