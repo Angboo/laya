@@ -89,6 +89,10 @@ export interface LanguageDetection {
   language_undecided: boolean;
   diacritic_rate: number;
   non_latin_fraction: number;
+  /** The line or field that made a mostly-English state non-English (#384), null otherwise.
+   *  A state can read as English overall because an English stack trace or template is longer
+   *  than the customer's message; this names the segment that was not. */
+  mixed_segment: string | null;
 }
 export interface RouteDecision {
   model: ModelName;
