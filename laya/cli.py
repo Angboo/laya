@@ -4,6 +4,7 @@
     laya "Refactor this service" --predict              # full answers, loads the checkpoint
     laya                                                # interactive mode
     laya "Mein Konto wurde zweimal belastet" --lang de  # explicit language
+    laya "My payment failed twice" --lang-guess en      # a soft hint that still lets routing decide
     laya "My payment failed twice" --model ml           # pin a checkpoint, by name or alias
     laya "My payment failed twice" --preset triage      # a ready-made question preset
     laya --batch tickets.txt --predict                  # a file of requests, one per line
@@ -81,6 +82,10 @@ def build_parser():
                         help="force a checkpoint instead of auto-routing: a checkpoint name or any of "
                              "core's aliases, in any casing, or 'auto' to route it (the default)")
     parser.add_argument("--lang", help="force a language, e.g. en or de, instead of detecting it")
+    parser.add_argument("--lang-guess", dest="lang_guess", metavar="CODE",
+                        help="a soft language hint that participates in routing instead of skipping "
+                             "detection: checked after --lang and before the built-in detector, so a "
+                             "probable-but-uncertain code can nudge the checkpoint without forcing it")
     parser.add_argument("--task", help="force a typed-decisions workflow instead of detecting it")
     parser.add_argument("--preset", choices=sorted(PRESETS), metavar="NAME",
                         help="answer a ready-made question preset (%s) instead of the router questions; implies --predict"
@@ -216,6 +221,7 @@ def run(text, args, router=None):
             state = {state_key: text}
             result = router.predict(state, questions,
                                     model=args.model, task=args.task, lang=args.lang,
+                                    lang_guess=args.lang_guess,
                                     **budget_overrides(args))
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
@@ -223,7 +229,8 @@ def run(text, args, router=None):
                 show_answers(result)
         else:
             state = {"text": text}
-            decision = router.route(state, model=args.model, task=args.task, lang=args.lang)
+            decision = router.route(state, model=args.model, task=args.task, lang=args.lang,
+                                    lang_guess=args.lang_guess)
             if args.json:
                 print(json.dumps(dict(decision), ensure_ascii=False, indent=2, default=str))
             else:
@@ -255,7 +262,9 @@ def run_batch(lines, args, router=None):
     forward passes; returns 0 on success, 2 on a handled error."""
     router = router or make_router(args)
     overrides = {key: value for key, value in (("model", args.model), ("task", args.task),
-                                               ("lang", args.lang)) if value is not None}
+                                               ("lang", args.lang),
+                                               ("lang_guess", args.lang_guess))
+                 if value is not None}
     try:
         if args.predict or args.preset or getattr(args, "questions", None):
             questions, key = resolve_questions(args)
