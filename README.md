@@ -288,6 +288,18 @@ A request body may carry `model` to pin a checkpoint instead of letting the rout
 takes exactly the spellings `laya --model` takes: names, aliases and casing all resolve through
 `laya.router`. `GET /models` lists the checkpoints and the aliases alongside them.
 
+Both `/predict` and `/predict/batch` also accept the four per-call controls `laya-serve`
+forwards on `/v1/systemone`: `lang_guess` (a soft ISO hint that participates in routing, where
+`lang` skips detection entirely), `max_len` and `head_max_len` (per-call token-budget overrides,
+capped by `LAYA_MAX_TOKEN_BUDGET`), and `min_confidence` (core's abstention threshold; the answer
+comes back with a `gate` field naming whether it fired). An absent key means "inherit what the
+Router was built with", so a caller never has to send them back as `null`; a body that names
+`hooks`, `hooks_raise`, `hooks_timeout`, `on_predict_start`, or `on_predict_end` is refused with
+422 rather than silently dropped, matching what `laya-serve` does for the same fields. On
+`/predict/batch`, `min_confidence` reaches `Router.predict_batch` as a call argument rather than
+a per-request key; the other three travel inside each request dict, so states in one batch may
+name different budgets.
+
 `/predict/batch` accepts two optional body fields that control the shape of the forward passes
 without changing any answer: `batch_size` (states per pass; omit it and the whole batch is one
 pass) and `sort_by_length` (group similarly sized states so each pass pads to a shorter maximum —
