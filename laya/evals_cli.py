@@ -135,10 +135,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="check a dataset file without running a model")
-    validate.add_argument("dataset")
+    validate.add_argument("dataset",
+                          help="JSONL file to check; blank lines and lines starting with '#' are "
+                               "ignored, and a file that leaves no examples is an error")
 
     run = sub.add_parser("run", help="evaluate a dataset and apply thresholds")
-    run.add_argument("dataset")
+    run.add_argument("dataset",
+                     help="labelled JSONL file; each row carries a state, the questions to answer "
+                          "on it, and the expected answer per question id")
     run.add_argument("--model", help="force a checkpoint instead of auto-routing")
     run.add_argument("--device", help="torch device, e.g. cpu or cuda")
     run.add_argument("--onnx", metavar="PATH",
@@ -155,7 +159,10 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="with --batch-size N where 1 < N < the run, group similarly sized "
                           "examples into the same forward pass so each pads to a shorter maximum; "
                           "scores the same answers, in the same order")
-    run.add_argument("--on-error", choices=("fail", "skip"), default="fail")
+    run.add_argument("--on-error", choices=("fail", "skip"), default="fail",
+                     help="'fail' (the default) stops the run when a runner call raises; 'skip' "
+                          "lists every row it could not score under the report's config.errored "
+                          "and reports the metrics for the rows that returned")
     run.add_argument("--baseline", help="a baseline report JSON to compare against")
     run.add_argument("--tolerance", action="append", metavar="METRIC=VALUE",
                      help="allowed absolute drift from the baseline; repeatable")
@@ -174,8 +181,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--markdown", dest="markdown_out", help="write a Markdown summary here")
 
     compare = sub.add_parser("compare", help="compare a report JSON against a baseline")
-    compare.add_argument("report")
-    compare.add_argument("--baseline", required=True)
+    compare.add_argument("report", help="a report JSON written by `laya-evals run --json`")
+    compare.add_argument("--baseline", required=True,
+                         help="the reviewed report JSON this one is checked against; its dataset "
+                              "and question fingerprints must match")
     compare.add_argument("--tolerance", action="append", metavar="METRIC=VALUE",
                          help="allowed absolute drift; repeatable")
 
