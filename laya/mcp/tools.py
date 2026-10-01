@@ -911,6 +911,9 @@ def _validate_batch_size(batch_size: Any) -> int | None:
 def laya_predict_batch(
     requests: Any,
     batch_size: Any = None,
+    hooks_timeout: Any = None,
+    min_confidence: Any = None,
+    sort_by_length: bool = False,
     *,
     router: Any = None,
 ) -> dict:
@@ -934,8 +937,16 @@ def laya_predict_batch(
 
     started = time.perf_counter()
     try:
-        results = router.predict_batch(items, batch_size=size) if size is not None \
-            else router.predict_batch(items)
+        kwargs = {}
+        if size is not None:
+            kwargs["batch_size"] = size
+        if hooks_timeout is not None:
+            kwargs["hooks_timeout"] = hooks_timeout
+        if min_confidence is not None:
+            kwargs["min_confidence"] = min_confidence
+        if sort_by_length:
+            kwargs["sort_by_length"] = True
+        results = router.predict_batch(items, **kwargs)
     except TypeError as exc:
         # A Router without batch support raises at the call itself; anything
         # else is a real bug and must surface unchanged.

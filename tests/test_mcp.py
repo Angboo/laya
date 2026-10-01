@@ -843,8 +843,8 @@ class BatchRouter(FakeRouter):
                 "routing": {"model": request.get("model") or "english",
                             "repo": "fake/laya", "reason": "batch route"}}
 
-    def predict_batch(self, requests, batch_size=None):
-        self.predict_batch_calls.append((list(requests), batch_size))
+    def predict_batch(self, requests, batch_size=None, **kwargs):
+        self.predict_batch_calls.append((list(requests), batch_size, kwargs))
         return [self._answer_for(request) for request in requests]
 
     def route_batch(self, requests):
@@ -966,7 +966,7 @@ def test_batch_predict():
     out = laya_predict_batch(BATCH_REQUESTS, batch_size=8, router=router)
     ok("batch/predict_one_call", len(router.predict_batch_calls) == 1,
        repr(len(router.predict_batch_calls)))
-    forwarded, size = router.predict_batch_calls[0]
+    forwarded, size, kwargs = router.predict_batch_calls[0]
     ok("batch/predict_size_forwarded", size == 8, repr(size))
     ok("batch/predict_items_forwarded", [item["state"] for item in forwarded]
        == [request["state"] for request in BATCH_REQUESTS])
@@ -1003,8 +1003,34 @@ def test_batch_predict():
     # batch_size unset must not be forwarded as None (strict old stubs included).
     router = BatchRouter()
     laya_predict_batch(BATCH_REQUESTS, router=router)
-    ok("batch/predict_size_default", router.predict_batch_calls[0][1] is None)
+    _, size, _ = router.predict_batch_calls[0]
+    ok("batch/predict_size_default", size is None)
 
+    # Test that hooks_timeout parameter is forwarded correctly
+    router = BatchRouter()
+    out = laya_predict_batch(BATCH_REQUESTS, hooks_timeout=5.5, router=router)
+    _, kwargs = router.predict_batch_calls[0][1], router.predict_batch_calls[0][2]
+    ok("batch/hooks_timeout_forwarded", kwargs.get("hooks_timeout") == 5.5, repr(kwargs))
+    
+    # Test that min_confidence parameter is forwarded correctly  
+    router = BatchRouter()
+    out = laya_predict_batch(BATCH_REQUESTS, min_confidence=0.75, router=router)
+    _, kwargs = router.predict_batch_calls[0][1], router.predict_batch_calls[0][2]
+    ok("batch/min_confidence_forwarded", kwargs.get("min_confidence") == 0.75, repr(kwargs))
+    
+    # Test that sort_by_length parameter is forwarded correctly
+    router = BatchRouter()
+    out = laya_predict_batch(BATCH_REQUESTS, sort_by_length=True, router=router)
+    _, kwargs = router.predict_batch_calls[0][1], router.predict_batch_calls[0][2]
+    ok("batch/sort_by_length_forwarded", kwargs.get("sort_by_length") is True, repr(kwargs))
+    
+    # Test that defaults don't pollute kwargs
+    router = BatchRouter()
+    out = laya_predict_batch(BATCH_REQUESTS, router=router)
+    _, kwargs = router.predict_batch_calls[0][1], router.predict_batch_calls[0][2]
+    ok("batch/defaults_not_in_kwargs", "hooks_timeout" not in kwargs and 
+       "min_confidence" not in kwargs and "sort_by_length" not in kwargs, repr(kwargs))
+    
     expect_tool_error("batch/predict_count_mismatch",
                       lambda: laya_predict_batch(BATCH_REQUESTS, router=ShortRouter()),
                       "internal_error")
