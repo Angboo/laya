@@ -26,12 +26,14 @@ const flagged: true | undefined = result.answers.refund.low_confidence;
 const flagAsFalse: false | undefined = result.answers.refund.low_confidence;
 // @ts-expect-error A gate state is one of the three core reports, not any string.
 const inventedGate: Answer['abstention'] = 'skipped';
-// @ts-expect-error An answer must carry the calibrated confidence it was gated on.
-const uncalibratedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, choice: 'a',
-  probabilities: { a: 0.5 } };
 const gatedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, answer_confidence: 0.42,
   choice: 'a', probabilities: { a: 0.42 }, low_confidence: true, abstention: 'abstained',
   abstention_threshold: 0.8 };
+// @ts-expect-error The gate writes `true` or writes nothing, so a cleared answer has no flag at all.
+const clearedAnswer: ChoiceAnswer = { ...gatedAnswer, low_confidence: false };
+// @ts-expect-error An answer must carry the calibrated confidence it was gated on.
+const uncalibratedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, choice: 'a',
+  probabilities: { a: 0.5 } };
 // @ts-expect-error Routing metadata is optional.
 result.routing.model;
 // @ts-expect-error Action metadata is optional.
