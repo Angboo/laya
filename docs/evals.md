@@ -46,8 +46,10 @@ short name like `english`, since there is no Router on this path (default
 whose `model` field names a different one fails with a clear error rather than being silently
 answered by the wrong model; `--device` does not apply. `--batch-size` uses the agent's batch
 API when it has one and falls back to one call per state otherwise; `--sort-by-length` is forwarded
-to that batch API, which the per-state fallback has no group to reorder. The report's `config` block
-records the `onnx` path.
+to that batch API, which the per-state fallback has no group to reorder. Pass `--calibration PATH`
+to load a fitted calibration map onto `ONNXAgent`, so calibration gates such as `--max-ece`
+evaluate against calibrated probabilities. The report's `config` block records the `onnx` path
+and `calibration` path (when set).
 
 Measured on `research/evals/fixture.jsonl` (12 labelled rows, English checkpoint, CPU):
 
