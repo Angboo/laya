@@ -91,8 +91,15 @@ def detect_request_language(state):
 router = Router(lang_guess=detect_request_language)
 ```
 
-An unrecognized or empty hint does not force a checkpoint; routing continues to the next rule.
-This keeps an abstaining detector from silently pinning requests to the wrong model.
+An abstaining hint does not force a checkpoint; routing continues to the next rule. That covers
+`None`, a blank string, and the codes that name no language (`C`, `POSIX`, `C.UTF-8`, `und`,
+`zxx`, `mul`), which is what a detector returns when it has nothing to say, so an abstention
+cannot silently pin requests to the wrong model.
+
+An unrecognized hint is not an abstention. Any other value, including `"xx"`, `False` and `0`,
+is read as "not English" and routes to the multilingual checkpoint. So a detector that returns
+a garbage code rather than `None` does pick a checkpoint, and if that matters, map its unknown
+case to `None` before passing it on.
 
 Built-in detection is a lightweight script and language heuristic, not a general-purpose language
 identification model. It analyzes string values in text, dict, and list states; dictionary keys are
