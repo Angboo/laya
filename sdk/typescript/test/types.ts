@@ -1,4 +1,5 @@
-import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer } from 'laya-client';
+import { Laya, defineQuestions, emailQuestions, triageQuestions,
+  type Questions, type Answer, type ChoiceAnswer } from 'laya-client';
 
 const client = new Laya();
 const questions = defineQuestions({
@@ -16,6 +17,21 @@ const noul: number = result.answers.refund.noul;
 const routingModel: string | undefined = result.routing?.model;
 const actionProbability: number | undefined = result.answers.team.action?.act_probability;
 const noulConfidence: number | undefined = result.answers.refund.confidence;
+const answerConfidence: number = result.answers.team.answer_confidence;
+const noulAnswerConfidence: number = result.answers.refund.answer_confidence;
+const gateState: 'passed' | 'abstained' | 'unevaluated' | undefined = result.answers.priority.abstention;
+const gateThreshold: number | undefined = result.answers.priority.abstention_threshold;
+const flagged: true | undefined = result.answers.refund.low_confidence;
+// @ts-expect-error `flag_low_confidence` writes `True` or writes nothing, so no answer reads false.
+const flagAsFalse: false | undefined = result.answers.refund.low_confidence;
+// @ts-expect-error A gate state is one of the three core reports, not any string.
+const inventedGate: Answer['abstention'] = 'skipped';
+// @ts-expect-error An answer must carry the calibrated confidence it was gated on.
+const uncalibratedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, choice: 'a',
+  probabilities: { a: 0.5 } };
+const gatedAnswer: ChoiceAnswer = { type: 'choice', confidence: 0.5, answer_confidence: 0.42,
+  choice: 'a', probabilities: { a: 0.42 }, low_confidence: true, abstention: 'abstained',
+  abstention_threshold: 0.8 };
 // @ts-expect-error Routing metadata is optional.
 result.routing.model;
 // @ts-expect-error Action metadata is optional.
@@ -58,4 +74,6 @@ if (answer?.type === 'choice') {
   const dynamicProbability: number | undefined = answer.probabilities.anyLabel;
   void [dynamicLabel, dynamicProbability];
 }
-void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel, actionProbability, noulConfidence];
+void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel,
+  actionProbability, noulConfidence, answerConfidence, noulAnswerConfidence, gateState,
+  gateThreshold, flagged, gatedAnswer];
