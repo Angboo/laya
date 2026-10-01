@@ -845,8 +845,12 @@ class Router(HookRegistry):
 
         Args:
             window: state tokens per window. Defaults to the routed checkpoint's budget
-                    (`max_len - head_max_len - 8`); a smaller window isolates a localized span.
-            stride: token step between windows; defaults to `window // 2` (50% overlap).
+                    (`max_len - head_max_len - 8`), capped at the room the questions leave for the
+                    state so no window is truncated again on the way in; a smaller window isolates
+                    a localized span.
+            stride: token step between windows; defaults to half the effective window (50%
+                    overlap). A stride past that window is a `ValueError`, since the tokens between
+                    windows would reach no model.
             aggregate: "auto" (the per-type rules above) is the only mode.
             batch_size: cap on windows per forward pass, to bound memory on very long states.
 

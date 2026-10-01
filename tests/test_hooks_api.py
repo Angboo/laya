@@ -297,10 +297,21 @@ for label, cls in (("LayaRouter", LayaRouter), ("LayaGuardrail", LayaGuardrail),
 # `input_tokens` / `output_tokens` are the fields every client decodes, so they are always
 # present. `options` (#538) is additive and conditional: it appears only for a request whose
 # options lost their distinct token spans, which is what keeps it out of ordinary responses.
-from laya.common import build_sequence, collapsed_options  # noqa: E402
+from laya.common import build_head, build_sequence, collapsed_options, state_room, window_budget  # noqa: E402
 
 check_param("build_sequence", build_sequence, "return_stats", False)
 check_param("build_sequence", build_sequence, "return_truncation_stats", False)
+
+# The sizing surface `predict_long` reads before it splits a state: `build_head` is the question
+# half `build_sequence` assembles, `state_room` is what is left of `max_len` for the state after
+# it, and `window_budget` turns the two into the window and stride a scan may use. Their defaults
+# are the checkpoint's, so a caller can measure a question without holding an Agent.
+for _name, _fn, _params in (("build_head", build_head, (("head_max_len", 192), ("option_order", None))),
+                            ("state_room", state_room, (("max_len", 512), ("head_max_len", 192))),
+                            ("window_budget", window_budget, (("max_len", 512), ("head_max_len", 192),
+                                                              ("window", None), ("stride", None)))):
+    for _param, _default in _params:
+        check_param(_name, _fn, _param, _default)
 check("collapsed_options/nothing collapsed is empty",
       collapsed_options(["q"], [{"options": {"options": 3, "options_distinct": 3,
                                              "tokens_per_option": None}}]), {})

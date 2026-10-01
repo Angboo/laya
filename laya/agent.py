@@ -41,6 +41,9 @@ from .common import (
     serialize_state,
     temp_bucket,
     unpermute_probs,
+    window_batch_cap,
+    state_room,
+    window_budget,
 )
 from .confidence import apply_confidence_gate, check_min_confidence
 from .hooks import (
@@ -264,7 +267,8 @@ def _start_evidence():
     inference, `states` is a snapshot of the states that reached it (`None` if the probe never ran,
     which means `predict_batch` was replaced and no hook chain was dispatched).
     """
-    evidence = {"answered": False, "states": None, "question_types": None}
+    evidence = {"answered": False, "states": None, "question_types": None,
+                "max_len": None, "head_max_len": None, "questions": None}
 
     def probe(ctx):
         evidence["answered"] = ctx.results is not None
@@ -276,14 +280,82 @@ def _start_evidence():
                 qid: qdef.get("type") if isinstance(qdef, dict) else None
                 for qid, qdef in ctx.questions.items()
             }
+        # Also what the budget and the questions ACTUALLY are once the chain has run, for
+        # `_check_scan_budget`. Recorded, never judged here: a hook that raises is governed by the
+        # caller's `hooks_raise`/`hooks_timeout`, so a correctness check that raises from inside the
+        # chain can be switched off by a policy meant for third-party telemetry. Measured: with
+        # `hooks_raise=False` -- what `docs/hooks/tracing.md` recommends -- a refusal became a
+        # RuntimeWarning blaming `_StartAdapter`, and the scan proceeded.
+        evidence["max_len"] = ctx.max_len
+        evidence["head_max_len"] = ctx.head_max_len
+        evidence["questions"] = dict(ctx.questions) if ctx.questions else {}
 
     return probe, evidence
 
 
+def _check_scan_budget(agent, evidence, sized, cfg_max_len, cfg_head_max_len, asked=None):
+    """Raise when the budget or questions in force leave less room than the scan was sized for.
+
+    `predict_long` sizes its windows from the agent's config, before any hook has run. A start hook
+    may then set `ctx.max_len`/`ctx.head_max_len`, or rewrite `ctx.questions` -- both documented
+    powers -- and `build_sequence` uses whatever it finds. When the head widens faster than
+    `max_len`, or the questions get more options, the real room SHRINKS: every window is
+    re-truncated on the way in, and once the stride exceeds the real room consecutive windows stop
+    touching. Measured on the English checkpoint with `widen_for_high_cardinality` from
+    `docs/hooks/patterns.md` at 50 options, windows sized 303 against a room of 253; at 100 options
+    a reviewer measured 43.4% of a document reaching no model, against the 37.6% this change exists
+    to remove. Silently worse than not windowing at all.
+
+    Called by `predict_long` AFTER the chain has run, not raised from inside it. A hook that raises
+    is subject to the caller's `hooks_raise` and `hooks_timeout`, so the first version of this check
+    could be switched off by `hooks_raise=False` -- which `docs/hooks/tracing.md` recommends -- and
+    could blow a `hooks_timeout` the caller set for their own hooks. The cost is that the forward
+    pass has already happened when this fires: a misconfigured scan is refused rather than answered
+    wrongly, but it is not refused for free. Sizing the windows after the chain instead would change
+    when hooks run and what they see, which is a larger change than this one.
+    """
+    if evidence.get("answered"):
+        return                                 # a hook answered the document; no window was scored
+    questions = evidence.get("questions")
+    if not questions:
+        return                                 # nothing to fit, as `window_budget` also concludes
+    eff_max_len = evidence.get("max_len")
+    eff_head = evidence.get("head_max_len")
+    eff_max_len = cfg_max_len if eff_max_len is None else eff_max_len
+    eff_head = cfg_head_max_len if eff_head is None else eff_head
+    if eff_max_len == cfg_max_len and eff_head == cfg_head_max_len and (
+            asked is None or questions == asked):
+        # Nothing the scan was sized against moved, so there is nothing to recompute -- and
+        # recomputing anyway costs a tokenization of every question head, which `window_budget`
+        # already paid and `_encode_state` will pay again. That showed up as a third head
+        # tokenization in `test_question_token_reuse`, which asserts two.
+        return
+    try:
+        internal = [agent._to_internal(q) for q in questions.values()]
+    except Exception:
+        return                                 # malformed questions are the validator's to report
+    if not internal:
+        return
+    room = min(state_room(agent.tok, q, eff_max_len, eff_head) for q in internal)
+    if room >= sized:
+        return
+    raise ValueError(
+        "predict_long: after the start hooks ran, the questions and token budget (max_len=%d "
+        "head_max_len=%d) leave %d state tokens per window, but the scan was sized for %d from the "
+        "agent's config (max_len=%d head_max_len=%d). Every window would be re-truncated and parts "
+        "of the document would reach no model. Pass window=/stride= explicitly, or call "
+        "predict_batch directly, if you need a start hook to change either."
+        % (eff_max_len, eff_head, room, sized, cfg_max_len, cfg_head_max_len))
+
+
 def _with_start_probe(hook_kwargs, probe):
-    """`hook_kwargs` with `probe` appended after the caller's own start hooks."""
+    """`hook_kwargs` with `probe` appended after the caller's own start hooks.
+
+    `probe` may be one hook or a list of them, appended in order.
+    """
     kwargs = dict(hook_kwargs)
-    kwargs["on_predict_start"] = list(_as_sequence(hook_kwargs.get("on_predict_start"))) + [probe]
+    extra = list(probe) if isinstance(probe, (list, tuple)) else [probe]
+    kwargs["on_predict_start"] = list(_as_sequence(hook_kwargs.get("on_predict_start"))) + extra
     return kwargs
 def _option_logits(logits, items, offset):
     """Raw per-option logits, the rows `_decode_answers` divides by temperature.
@@ -1306,6 +1378,8 @@ class Agent(HookRegistry):
         document is decisive. Each answer therefore carries `answer["window"]` — the deciding
         window's `index`, `token_start`/`token_end` into the tokenized state, and the window `count`
         — so a caller can inspect the span the answer came from rather than trust the raw number.
+        That span is the one the model read, not merely the one asked for: the window is capped at
+        the room the questions leave, so what is handed to `predict_batch` is not cut short again.
 
         A state that already fits one window is passed straight to `system_one` (identical output).
 
@@ -1323,15 +1397,24 @@ class Agent(HookRegistry):
             above describe this method's windows, not the text the model read
 
         Args:
-            window: state tokens per window. Defaults to the per-question state budget
-                    (`max_len - head_max_len - 8`) -- the most a window can hold for every question.
+            window: state tokens per window. Defaults to the checkpoint's state budget
+                    (`max_len - head_max_len - 8`), and either way is capped at the room the
+                    questions leave for the state inside `max_len` -- the smallest room of them,
+                    because one list of windows is scored for every question. A wider window is
+                    re-truncated on the way to the model, so it is clamped instead, with a
+                    `RuntimeWarning` when the caller is the one who asked for it. Options are what
+                    make the room small: on the English checkpoint a 2-option question leaves 483
+                    tokens for the state and a 100-option one leaves 100.
                     A smaller window isolates a localized signal better (a short deciding span is a
                     larger fraction of its window, so that window classifies it clearly), at the
                     cost of more windows; the large default favors context and throughput. `noul`
                     is robust to this, `choice`/`score` benefit from a smaller window when the
                     deciding span is a small part of a long, otherwise-neutral document.
-            stride: token step between windows. Defaults to `window // 2` (50% overlap), so a span
-                    near a boundary still lands whole inside some window.
+            stride: token step between windows. Defaults to half the *effective* window (50%
+                    overlap), so a span near a boundary still lands whole inside some window. A
+                    stride past the effective window is refused rather than clamped: the tokens
+                    between each pair of windows would be read by no window at all, which is the
+                    failure this method exists to prevent.
             aggregate: "auto" (the per-type rules above) is the only mode for now.
             batch_size: cap on windows per forward pass, to bound memory on very long states.
             lang: per-language temperature selection, as in `system_one`.
@@ -1341,6 +1424,11 @@ class Agent(HookRegistry):
             on_predict_end (PredictHookArg): A per-call end hook, as in `system_one`.
             hooks_raise: Override the Agent's `hooks_raise` for this call.
             hooks_timeout: Override the Agent's `hooks_timeout` for this call.
+
+        Raises:
+            ValueError: `aggregate` is anything but "auto"; the questions' options fill the whole
+                    sequence, leaving no room for the state; or `stride` steps past the effective
+                    window, so tokens between two windows would be read by nothing.
 
         Returns a single result dict, the same shape as `system_one`, with `usage["windows"]` added.
         The key is always present and counts the windows the model scored to produce the answer: `1`
@@ -1370,7 +1458,21 @@ class Agent(HookRegistry):
                        "hooks_timeout": hooks_timeout}
         max_len = self.cfg.get("max_len", 512)
         head_max_len = self.cfg.get("head_max_len", 192)
-        budget = window if (window and window > 0) else max(64, max_len - head_max_len - 8)
+        # Size the window against the room these questions actually leave, not the config alone:
+        # every window is decoded and scored as a normal state, so a window wider than the room
+        # was re-truncated by `build_sequence` on the way in and the tail of it reached no model
+        # -- while `answer["window"]` reported the whole span. Measured on the English checkpoint
+        # (max_len=512, head_max_len=192, config budget 312): a 2-option question leaves room for
+        # 483 tokens, 48 options leave 308, and 100 -- `serve`'s documented maximum -- leave 100.
+        # At 87 options the room (152) fell below the 156-token default stride, so the windows
+        # stopped overlapping and part of the document was read by no window at all: measured on a
+        # 920-token document at 100 options, 420 of its tokens reached no window.
+        ids = list(questions.keys())
+        for qid in ids:
+            self._check_question(qid, questions[qid])
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        budget, step, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
+                                        head_max_len, window=window, stride=stride)
 
         state_ids = self.tok(serialize_state(state).replace(self.tok.mask_token, " "),
                              add_special_tokens=False)["input_ids"]
@@ -1386,10 +1488,14 @@ class Agent(HookRegistry):
             # Why 0 for a hook answer here: the state did fit one window, but no window was scored,
             # which is the same fact the multi-window path reports as 0. Reading 1 would make a
             # cached answer and a served answer agree on how much of the input the model saw.
+            # The same budget check as the multi-window path. Without it a document short enough to
+            # fit one window was silently truncated by a re-budgeting hook and still reported
+            # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
+            # never reached the model, while a longer document on the identical input hard-failed.
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
-        step = stride if (stride and stride > 0) else max(1, budget // 2)
         windows, starts = [], []
         i, n = 0, len(state_ids)
         while i < n:
@@ -1406,8 +1512,13 @@ class Agent(HookRegistry):
         # `list(windows)`, not `windows`: `ctx.states` is the list the hook receives, so a hook that
         # mutates it in place (`append`, `sort`) would otherwise also grow the split this call
         # attributes answers to, and the counts would agree while `starts` no longer lined up.
-        results = self.predict_batch(list(windows), questions, batch_size=batch_size, lang=lang,
+        # Bound one forward pass to what the un-capped scan would have used; see
+        # `window_batch_cap`. An explicit batch_size is honoured untouched.
+        cap = window_batch_cap(len(windows), budget, max(64, max_len - head_max_len - 8),
+                               batch_size)
+        results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
                                      **_with_start_probe(hook_kwargs, probe))
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
 
         if evidence["answered"]:
             # The hook replaced the call before any window was scored. Aggregating over its payload

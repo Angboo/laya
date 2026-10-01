@@ -712,7 +712,11 @@ result = agent.predict_long(state, questions, hooks=[AuditLog()])   # the scan, 
   `usage["windows"]` at 0, because no window scored it.
 
 A smaller `window` isolates a short deciding span better (it becomes a larger fraction of its
-window); the default (`max_len - head_max_len`) favors context and throughput. Output shape matches
+window); the default (`max_len - head_max_len`) favors context and throughput. Either way the
+window is capped at the room the questions leave for the state inside `max_len`, so a window is
+never re-truncated on the way to the model and `token_start`/`token_end` describe the span it read:
+many options leave little room (on the English checkpoint, 2 options leave 483 state tokens and
+100 leave 100), and a window past that room used to be cut short silently. Output shape matches
 `predict`, with `usage["windows"]` added.
 
 `ONNXAgent.predict_long(state, questions, window=..., stride=..., batch_size=...)` has the same
