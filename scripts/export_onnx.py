@@ -69,19 +69,20 @@ def export_to_onnx(model_id_or_path: str, output_path: str):
         dummy_qtype,
     )
 
-    # 2. Dynamic dimensions, declared as torch.export Dims (what the dynamo exporter reads;
-    # `dynamic_axes` is only converted to these with a deprecation warning). The outputs follow
-    # from the inputs, so `act_logits` is (batch_size, 2) instead of a static (1, 2).
-    batch_dim = torch.export.Dim("batch_size")
-    seq_dim = torch.export.Dim("seq_len")
-    marker_dim = torch.export.Dim("num_markers")
-    dynamic_shapes = (
-        {0: batch_dim, 1: seq_dim},
-        {0: batch_dim, 1: seq_dim},
-        {0: batch_dim, 1: marker_dim},
-        {0: batch_dim, 1: marker_dim},
-        {0: batch_dim},
-    )
+    # 2. Dynamic dimensions. `dynamic_axes` rather than torch.export Dims: it is the declaration
+    # every torch this package supports accepts (`dynamic_shapes` raises under the TorchScript
+    # exporter, the default through torch 2.8, and does not exist before 2.5), and the dynamo
+    # exporter converts it to Dims. With the batch-2 dummies above, both give the same graph;
+    # the dummies are what fix #695, not the declaration.
+    dynamic_axes = {
+        "input_ids": {0: "batch_size", 1: "seq_len"},
+        "attention_mask": {0: "batch_size", 1: "seq_len"},
+        "marker_pos": {0: "batch_size", 1: "num_markers"},
+        "marker_mask": {0: "batch_size", 1: "num_markers"},
+        "qtype": {0: "batch_size"},
+        "logits": {0: "batch_size", 1: "num_markers"},
+        "act_logits": {0: "batch_size"},
+    }
 
     input_names = [
         "input_ids",
@@ -112,7 +113,7 @@ def export_to_onnx(model_id_or_path: str, output_path: str):
         do_constant_folding=True,
         input_names=input_names,
         output_names=output_names,
-        dynamic_shapes=dynamic_shapes,
+        dynamic_axes=dynamic_axes,
     )
     
     print(f"Successfully exported ONNX model to: {output_path}")
