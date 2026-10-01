@@ -248,7 +248,9 @@ for tag, rel in EXAMPLES:
                            "`truncated`" in sentence, "(%r)" % sentence[:120])
             # Which end of the state survives is a property of the state's type, not of a parameter a
             # caller passes. 37 said `predict` "does not expose" `truncate_left`, which is only true
-            # of the keyword: the rule is reachable, and it is `list`.
+            # of the keyword: the rule is reachable, and it is `list`. Deliberately per sentence -- a
+            # page that names `list` somewhere else still has to say which type the clamp reads in
+            # the same breath as the flag, because that pairing is the thing a reader takes away.
             if "`truncate_left`" in sentence or "truncate_left=" in sentence:
                 check_true("%s/a sentence about `truncate_left` names the type that sets it" % tag,
                            "list" in sentence, "(%r)" % sentence[:120])
