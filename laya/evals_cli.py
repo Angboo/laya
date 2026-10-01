@@ -96,9 +96,13 @@ def _parse_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, float]:
         if not name or not raw:
             raise EvalError("expected NAME=VALUE, got %r" % pair)
         try:
-            out[name.strip()] = float(raw)
+            number = float(raw)
         except ValueError:
             raise EvalError("%r is not a number in %r" % (raw, pair))
+        # float() accepts "nan", and a NaN limit or tolerance would disable the gate it names.
+        if math.isnan(number):
+            raise EvalError("%r is not a number in %r" % (raw, pair))
+        out[name.strip()] = number
     return out
 
 
@@ -232,12 +236,16 @@ def _check_thresholds(overall: Dict[str, float], mins: Dict[str, float],
         value = overall.get(name)
         if value is None:
             failures.append("metric %r is not in the report" % name)
+        elif math.isnan(value):
+            failures.append("metric %r is NaN" % name)
         elif value < limit:
             failures.append("%s=%.4f is below the minimum %.4f" % (name, value, limit))
     for name, limit in maxs.items():
         value = overall.get(name)
         if value is None:
             failures.append("metric %r is not in the report" % name)
+        elif math.isnan(value):
+            failures.append("metric %r is NaN" % name)
         elif value > limit:
             failures.append("%s=%.4f is above the maximum %.4f" % (name, value, limit))
     return failures

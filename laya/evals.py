@@ -430,7 +430,8 @@ class EvalReport:
         absolute difference allowed for that metric. A baseline metric the report no longer has
         fails the comparison (its delta carries ``missing: True`` and a NaN value): a run whose
         every example errored under ``on_error="skip"`` has an empty ``overall``, and must not
-        pass the gate by having nothing left to compare.
+        pass the gate by having nothing left to compare. A NaN metric, baseline or tolerance
+        fails the comparison too.
         """
         base = (baseline or {}).get("overall", baseline or {})
         tolerances = tolerances or {}
@@ -451,7 +452,9 @@ class EvalReport:
             diff = value - float(base_value)
             deltas[metric] = {"baseline": float(base_value), "value": value,
                               "diff": diff, "tolerance": allowed}
-            if abs(diff) > allowed:
+            # `not ... <=` rather than `>`: every comparison with NaN is False, so a NaN on
+            # either side would otherwise pass as "did not move".
+            if not abs(diff) <= allowed:
                 ok = False
         return ok, deltas
 
