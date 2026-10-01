@@ -224,6 +224,52 @@ test('prediction validation rejects malformed required fields and optional exten
   }
 });
 
+// The key set is what a live `/v1/systemone` answer carries: both agents build these six keys for
+// any non-empty question set, and `options` joins them when the head budget leaves some question's
+// options sharing a token span (#538). The counts are chosen to exercise a cut state, which a
+// checkpoint that small cannot produce, and both reported `tokens_per_option` shapes.
+const truncationReport = { input_tokens: 43, output_tokens: 0, state_tokens: 120,
+  state_tokens_dropped: 76, truncated: true, truncated_questions: ['refund'] };
+
+test('the truncation report reaches the caller verbatim and is validated when sent', async () => {
+  const reported = structuredClone(prediction);
+  reported.usage = truncationReport;
+  const client = new Laya({ fetch: async () => json(reported) });
+  assert.deepEqual((await client.predict('Hello', questions)).usage, truncationReport);
+
+  const collapsed = structuredClone(reported);
+  collapsed.usage.options = { refund: { total: 4, distinct: 1, tokens_per_option: null },
+    team: { total: 2, distinct: 1, tokens_per_option: 4 } };
+  const collapseClient = new Laya({ fetch: async () => json(collapsed) });
+  assert.deepEqual((await collapseClient.predict('Hello', questions)).usage.options,
+    collapsed.usage.options);
+
+  // a server answering only the two keys Jev decodes is still a valid prediction
+  const legacy = structuredClone(prediction);
+  const legacyClient = new Laya({ fetch: async () => json(legacy) });
+  assert.deepEqual((await legacyClient.predict('Hello', questions)).usage,
+    { input_tokens: 10, output_tokens: 0 });
+
+  // but a half-report is refused rather than passed through as a budget fact
+  for (const mutate of [
+    u => { delete u.input_tokens; },
+    u => { u.state_tokens = '120'; },
+    u => { u.state_tokens_dropped = 76.5; },
+    u => { u.truncated = 'true'; },
+    u => { u.truncated_questions = 'refund'; },
+    u => { u.truncated_questions = [1]; },
+    u => { u.options = []; },
+    u => { u.options = { refund: { total: 4, distinct: 1 } }; },
+    u => { u.options = { refund: { total: 4, distinct: 5, tokens_per_option: 4 } }; },
+    u => { u.options = { refund: { total: 4, distinct: 1, tokens_per_option: '4' } }; },
+  ]) {
+    const bad = structuredClone(reported);
+    mutate(bad.usage);
+    await assert.rejects(new Laya({ fetch: async () => json(bad) }).predict('Hello', questions),
+      LayaResponseError, JSON.stringify(bad.usage));
+  }
+});
+
 test('network errors preserve the cause', async () => {
   const cause = new TypeError('fetch failed');
   await assert.rejects(new Laya({ fetch: async () => { throw cause; } }).health(), error =>
