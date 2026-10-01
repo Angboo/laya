@@ -139,6 +139,48 @@ metrics per slice value, so a regression in one language or one question is visi
 reading the aggregate. The `model` slice holds the checkpoint that answered each row: the
 `Router`'s own choice per request, or the runner's `model` for a runner that does not route.
 
+### Opt-in slice gates
+
+The overall baseline gate can pass while a smaller language or question slice regresses. To make
+one reviewed slice a CI requirement, save a JSON policy such as `gates.json`:
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {"slice": {"language": "zh"}, "metric": "choice_accuracy",
+     "min_count": 50, "max_drop": 0.05},
+    {"slice": {"qid": "intent"}, "metric": "ece",
+     "min_count": 50, "max": 0.10}
+  ]
+}
+```
+
+```bash
+laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 \
+    --gate-policy gates.json --json report.json
+laya-evals compare report.json --baseline baseline.json \
+    --tolerance choice_accuracy=0.02 --gate-policy gates.json
+```
+
+Each rule selects exactly one `language`, `model`, `qid`, or `tag` value and names the metric
+exactly as it appears in the slice report. It has a positive `min_count` and exactly one limit:
+`min` or `max` checks the candidate value; `max_drop` permits at most that decrease from the
+baseline; `max_increase` permits at most that increase. The latter two require `--baseline`.
+The count is the number of scored answers for that metric in the selected slice, in **both**
+reports for a relative rule. For `ece`, it is the number of answers with a finite confidence and
+boolean `correct` value. A missing slice or metric, too few scored answers, or skipped/errored
+cases fails the opted-in gate. Relative rules also require both reports to carry matching run
+identities, so missing evidence cannot appear as a pass. A measured regression reports the slice,
+metric, counts, values, and limit. Invalid policy syntax exits 2 before a checkpoint loads; a
+quality failure exits 1. The policy is recorded in `config.gate_policy` of a `run --json` report.
+`compare --gate-policy` applies the policy supplied on that command line to the saved measurements.
+If it differs from the report's recorded policy, `compare` says so; an explicit re-check under a
+new policy does not change the policy under which the original run was made.
+
+The regular overall comparison still applies, including its tolerance and legacy-baseline
+behavior. Without `--gate-policy`, slice reporting and comparison behave as before.
+
 ## Run identity
 
 `run` records what it measured in the report's `config` block, so the artifact a reviewer reads
@@ -152,6 +194,7 @@ is reviewable on its own:
 | `questions_sha256` | a fingerprint of the question schema: every question's id, type, `instructions` and `criteria`, over the whole dataset |
 | `laya_version` | the `laya` that computed the numbers |
 | `thresholds` | the gate this run applied: `min`, `max` and `baseline_tolerance` |
+| `gate_policy` | the optional slice gate policy applied by `run --gate-policy` |
 | `revisions` | the commit each checkpoint that answered was loaded from (see [below](#baseline-and-ci-gate)) |
 
 `dataset` is a path, and a path is not an identity: a dataset can be edited in place, moved, or
