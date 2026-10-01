@@ -869,6 +869,15 @@ check("serve/BODY_REFUSALS names nothing but hooks",
       [key for key in _http_refusals if "hook" not in key and "predict" not in key], [])
 check("serve forwards and refuses disjoint sets", sorted(set(_http_controls) & set(_http_refusals)), [])
 
+# The opt-in shortlist evaluator is a public Python entry point. Pin its required
+# provenance arguments without adding an eager import to the package root.
+from laya.evals_shortlist import evaluate_shortlist  # noqa: E402
+
+check_param("evaluate_shortlist", evaluate_shortlist, "k", 20)
+check_param("evaluate_shortlist", evaluate_shortlist, "dataset_path", None)
+for param in ("checkpoint_id", "embedder_id"):
+    check_param("evaluate_shortlist", evaluate_shortlist, param, inspect.Parameter.empty)
+
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

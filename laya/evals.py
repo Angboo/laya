@@ -725,7 +725,7 @@ def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evalua
                         raise EvalError("runner returned no answer for question %r" % qid)
                     errors.append({"index": index + offset, "question": qid, "error": "missing answer"})
                     continue
-                cases.append({
+                case = {
                     "qid": qid,
                     "language": example.language,
                     "model": example.model or _answered_model(result),
@@ -736,7 +736,13 @@ def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evalua
                     "correct": _correct(answer, expected),
                     "scores": {evaluator.name: evaluator.score(answer, expected)
                                for evaluator in evaluators},
-                })
+                }
+                # Shortlist metadata describes the retrieval stage, not the answer. Keep it
+                # beside the case so opt-in evaluations can attribute the source of an error.
+                shortlist = (result or {}).get("shortlist")
+                if isinstance(shortlist, dict) and qid in shortlist:
+                    case["shortlist"] = shortlist[qid]
+                cases.append(case)
         index += len(chunk)
 
     report = EvalReport(config=dict(config or {}), cases=cases)

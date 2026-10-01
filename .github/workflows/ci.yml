@@ -252,6 +252,9 @@ jobs:
       - name: Eval harness tests
         run: python -m pytest tests/test_evals.py -q
 
+      - name: Shortlist attribution tests
+        run: python -m pytest tests/test_evals_shortlist.py -q
+
       - name: Eval API guard
         run: python tests/test_evals_api.py
 
