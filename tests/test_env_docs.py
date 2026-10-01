@@ -209,7 +209,9 @@ def prose_units():
     paths = [os.path.join(ROOT, f) for f in DOC_FILES if os.path.isfile(os.path.join(ROOT, f))]
     paths += [p for p in walk(ROOT, "docs") if p.endswith(".md")]
     for path in paths:
-        rel = os.path.relpath(path, ROOT)
+        # posix separators because the anchors below name `docs/docker.md` and `laya/agent.py`
+        # literally, and CI runs this suite on `windows-latest` too.
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
         para: List[str] = []
         start = 1
         for i, line in enumerate(read(path).splitlines(), 1):
@@ -229,7 +231,7 @@ def prose_units():
     for path in walk(ROOT, "laya"):
         if not path.endswith(".py"):
             continue
-        rel = os.path.relpath(path, ROOT)
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
         for node in ast.walk(ast.parse(read(path), filename=path)):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) \
                     and any(v in node.value for v in AMP_VARS):
