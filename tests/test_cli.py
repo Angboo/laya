@@ -325,6 +325,18 @@ check("batch -: reads stdin", code == 0
       and len(stub.predict_batch_calls[0][0]) == 2
       and len([l for l in out.splitlines() if l.strip()]) == 2, "code %r err %r" % (code, err))
 
+# A pipe arrives in the locale's codec unless told otherwise, and FILE is read as utf-8, so `-`
+# has to be too or a non-Latin request reaches the router as mojibake.
+_hindi = "मुझसे दो बार"
+sys.stdin = io.TextIOWrapper(io.BytesIO(_hindi.encode("utf-8")), encoding="latin-1")
+try:
+    code, out, err, stub = run_batch_cli(["--batch", "-", "--predict", "--json"])
+finally:
+    sys.stdin = _original_stdin
+_states = [list(r["state"].values()) for r in stub.predict_batch_calls[0][0]]
+check("batch -: stdin is decoded as utf-8, like FILE", code == 0 and _states == [[_hindi]],
+      "code %r states %r" % (code, _states))
+
 # ------------------------------------------------------------- --sort-by-length (#294 knob)
 #
 # `Agent.predict_batch` and `Router.predict_batch` have grouped similarly sized states into one
