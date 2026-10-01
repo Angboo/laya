@@ -2257,3 +2257,161 @@ def test_http_api_page_documents_exactly_the_health_fields():
         assert sorted(sample["cpu_fallbacks"][name]) == sorted(counters), (
             "cpu_fallbacks entries say %s, the handler builds %s" % (
                 sorted(sample["cpu_fallbacks"][name]), sorted(counters)))
+
+
+def _decision_response_site(rel):
+    """What one Agent builds the decision response out of, read from its own literals.
+
+    Returns the result dict's keys, the keys its `usage` block always carries, the keys it adds to
+    `usage` only under a condition, and the `model` constant it stamps. Read out of the source rather
+    than transcribed, because the point of this gate is that the page and both agents describe the
+    same payload; a hand-copied list would be a third copy to keep in step.
+    """
+    path = os.path.join(ROOT, rel)
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        keys = usage = head = None
+        optional = set()
+        for stmt in ast.walk(fn):
+            if not isinstance(stmt, ast.Assign) or not stmt.targets:
+                continue
+            first = stmt.targets[0]
+            names = ([k.value for k in stmt.value.keys
+                      if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                     if isinstance(stmt.value, ast.Dict) else [])
+            if isinstance(first, ast.Name) and first.id == "usage" and "state_tokens" in names:
+                usage = names
+            elif isinstance(first, ast.Subscript) and isinstance(first.value, ast.Name):
+                if first.value.id == "usage" and isinstance(first.slice, ast.Constant):
+                    optional.add(first.slice.value)
+                elif first.value.id == "window_results" and {"answers", "model", "usage"} <= set(names):
+                    keys = names
+                    head = next((v.value for k, v in zip(stmt.value.keys, stmt.value.values)
+                                 if isinstance(k, ast.Constant) and k.value == "model"
+                                 and isinstance(v, ast.Constant)), None)
+        if usage:
+            assert keys, "%s: %s builds a usage block in no result dict literal" % (rel, fn.name)
+            assert head, "%s: %s's result dict has no literal `model` constant" % (rel, fn.name)
+            return {"keys": sorted(keys), "usage": sorted(usage),
+                    "optional": sorted(optional), "head": head}
+    raise AssertionError("%s: no `usage = {...}` literal with a `state_tokens` key" % rel)
+
+
+def _route_decision_keys():
+    """Every keyword some `RouteDecision(...)` is built with, across all of `_route`'s branches."""
+    path = os.path.join(ROOT, "laya", "router.py")
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    keys = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "RouteDecision":
+            keys.update(kw.arg for kw in node.keywords if kw.arg)
+    assert keys, "no RouteDecision(...) call with keywords in laya/router.py; retarget this"
+    return sorted(keys)
+
+
+def _md_table_keys(page, header):
+    """The first column of a markdown table, read as rows rather than searched for substrings."""
+    lines = page.splitlines()
+    start = lines.index(header)
+    rows = []
+    for line in lines[start + 2:]:
+        if not line.strip():
+            break
+        rows.append(line.split("|")[1].strip().strip("`"))
+    return rows
+
+
+def test_http_api_page_documents_the_decision_response_keys():
+    r"""The page documents two of the six `usage` keys the agents actually send.
+
+    `### Response` showed `"usage": {"input_tokens": 74, "output_tokens": 0}`, while
+    `Agent.predict_batch` builds six keys and `OnnxAgent._infer_batch` builds the same six -- the
+    truncation report #174 asked for, and the only place a caller can see that the state it sent was
+    cut before the model read it. It showed three of the four `routing` keys (`workflow` is on every
+    branch of `_route`) and four of the eight `laya.lang.analyse()` returns. And it named a
+    `lang_guess` key of `routing` that no code path has ever set: `lang_guess` is a *request* control
+    (`BODY_CONTROLS`), and the evidence a hint acted on is spelled out in `reason`.
+
+    ```
+    usage   documented 2  <-  agent 6 always + options when options collapse, onnx the same
+    routing documented 4  <-  RouteDecision 5: model, repo, reason, detection, workflow
+    detection documented 4  <-  analyse() 8
+    lang_guess   documented 1  <-  set by 0 branches
+    ```
+
+    So every key set below is read out of the source -- the result and usage literals, the
+    `RouteDecision(...)` keywords, `analyse()` at runtime, which needs no checkpoint -- and held to
+    the page in both directions, as the request-body and `/health` gates above do. The sample is the
+    response to the request the page itself prints, so the coherence checks at the end can read it as
+    one server's answer rather than as six unrelated numbers.
+    """
+    from laya.lang import analyse
+
+    page = open(os.path.join(ROOT, "docs", "http-api.md"), encoding="utf-8").read()
+    section = page[page.index("### Response"):page.index("### Confidence")]
+    sample = json.loads(section.split("```json", 1)[1].split("```", 1)[0])
+
+    torch_site = _decision_response_site(os.path.join("laya", "agent.py"))
+    onnx_site = _decision_response_site(os.path.join("laya", "onnx_agent.py"))
+    top, always, optional = torch_site["keys"], torch_site["usage"], torch_site["optional"]
+    assert {k: v for k, v in onnx_site.items() if k != "head"} == \
+        {k: v for k, v in torch_site.items() if k != "head"}, (
+        "the two agents report different fields, so the page cannot describe both: torch %s, "
+        "onnx %s" % (torch_site, onnx_site))
+
+    assert sorted(sample) == sorted(top + ["routing"]), (
+        "the sample says %s, an agent result is %s plus the `routing` Router.attach" % (
+            sorted(sample), top))
+    assert sample["model"] == torch_site["head"], (
+        "the sample's head name is %r, `Agent.predict_batch` stamps %r" % (
+            sample["model"], torch_site["head"]))
+
+    assert sorted(sample["usage"]) == always, (
+        "the sample's usage block says %s, the agents build %s" % (sorted(sample["usage"]), always))
+    documented = _md_table_keys(section, "| `usage` key | meaning |")
+    assert sorted(documented) == sorted(always + optional), (
+        "the usage table says %s, the agents build %s (always) + %s (only when it has to say so)"
+        % (sorted(documented), always, optional))
+
+    routing = _route_decision_keys()
+    assert sorted(sample["routing"]) == routing, (
+        "the sample's routing block says %s, `_route` builds %s" % (sorted(sample["routing"]),
+                                                                   routing))
+    assert sorted(_md_table_keys(section, "| `routing` key | meaning |")) == routing, (
+        "the routing table must name exactly the keys a RouteDecision can carry")
+
+    # The hint the page used to describe as a key is not one, and no branch has ever set it.
+    assert "lang_guess" not in routing + always + optional, (
+        "`lang_guess` is now a response key; the prose describes it as request-side evidence")
+    assert "`lang_guess` evidence" not in page, "the page still calls lang_guess a routing key"
+
+    # `detection` is whatever analyse() returns, so the field names come from calls rather than a
+    # list -- over enough states to show the set does not move with the script, which is what lets
+    # one row describe it.
+    shapes = {tuple(sorted(analyse(state))) for state in
+              ("I was charged twice this month, I want my money back",
+               "Rechnung \u00fcber zwei Abbuchungen, ich bitte um Erstattung",
+               "\u3042\u306e\u8acb\u6c4f\u304c\u91cd\u8907\u3057\u3066\u3044\u307e\u3059", "")}
+    assert len(shapes) == 1, "analyse() returns a different key set per script: %s" % (sorted(shapes),)
+    detected = sorted(shapes.pop())
+    assert sorted(sample["routing"]["detection"]) == detected, (
+        "the sample shows %s, analyse() returns %s" % (
+            sorted(sample["routing"]["detection"]), detected))
+    detection_row = [line for line in section.splitlines() if line.startswith("| `detection` |")]
+    assert len(detection_row) == 1, "the routing table has no single `detection` row"
+    for key in detected:
+        assert "`%s`" % key in detection_row[0], (
+            "%s is in the sample's detection block but not named in the row that defines it" % key)
+
+    # And the sample has to be internally coherent, since it is presented as one real answer: the
+    # truncation flag is that worst case being non-zero, and the per-question list is empty when
+    # nothing was cut.
+    usage = sample["usage"]
+    assert usage["output_tokens"] == 0, "the head generates nothing, so a sample must not show more"
+    assert usage["truncated"] == (usage["state_tokens_dropped"] > 0), usage
+    assert (usage["truncated_questions"] == []) == (not usage["truncated"]), usage
+    assert 0 < usage["state_tokens"] and usage["state_tokens_dropped"] < usage["state_tokens"], usage
