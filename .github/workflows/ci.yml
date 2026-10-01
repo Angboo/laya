@@ -60,6 +60,9 @@ jobs:
       # This job installs nothing, so running the audit here is what proves it needs
       # nothing but the standard library. Its test suite imports numpy and runs in `test`.
       - run: python research/benchmarks/zh_short_commands/audit.py
+      # Standard library only, audit and tests alike, so both run here.
+      - run: python research/benchmarks/es_phone_turns/audit.py
+      - run: python -m unittest discover -s research/benchmarks/es_phone_turns/tests -v
 
   test:
     name: tests (py${{ matrix.python }})
