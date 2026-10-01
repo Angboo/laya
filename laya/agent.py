@@ -1661,10 +1661,29 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         laya.load("convaiinnovations/laya", fast=True)                # TileLang GPU fast path
         laya.load("convaiinnovations/laya", compile=True)              # torch.compile the model
 
+    `model_id_or_path` also accepts a checkpoint name or alias -- the same ones
+    `Router` resolves, so both entry points read one table:
+
+        laya.load("typed-decisions")
+        laya.load("ml")                                               # multilingual
+
+    Anything else (a Hub repo id, a local directory) is passed to `Agent` unchanged.
+
     `revision`/`expected_sha256` pin and verify the downloaded artifacts; see `Agent`.
     `hooks` / `on_predict_start` / `on_predict_end` observe or shape every prediction; see
     `laya.hooks`. `calibration` is the same optional JSON path accepted by `Agent`.
     """
+    # A registry name or alias resolves to the same (repo, subfolder) the Router would
+    # pick, instead of being handed to the Hub as a repo id. A caller who spelled out a
+    # subfolder is loading that subfolder of whatever repo they named, so the name is only
+    # resolved when it is the whole argument -- and an existing directory always wins over a
+    # name, so a local checkpoint that happens to be called `english` still loads from disk.
+    if subfolder is None and not os.path.exists(model_id_or_path):
+        from .router import resolve_model_spec
+
+        spec = resolve_model_spec(model_id_or_path)
+        if spec is not None:
+            model_id_or_path, subfolder = spec
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
                  compile=compile,
                  revision=revision, expected_sha256=expected_sha256,
