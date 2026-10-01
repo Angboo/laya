@@ -283,7 +283,21 @@ def _printed_prose():
             for arg in node.args:
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     parts.append(arg.value)
-    return " ".join(parts)
+    # A page wrapped across `print` calls makes one sentence: without this, "…window. 120" and
+    # "options slip through…" would never read as the count it states.
+    return re.sub(r"\s+", " ", " ".join(parts))
+
+
+def _dotted(node):
+    """`os.path.join` -> 'os.path.join'; anything not built from plain attribute reads -> ''."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
 
 
 BLURB = _banner_blurb()
@@ -362,13 +376,15 @@ check_true("39/quoted rather than paraphrased",
 _IN_OSPATH = []
 _MISSING = ""
 for node in ast.walk(TREE):
-    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name) and node.func.value.id == "os.path"):
+    if isinstance(node, ast.Call) and _dotted(node.func).startswith("os.path."):
         if any(isinstance(n, ast.Name) and n.id == "MODELS" for n in ast.walk(node)):
-            _IN_OSPATH.append("os.path.%s" % node.func.attr)
+            _IN_OSPATH.append("%s line %d" % (_dotted(node.func), node.lineno))
     if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "missing" for t in node.targets):
         _MISSING = ast.unparse(node.value)
+check_true("39/the filesystem rule can see a call at all",
+           any(_dotted(n.func).startswith("os.path.") for n in ast.walk(TREE) if isinstance(n, ast.Call)),
+           "")
 check("39/no filesystem call is handed a Router spec", _IN_OSPATH, [])
 check_true("39/the missing path is built from the checkpoint directory",
            "LOCAL_MODELS" in _MISSING, _MISSING)
@@ -384,9 +400,11 @@ for node in ast.walk(TREE):
                 break
 check_true("39/the two option budgets it sets up are named",
            len(SIZES_BY_NAME) >= 2, str(SIZES_BY_NAME))
+STATED = {int(x) for x in re.findall(r"(\d+) options", CLAIMS)}
+check_true("39/and the prose really states them, so this rule is not reading an empty list",
+           bool(STATED), CLAIMS[:80])
 check("39/it states no option count it does not build",
-      sorted(n for n in {int(x) for x in re.findall(r"(\d+) options", PROSE)}
-             if n not in set(SIZES_BY_NAME.values())), [])
+      sorted(n for n in STATED if n not in set(SIZES_BY_NAME.values())), [])
 _MISPAIRED = []
 for node in ast.walk(TREE):
     if isinstance(node, ast.Tuple) and len(node.elts) == 2:
