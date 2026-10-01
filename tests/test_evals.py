@@ -904,6 +904,34 @@ def test_compare_fails_when_a_baseline_metric_is_missing():
     assert "missing" not in deltas["choice_accuracy"] and deltas["noul_accuracy"]["missing"]
 
 
+def test_a_nan_metric_fails_every_gate():
+    """Every comparison with NaN is False, so a NaN metric used to pass --min, --max and the
+    baseline comparison alike."""
+    from laya import evals_cli
+
+    nan = float("nan")
+    report = EvalReport(overall={"score_mae": nan, "mean_confidence": nan})
+    failures = evals_cli._check_thresholds(report.overall, {"mean_confidence": 0.9}, {"score_mae": 0.1})
+    assert len(failures) == 2 and all("NaN" in failure for failure in failures)
+
+    ok, deltas = report.compare({"overall": {"score_mae": 0.05, "mean_confidence": 0.95}},
+                                {"score_mae": 0.1, "mean_confidence": 0.1})
+    assert not ok and set(deltas) == {"score_mae", "mean_confidence"}
+
+    # A NaN in the baseline, or as the tolerance, is the same case from the other side.
+    healthy = EvalReport(overall={"choice_accuracy": 0.9})
+    assert not healthy.compare({"overall": {"choice_accuracy": nan}}, {"choice_accuracy": 1.0})[0]
+    assert not healthy.compare({"overall": {"choice_accuracy": 0.9}}, {"choice_accuracy": nan})[0]
+    assert healthy.compare({"overall": {"choice_accuracy": 0.9}})[0]
+
+
+def test_cli_rejects_a_nan_limit_or_tolerance():
+    from laya import evals_cli
+
+    with pytest.raises(EvalError, match="not a number"):
+        evals_cli._parse_pairs(["choice_accuracy=nan"])
+
+
 def test_default_evaluators_cover_the_three_types():
     names = {e.name for e in default_evaluators()}
     assert {"choice_accuracy", "noul_accuracy", "score_mae", "mean_confidence"} <= names
