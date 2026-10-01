@@ -20,6 +20,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from laya.serve import (  # noqa: E402
+    BATCH_BODY_CALL_CONTROLS,
+    BATCH_BODY_ITEM_CONTROLS,
     BODY_CONTROLS,
     BODY_REFUSALS,
     DEFAULT_MAX_TOKEN_BUDGET,
@@ -1867,3 +1869,302 @@ def test_http_api_page_documents_exactly_the_forwarded_controls():
     prose = page[page.index("`model`, `task`, `lang`, `lang_guess`"):]
     for key in BODY_REFUSALS:
         assert "`%s`" % key in prose, "%s is not named where the refusal is explained" % key
+
+
+# --------------------------------------------------------------------- batch endpoint per-call controls
+#
+# `Router.predict_batch` reads two kinds of control: call-level kwargs that apply to the whole
+# batch (chunking, padding, abstention) and per-request keys it lifts off each item of ``requests``
+# (checkpoint, task, language, token budget). Before this PR, the HTTP batch endpoint read neither
+# -- it always synthesized a plain ``{state, questions, model}`` dict and called ``predict_batch``
+# with no kwargs, so a caller could not send any of the controls the single endpoint already
+# forwards. The suite below pins the two split lists against core's own signature, verifies every
+# control reaches the right side of the Router call, and refuses a hook control the same way
+# ``/v1/systemone`` already does.
+
+
+class BatchRecordingRouter(FakeRouter):
+    """Records ``predict_batch``'s full call: the requests list and every call kwarg."""
+
+    def __init__(self):
+        super().__init__()
+        self.batch_calls = []
+
+    def predict_batch(self, requests, **kwargs):
+        self.batch_calls.append(([dict(r) for r in requests], dict(kwargs)))
+        return [
+            {
+                "model": "laya-rl-agent",
+                "answers": {
+                    "dept": {
+                        "type": "choice",
+                        "choice": "billing",
+                        "probabilities": {"billing": 0.94, "tech": 0.06},
+                        "confidence": 0.94,
+                    }
+                },
+                "usage": {"input_tokens": 42, "output_tokens": 0},
+                "routing": {"model": "english", "reason": "English Latin text"},
+            }
+            for _ in requests
+        ]
+
+
+class StrictBatchRouter(BatchRecordingRouter):
+    """``predict_batch(self, requests)`` -- takes no call kwargs.
+
+    Witness against an always-forward mutation: if the handler unconditionally passed ``batch_size``
+    or ``min_confidence``, this Router would raise ``TypeError`` and 500 on a bare body.
+    """
+
+    def predict_batch(self, requests):  # noqa: D401 -- strict on purpose
+        return super().predict_batch(requests)
+
+
+BATCH_CALL_VALUES = {"batch_size": 4, "min_confidence": 0.9, "sort_by_length": True}
+BATCH_ITEM_VALUES = {"max_len": 64, "head_max_len": 32, "task": "typed-decisions",
+                     "lang": "de", "lang_guess": "de"}
+
+
+def _batch_client(monkeypatch):
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    fake = BatchRecordingRouter()
+    return TestClient(create_app(router=fake)), fake
+
+
+def test_batch_call_controls_are_exactly_predict_batch_kwargs_or_refusal():
+    """A control added to ``Router.predict_batch`` must be placed on one side of the line.
+
+    Either serve forwards it (``BATCH_BODY_CALL_CONTROLS``) or it refuses it (``hooks_timeout``,
+    the one hook-execution arg that ``predict_batch`` takes). Silently ignoring a new kwarg is the
+    failure mode this pin exists to catch: the same reasoning that made ``/v1/systemone`` refuse
+    ``hooks_timeout`` in #724 applies to the batch path -- a caller cannot shorten the deadline
+    on which the operator's own hooks execute.
+    """
+    from laya.router import Router
+
+    taken = set(inspect.signature(Router.predict_batch).parameters) - {"self", "requests"}
+    declared = set(BATCH_BODY_CALL_CONTROLS) | {"hooks_timeout"}
+    assert taken == declared, "predict_batch() takes %s; serve declares %s" % (
+        sorted(taken), sorted(declared))
+
+
+def test_batch_controls_cover_the_single_endpoints_set_plus_batch_only():
+    """Everything the single endpoint forwards must reach the batch path too, and vice versa.
+
+    The batch forwards the same per-call controls ``/v1/systemone`` does -- split across the item
+    dict (``Router.predict_batch`` reads them per item) and the call kwargs (min_confidence) --
+    plus the batch-only chunking and padding knobs (``batch_size``, ``sort_by_length``) that
+    ``predict_batch`` accepts and ``predict`` does not. ``model`` still goes into every item, as
+    it has since the batch endpoint shipped. If a control moves across either boundary, this
+    test names it.
+    """
+    batch_side = set(BATCH_BODY_ITEM_CONTROLS) | set(BATCH_BODY_CALL_CONTROLS)
+    single_side = (set(BODY_CONTROLS) | {"batch_size", "sort_by_length"}) - {"model"}
+    assert batch_side == single_side, (
+        "batch forwards %s; single endpoint + batch-only says %s"
+        % (sorted(batch_side), sorted(single_side)))
+
+
+@pytest.mark.parametrize("key", sorted(BATCH_ITEM_VALUES))
+def test_each_batch_item_control_reaches_every_request(monkeypatch, key):
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={**BATCH_REQ, key: BATCH_ITEM_VALUES[key]})
+    assert r.status_code == 200, r.text
+    requests, _ = fake.batch_calls[0]
+    assert len(requests) == len(BATCH_REQ["states"])
+    for item in requests:
+        assert item.get(key) == BATCH_ITEM_VALUES[key], (key, item)
+
+
+@pytest.mark.parametrize("key", sorted(BATCH_CALL_VALUES))
+def test_each_batch_call_control_reaches_predict_batch_kwargs(monkeypatch, key):
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={**BATCH_REQ, key: BATCH_CALL_VALUES[key]})
+    assert r.status_code == 200, r.text
+    _, kwargs = fake.batch_calls[0]
+    assert kwargs.get(key) == BATCH_CALL_VALUES[key], (key, kwargs)
+
+
+def test_batch_unset_controls_are_not_sent_as_none(monkeypatch):
+    """An absent control must stay absent in either the item dict or the call kwargs.
+
+    Core reads an absent argument as "inherit what the Router was built with", so sending
+    ``min_confidence=None`` would override a deployment's ``Router(min_confidence=...)``, and
+    sending a per-item key with value ``None`` would break a Router whose ``predict_batch``
+    predates the key (#294 shape).
+    """
+    client, fake = _batch_client(monkeypatch)
+    assert client.post("/v1/systemone/batch", json=BATCH_REQ).status_code == 200
+    requests, kwargs = fake.batch_calls[0]
+    assert kwargs == {}
+    for item in requests:
+        for key in BATCH_BODY_ITEM_CONTROLS:
+            assert key not in item, (key, item)
+
+
+@pytest.mark.parametrize("key", sorted(set(BATCH_ITEM_VALUES) | set(BATCH_CALL_VALUES)))
+def test_batch_explicit_null_is_no_control(monkeypatch, key):
+    """``{"lang_guess": null}`` means "no hint" -- same shape the single endpoint honours.
+
+    A Jev client that serialises its absent fields must keep working; only a value says the
+    caller asked for something.
+    """
+    client, fake = _batch_client(monkeypatch)
+    assert client.post("/v1/systemone/batch", json={**BATCH_REQ, key: None}).status_code == 200
+    requests, kwargs = fake.batch_calls[0]
+    assert "min_confidence" not in kwargs and "batch_size" not in kwargs
+    assert "sort_by_length" not in kwargs
+    for item in requests:
+        assert key not in item
+
+
+def test_batch_min_confidence_zero_is_still_a_threshold(monkeypatch):
+    """``0.0`` is falsy but is a value the caller chose; ``if min_confidence:`` would drop it."""
+    client, fake = _batch_client(monkeypatch)
+    assert client.post("/v1/systemone/batch",
+                       json={**BATCH_REQ, "min_confidence": 0.0}).status_code == 200
+    _, kwargs = fake.batch_calls[0]
+    assert kwargs["min_confidence"] == 0.0
+
+
+def test_batch_sort_by_length_false_is_not_forwarded(monkeypatch):
+    """``predict_batch``'s own default is ``False``, so ``False`` is what the caller did NOT ask.
+
+    Forwarding ``False`` explicitly would still work on ``Router`` but silently disappear on any
+    attached agent whose ``predict_batch`` predates the knob (#294) -- which is why the MCP tool
+    makes the same choice. The endpoint does accept the value; it just does not translate it into
+    a kwarg.
+    """
+    client, fake = _batch_client(monkeypatch)
+    assert client.post("/v1/systemone/batch",
+                       json={**BATCH_REQ, "sort_by_length": False}).status_code == 200
+    _, kwargs = fake.batch_calls[0]
+    assert "sort_by_length" not in kwargs
+
+
+def test_batch_strict_predict_batch_router_answers_a_quiet_body(monkeypatch):
+    """An attached Router whose ``predict_batch(self, requests)`` takes nothing else must still work.
+
+    The endpoint forwards kwargs only when the caller asks. If the handler always passed
+    ``batch_size=None`` (or any call kwarg) unconditionally, this Router would raise ``TypeError``
+    and the endpoint would 500 on a body that sent nothing -- which is exactly the mutation this
+    witness kills.
+    """
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    fake = StrictBatchRouter()
+    client = TestClient(create_app(router=fake))
+    r = client.post("/v1/systemone/batch", json=BATCH_REQ)
+    assert r.status_code == 200, r.text
+    assert len(fake.batch_calls) == 1
+    _, kwargs = fake.batch_calls[0]
+    assert kwargs == {}
+
+
+@pytest.mark.parametrize("key,value", [
+    ("lang", True),
+    ("lang", 5),
+    ("lang_guess", ["de"]),
+    ("lang_guess", {"code": "de"}),
+    ("max_len", 0),
+    ("max_len", -1),
+    ("max_len", True),
+    ("max_len", "64"),
+    ("head_max_len", "32"),
+    ("min_confidence", 1.5),
+    ("min_confidence", -0.1),
+    ("min_confidence", "0.9"),
+    ("batch_size", 0),
+    ("batch_size", -3),
+    ("batch_size", True),
+    ("batch_size", 1.5),
+    ("batch_size", "4"),
+    ("sort_by_length", "yes"),
+    ("sort_by_length", 1),
+])
+def test_bad_control_on_batch_is_refused_before_inference(monkeypatch, key, value):
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={**BATCH_REQ, key: value})
+    assert r.status_code == 422, (key, value, r.text)
+    assert not fake.batch_calls, "a refused body must not reach predict_batch"
+
+
+@pytest.mark.parametrize("key", BODY_REFUSALS)
+def test_batch_hook_control_is_refused_not_dropped(monkeypatch, key):
+    """The batch endpoint must honour the same refusal policy the single endpoint already states.
+
+    Without ``_refuse_body_refusals``, a batch body would silently hand a caller a shorter
+    deadline for the operator's hooks -- ``predict_batch`` *does* take ``hooks_timeout`` as a
+    call arg, so this is not a theoretical refusal here. The other four are refused for the same
+    reason they are on ``/v1/systemone``: they run inside the server process.
+    """
+    value = {"hooks": [], "on_predict_start": "cache", "on_predict_end": "audit",
+             "hooks_raise": False, "hooks_timeout": 5.0}[key]
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={**BATCH_REQ, key: value})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert key in detail
+    assert "cannot be sent to this endpoint" in detail
+    assert not fake.batch_calls, "the refusal must come before inference"
+
+
+def test_batch_predict_fallback_forwards_every_control(monkeypatch):
+    """When the attached Router has no ``predict_batch``, every control must reach ``predict()``.
+
+    The batch path synthesizes per-state ``predict()`` calls with the same kwargs the single
+    endpoint uses -- ``max_len``/``head_max_len``/``task``/``lang``/``lang_guess``/``min_confidence``
+    all apply per call. A caller that sends ``min_confidence`` on a batch body must see the
+    abstention gate apply per item on the fallback path, not silently skip it because
+    ``predict_batch`` was unavailable.
+    """
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    fake = BudgetRouter()
+    client = TestClient(create_app(router=fake))
+    body = {**BATCH_REQ, "max_len": 64, "head_max_len": 32, "task": "typed-decisions",
+            "lang": "de", "lang_guess": "de", "min_confidence": 0.5}
+    r = client.post("/v1/systemone/batch", json=body)
+    assert r.status_code == 200, r.text
+    assert len(fake.calls) == len(BATCH_REQ["states"])
+    for call in fake.calls:
+        assert call["max_len"] == 64
+        assert call["head_max_len"] == 32
+        assert call["task"] == "typed-decisions"
+        assert call["lang"] == "de"
+        assert call["lang_guess"] == "de"
+        assert call["min_confidence"] == 0.5
+
+
+def test_batch_predict_fallback_sends_no_kwargs_when_body_is_quiet(monkeypatch):
+    """A quiet batch body on the fallback path must call ``predict()`` with no kwargs at all.
+
+    An attached Router whose ``predict()`` does not take the new keywords -- the ``FakeRouter``
+    class this suite has always used -- must keep answering on a bare batch. Passing ``None``
+    would 500 on that shape and would override a deployment's own ``Router(lang_guess=...)``
+    on a modern one.
+    """
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    fake = FakeRouter()
+    client = TestClient(create_app(router=fake))
+    r = client.post("/v1/systemone/batch", json=BATCH_REQ)
+    assert r.status_code == 200, r.text
+    assert len(fake.calls) == len(BATCH_REQ["states"])
+
+
+def test_batch_controls_combine_on_one_call(monkeypatch):
+    """Call kwargs and item overrides land on the same call, not in isolation.
+
+    A caller that sends a token budget and a chunking cap together must see them on the same
+    ``predict_batch`` invocation -- not the budget on the item and the chunk cap dropped, and
+    not the reverse. This is the whole-point-of-the-PR shape.
+    """
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch",
+                    json={**BATCH_REQ, "batch_size": 2, "sort_by_length": True,
+                          "min_confidence": 0.8, "task": "typed-decisions", "max_len": 128})
+    assert r.status_code == 200, r.text
+    requests, kwargs = fake.batch_calls[0]
+    assert kwargs == {"min_confidence": 0.8, "batch_size": 2, "sort_by_length": True}
+    for item in requests:
+        assert item["task"] == "typed-decisions"
+        assert item["max_len"] == 128

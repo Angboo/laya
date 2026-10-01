@@ -90,6 +90,20 @@ DEFAULT_MAX_TOKEN_BUDGET = 8192
 BODY_CONTROLS = ("model", "max_len", "head_max_len", "task", "lang", "lang_guess", "min_confidence")
 BODY_REFUSALS = ("hooks", "on_predict_start", "on_predict_end", "hooks_raise", "hooks_timeout")
 
+# ``Router.predict_batch`` reads two different kinds of control: call-level keyword arguments that
+# apply to the whole batch (chunking, padding, the abstention threshold) and per-request keys that
+# it lifts off each item of ``requests`` (checkpoint, task, language hint, token budget). The batch
+# endpoint keeps them in separate tuples so a caller-visible JSON body -- one set of controls that
+# applies to every state it sent -- is turned into both. ``tests/test_serve.py`` pins the two lists
+# against ``inspect.signature(Router.predict_batch)`` (call-level) and against the MCP tool's own
+# item key list (per-request), so a control added to either side has to be placed on one side of
+# this split -- forwarded, refused, or moved to the item tuple -- before the suite goes green.
+# ``hooks_timeout`` is refused on the batch path the same way it is on the single path: it belongs
+# to ``predict_batch``'s call-level args but governs how the *deployment's* hooks execute, so a
+# caller cannot be allowed to shorten or lengthen that deadline from an HTTP body.
+BATCH_BODY_CALL_CONTROLS = ("batch_size", "min_confidence", "sort_by_length")
+BATCH_BODY_ITEM_CONTROLS = ("max_len", "head_max_len", "task", "lang", "lang_guess")
+
 
 def _env_bool(name: str, default: bool) -> bool:
     v = os.environ.get(name)
@@ -239,6 +253,52 @@ def _validate_min_confidence(body: Dict[str, Any]) -> Optional[float]:
         return check_min_confidence(body["min_confidence"])
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
+
+
+def _validate_batch_size_param(body: Dict[str, Any]) -> Optional[int]:
+    """Validate the optional ``batch_size`` call argument on the batch endpoint (422).
+
+    ``Router.predict_batch`` reads it as the maximum number of states per Agent forward-pass batch,
+    so a non-positive or fractional value would either mean "one state per pass" or crash torch.
+    A boolean would be truthy and coerce to 1/0, which is not what the caller meant; refusing here
+    matches what the MCP tool's own validator does at ``laya/mcp/tools.py:_validate_batch_size``,
+    so the same typo is rejected the same way on both surfaces.
+    """
+    from fastapi import HTTPException
+
+    if "batch_size" not in body:
+        return None
+    val = body["batch_size"]
+    if val is None:
+        return None
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise HTTPException(status_code=422, detail="batch_size must be an integer")
+    if val < 1:
+        raise HTTPException(status_code=422,
+                            detail="batch_size must be a positive integer, got %r" % (val,))
+    return val
+
+
+def _validate_sort_by_length_param(body: Dict[str, Any]) -> Optional[bool]:
+    """Validate the optional ``sort_by_length`` call argument on the batch endpoint (422).
+
+    ``Router.predict_batch`` forwards this verbatim to every ``Agent.predict_batch`` call, and an
+    agent that predates the knob drops it. Only the boolean is a meaningful value here -- a string
+    would be truthy and take the sort path silently. When the caller asks for ``False`` we still
+    forward ``None`` rather than ``False``, because ``predict_batch``'s own default is ``False``:
+    an absent argument means "the caller did not ask" and cannot override a deployment that built
+    its Router with the knob already on.
+    """
+    from fastapi import HTTPException
+
+    if "sort_by_length" not in body:
+        return None
+    val = body["sort_by_length"]
+    if val is None:
+        return None
+    if not isinstance(val, bool):
+        raise HTTPException(status_code=422, detail="sort_by_length must be a boolean")
+    return val
 
 
 def _resolve_max_loaded() -> Optional[int]:
@@ -835,7 +895,55 @@ def create_app(router: Optional[Any] = None):
         states = body["states"]
         questions = body["questions"]
         _check_batch_limits(states, questions)
+        # Same refusal policy as the single endpoint: hooks and the two hook-execution knobs
+        # belong to the deployment, not the caller. `predict_batch` does take `hooks_timeout`,
+        # so without this call a batch body would silently hand a caller a shorter deadline for
+        # the operator's own hooks.
+        _refuse_body_refusals(body)
         model = _resolve_model(body.get("model"))
+        max_budget_cap = _resolve_max_token_budget()
+        max_len = _validate_budget_param(body, "max_len", max_budget_cap)
+        head_max_len = _validate_budget_param(body, "head_max_len", max_budget_cap)
+        # Every control is sent only when the caller sent it, matching `_systemone_inner`: an
+        # absent argument means "inherit what the Router was built with", so passing None would
+        # override a deployment's own `Router(lang_guess=...)` or abstention threshold.
+        # ``Router.predict_batch`` reads task / lang / lang_guess / max_len / head_max_len off
+        # each item of ``requests`` (see its docstring), so they go into every synthesized
+        # request dict; the HTTP body has one control set for the whole batch, which the Router
+        # still honours -- it groups the requests by these values for the forward pass.
+        item_overrides: Dict[str, Any] = {}
+        if max_len is not None:
+            item_overrides["max_len"] = max_len
+        if head_max_len is not None:
+            item_overrides["head_max_len"] = head_max_len
+        # An unknown task is left to `route_batch`, which normalises it through `normalise_name`
+        # and raises; the `except ValueError` below turns that into a 422 naming the task, so the
+        # accepted set is core's and not a list restated here.
+        if body.get("task") is not None:
+            item_overrides["task"] = body["task"]
+        for key in ("lang", "lang_guess"):
+            value = _validate_language_param(body, key)
+            if value is not None:
+                item_overrides[key] = value
+        # Call-level: `predict_batch` takes min_confidence / batch_size / sort_by_length as kwargs.
+        call_kwargs: Dict[str, Any] = {}
+        min_confidence = _validate_min_confidence(body)
+        if min_confidence is not None:
+            call_kwargs["min_confidence"] = min_confidence
+        batch_size = _validate_batch_size_param(body)
+        if batch_size is not None:
+            call_kwargs["batch_size"] = batch_size
+        sort_by_length = _validate_sort_by_length_param(body)
+        if sort_by_length:
+            # Only `True` is forwarded: `predict_batch`'s own default is `False`, and an attached
+            # agent whose `predict_batch` predates the knob (#294) silently drops it. The MCP
+            # tool makes the same choice for the same reason (see ``laya/mcp/tools.py``).
+            call_kwargs["sort_by_length"] = True
+        # The predict() fallback shape: `Router.predict` reads all six controls as call kwargs,
+        # so the item dict is flattened back and `min_confidence` joins it.
+        predict_kwargs: Dict[str, Any] = dict(item_overrides)
+        if min_confidence is not None:
+            predict_kwargs["min_confidence"] = min_confidence
         if gate is None:
             gate = asyncio.Lock()
         try:
@@ -844,8 +952,12 @@ def create_app(router: Optional[Any] = None):
 
                 def _do_batch():
                     if hasattr(router, "predict_batch"):
-                        reqs = [{"state": s, "questions": questions, "model": model} for s in states]
-                        results = router.predict_batch(reqs)
+                        reqs = [dict(state=s, questions=questions, model=model, **item_overrides)
+                                for s in states]
+                        results = router.predict_batch(reqs, **call_kwargs)
+                    elif predict_kwargs:
+                        results = [router.predict(s, questions, model=model, **predict_kwargs)
+                                   for s in states]
                     else:
                         results = [router.predict(s, questions, model=model) for s in states]
                     total_tokens = sum(r.get("usage", {}).get("input_tokens", 0) for r in results)
