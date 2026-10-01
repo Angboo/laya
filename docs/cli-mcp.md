@@ -71,6 +71,9 @@ The main controls are:
 
 - `--model english|multilingual|typed-decisions` pins a checkpoint instead of auto-routing.
 - `--lang en|de|...` supplies an explicit language code instead of automatic detection.
+- `--lang-guess en|de|...` supplies a soft hint that routing reads after `--lang` and before its
+  own detector; a hint that resolves to nothing falls through, so it nudges the checkpoint without
+  forcing it.
 - `--task NAME` forces the typed-decisions workflow instead of detecting it.
 - `--device cpu|cuda|...` passes a device choice to the Router.
 - `--json` emits machine-readable output.

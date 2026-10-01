@@ -219,6 +219,7 @@ Installing the package also installs a `laya` command for quick local testing, n
 laya "I was charged twice, please refund"            # routing decision only; works offline, no download
 laya "Refactor this service" --predict               # full answers (downloads the checkpoint on first use)
 laya "Mein Konto wurde zweimal belastet" --lang de   # force a language instead of detecting it
+laya "My payment failed twice" --lang-guess en        # a soft hint: nudge routing, still fall through to detection
 laya "My payment failed twice" --model ml            # pin a checkpoint: names, aliases and casing all resolve as the SDK resolves them
 laya "My payment failed twice" --preset triage       # answer a ready-made preset (triage, email, guard, moderation, router)
 laya --batch tickets.txt --predict                   # score a file of requests, one per line, in one batch
@@ -226,6 +227,12 @@ cat tickets.txt | laya --batch - --predict --json    # stdin; one JSON line of a
 laya "Where is my card" --questions intents.json     # answer your own questions, written in a JSON file
 laya                                                 # interactive mode
 ```
+
+`--lang` is decisive: a real code picks the checkpoint and skips detection. `--lang-guess` is the
+soft sibling core checks in between, so a probable-but-uncertain language can nudge routing without
+forcing it — and a hint that resolves to nothing falls through to the built-in detector, exactly the
+`Router(lang_guess=...)` behaviour the library offers. Neither flag changes the routing decision's
+precedence rules; `--lang-guess` just adds a hint those rules read before detection.
 
 Routing alone never downloads a checkpoint, so it returns in milliseconds. `--predict` loads the routed checkpoint, which needs network access to the Hugging Face hub the first time; if a checkpoint cannot be downloaded, the CLI says so instead of crashing. `--batch` (with or without `--predict`) sends the whole file through `Router.predict_batch` in one process, so the requests share checkpoint loads and forward passes — measured 2.6x on 20 tickets vs looping `predict` one by one, with `--batch-size N` to bound the forward pass, `--sort-by-length` to group similarly sized requests inside it, and `--json` for JSONL output. Batch routing (`laya --batch FILE`, no `--predict`) likewise answers with `route_batch` in one pass, still without loading anything.
 
