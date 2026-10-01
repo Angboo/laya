@@ -244,14 +244,26 @@ def _mps_amp_min_rows() -> int:
 
 def _cuda_amp_dtype(checkpoint_default: Optional[str]) -> torch.dtype:
     """Autocast dtype on CUDA at compute capability >= 8: the checkpoint's `amp_dtype` (bf16 for the
-    shipped checkpoints), or LAYA_CUDA_AMP=fp16|bf16 when set. fp16 stays 2-10x closer to the fp32
-    forward than bf16 on every shipped checkpoint at the same speed; anything else is ignored."""
+    shipped checkpoints), or LAYA_CUDA_AMP=fp16|float16|bf16|bfloat16 when set. fp16 stays 2-10x
+    closer to the fp32 forward than bf16 on every shipped checkpoint at the same speed; anything
+    else is ignored. The long spellings count because they are what `agent.dtype` reports back, so
+    the precision a user reads off one response is one they can ask for on the next."""
     raw = os.environ.get("LAYA_CUDA_AMP", "").lower()
     if raw in ("fp16", "float16"):
         return torch.float16
     if raw in ("bf16", "bfloat16"):
         return torch.bfloat16
     return amp_dtype(checkpoint_default)
+
+
+def _cpu_amp_dtype() -> Optional[torch.dtype]:
+    """Autocast dtype on CPU: bf16 when LAYA_CPU_AMP=bf16|bfloat16, None to leave the forward in
+    fp32. No fp16 spelling is offered here, because CPU autocast has no fp16 fast path that beats
+    fp32 -- bf16 is the only reduced precision worth asking for, and only on hardware with native
+    BF16 instructions, which is why it stays opt-in. Anything else is ignored."""
+    if os.environ.get("LAYA_CPU_AMP", "").lower() in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return None
 
 def _option_count(qdef: Dict) -> int:
     """How many options a validated question definition renders to.
@@ -624,8 +636,9 @@ class Agent(HookRegistry):
             self.load_calibration(calibration)
         # Autocast policy. CUDA, MPS and XPU all support fp16/bf16 autocast and the shipped
         # checkpoints are trained in reduced precision; on CUDA the checkpoint's `amp_dtype`
-        # (bf16) is the default and LAYA_CUDA_AMP=fp16|bf16 overrides it. CPU bf16 is only a win
-        # on hardware with native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
+        # (bf16) is the default and _cuda_amp_dtype's LAYA_CUDA_AMP override wins over it. CPU
+        # bf16 is only a win on hardware with native BF16, so it stays opt-in through
+        # _cpu_amp_dtype. MPS fp16 is slower than fp32 on
         # a single small row (autocast overhead dominates) and only wins once the batch has
         # several rows, so it is gated per call by `mps_amp_min_rows` (default 5, override with
         # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally. XPU autocast supports
@@ -651,9 +664,10 @@ class Agent(HookRegistry):
                 self.amp_enabled = True
                 self.dtype = torch.bfloat16
         elif self.device.type == "cpu":
-            if os.environ.get("LAYA_CPU_AMP", "").lower() in ("bf16", "bfloat16"):
+            cpu_amp = _cpu_amp_dtype()
+            if cpu_amp is not None:
                 self.amp_enabled = True
-                self.dtype = torch.bfloat16
+                self.dtype = cpu_amp
 
         self._fast = None
 
