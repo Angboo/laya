@@ -44,8 +44,13 @@ For containers, including CUDA and ARM64 images, see [Docker quickstart](docker.
 
 ### `GET /health`
 
-Always open (no auth), and stays responsive during inference because the CPU-bound forward pass
-runs on its own worker, not the event loop.
+Liveness is always open (no auth), and stays responsive during inference because the CPU-bound
+forward pass runs on its own worker, not the event loop. The fields below liveness are not open on
+a deployment that set `LAYA_API_KEY`: without the bearer, `/health` answers `{"status": "ok"}` and
+nothing else, because the rest names resident checkpoints, their exact revision SHAs, the device
+state and each checkpoint's last fallback reason, which quotes host hardware. A probe needs only
+the 200, so a healthcheck is unaffected and a wrong bearer is still a 200 rather than a 401. With
+no `LAYA_API_KEY` set, every caller gets the full payload shown here.
 
 ```json
 {"status": "ok", "loaded": ["english", "multilingual"], "revisions": {"english": "...", "multilingual": "..."},

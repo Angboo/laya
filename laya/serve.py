@@ -76,6 +76,14 @@ MAX_TOTAL_OPTIONS = 512
 # before inference, so without a bound many concurrent near-cap requests OOM
 # the worker even though every request is individually valid (#330).
 DEFAULT_MAX_CONCURRENT = 16
+
+# What `GET /health` answers an unauthenticated caller when `LAYA_API_KEY` is set. Liveness is
+# the half of that endpoint a container probe needs and the half the page promises is always
+# open; the rest of the payload names checkpoints, revision SHAs and host device state, so it
+# is for a caller who can authenticate. A deployment with no key set gets the full payload, as
+# it always has. Kept a module constant rather than a dict literal in the handler so the field
+# contract in tests/test_serve.py still reads the full payload off `health()`'s own `return`.
+LIVENESS_ONLY = {"status": "ok"}
 # Server-side ceiling on per-request max_len/head_max_len token budget overrides.
 DEFAULT_MAX_TOKEN_BUDGET = 8192
 
@@ -728,20 +736,33 @@ def create_app(router: Optional[Any] = None):
     # client can send now answers 401.
     expected_auth = ("Bearer " + api_key).encode("utf-8", "surrogateescape") if api_key else b""
 
-    def _check_auth(authorization: Optional[str]) -> None:
+    def _authorized(authorization: Optional[str]) -> bool:
+        """Whether this request carries the configured bearer. True when no key is set."""
         if api_key is None:
-            return
+            return True
         supplied = (authorization or "").encode("utf-8", "surrogateescape")
-        if not hmac.compare_digest(supplied, expected_auth):
+        return hmac.compare_digest(supplied, expected_auth)
+
+    def _check_auth(authorization: Optional[str]) -> None:
+        if not _authorized(authorization):
             raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
     @app.get("/health")
-    def health() -> Dict[str, Any]:
+    def health(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
         # `device` is where a resident checkpoint really computes, not what was asked for:
         # `Agent.device` reflects the silent GPU -> CPU fallback, so a container that asked
         # for a GPU it did not get says so. With nothing resident it is the configured
         # preference, and `device_is_preference` tells the reader which of the two it is
         # looking at. Same convention, and the same three keys, as `laya_status` over MCP.
+        # Liveness stays open, because every shipped probe reads it without a credential
+        # (compose.http.yaml's healthcheck, the Docker HEALTHCHECK, a k8s liveness probe) and
+        # the page promises as much. What is not open on a locked-down deployment is the detail
+        # below it: resident checkpoint names, their exact revision SHAs, the device state and
+        # each checkpoint's last fallback reason, which quotes host hardware. An unauthenticated
+        # caller gets the status and nothing else (#812).
+        if not _authorized(authorization):
+            return LIVENESS_ONLY
+
         checkpoint_devices: Dict[str, str] = {}
         for name in (router.loaded or []):
             device = agent_device(router_agent(router, name))

@@ -2169,6 +2169,54 @@ def test_batch_controls_combine_on_one_call(monkeypatch):
     for item in requests:
         assert item["task"] == "typed-decisions"
         assert item["max_len"] == 128
+def test_health_liveness_is_open_but_the_detail_needs_the_bearer(monkeypatch):
+    """#812: `/health` answered deployment internals to an unauthenticated caller.
+
+    `POST /v1/systemone` was gated and `GET /health` was not, so on a server the operator had
+    locked down with `LAYA_API_KEY` anyone could read the resident checkpoint names, each one's
+    exact Hugging Face revision SHA, the device state, and `last_fallback_reason`, which quotes
+    host hardware ("GPU 0 total 8.00 GiB"). Reconnaissance rather than a data path, but it is
+    exactly the inventory you would want before targeting a revision.
+
+    Requiring the bearer outright was not the fix: `compose.http.yaml`'s healthcheck, the Docker
+    HEALTHCHECK and any k8s liveness probe all read this endpoint with no credential, and
+    docs/http-api.md promises it is always open. So liveness stays open and the detail does not.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("LAYA_API_KEY", "s3cret")
+    client = TestClient(create_app(router=FakeRouter()))
+
+    # a probe with no credential still gets its 200, which is all a healthcheck reads
+    anonymous = client.get("/health")
+    assert anonymous.status_code == 200
+    assert anonymous.json() == {"status": "ok"}
+
+    # and the same for a wrong bearer: still live, still no detail, and not a 401, because a
+    # probe that starts failing on a bad credential is a worse outage than the disclosure
+    wrong = client.get("/health", headers={"Authorization": "Bearer nope"})
+    assert wrong.status_code == 200
+    assert wrong.json() == {"status": "ok"}
+
+    # the detail is the authorized caller's
+    full = client.get("/health", headers={"Authorization": "Bearer s3cret"})
+    assert full.status_code == 200
+    _, returned = _health_return_keys()
+    assert sorted(full.json()) == sorted(returned)
+    for leaked in ("loaded", "revisions", "cpu_fallbacks", "checkpoint_devices"):
+        assert leaked in full.json()
+        assert leaked not in anonymous.json()
+
+
+def test_health_without_an_api_key_is_unchanged():
+    """A deployment that set no key never asked to be gated, so it gets the whole payload."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(router=FakeRouter()))
+    _, returned = _health_return_keys()
+    assert sorted(client.get("/health").json()) == sorted(returned)
+
+
 def _health_return_keys():
     """The keys `health()` hands back, read out of its own `return` statement."""
     path = os.path.join(ROOT, "laya", "serve.py")
