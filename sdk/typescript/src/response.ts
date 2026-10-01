@@ -58,9 +58,8 @@ export function validateUsage(value: unknown): void {
     expect(isRecord(collapse), 'usage.options');
     expect(count(collapse.total) && count(collapse.distinct) && collapse.distinct <= collapse.total,
       'usage.options');
-    expect(Object.hasOwn(collapse, 'tokens_per_option') &&
-      (collapse.tokens_per_option === null || count(collapse.tokens_per_option)),
-    'usage.options.tokens_per_option');
+    expect(collapse.tokens_per_option === null || count(collapse.tokens_per_option),
+      'usage.options.tokens_per_option');
   }
 }
 
