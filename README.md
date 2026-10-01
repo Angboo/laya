@@ -776,6 +776,9 @@ Measured with `benchmarks/bench_compile.py --device cuda [--warmup]` (English ch
 requests of changing shape): without it the first request took 51 s and the first single-question request,
 the eighth, took another 41 s; after `warmup()` no request took more than 30 ms. It works the same with
 `fast=True` (kernels and CUDA graphs for those buckets) and costs a few forward passes on the stock path.
+On CUDA, compiled inference pads the masked end of each sequence to a multiple of eight tokens. This
+avoids extra SDPA graph specialisations on PyTorch versions that distinguish lengths modulo eight;
+reported token usage still counts the original, unpadded sequence.
 Inductor caches compiled graphs under `TORCHINDUCTOR_CACHE_DIR` (by default in `/tmp`); point it at a
 persistent directory to keep them across restarts.
 

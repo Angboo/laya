@@ -208,6 +208,22 @@ def _amp_context(device, dtype, enabled: bool):
     return torch.autocast(device_type=device.type, dtype=dtype)
 
 
+def _pad_cuda_compile_batch(batch: Dict, pad_token_id: int) -> Dict:
+    """Keep compiled CUDA attention on the same sequence-length guard family.
+
+    Some Inductor SDPA versions specialise on the token length modulo eight even with
+    dynamic shapes. Pad only the masked tail; marker positions and caller-visible token
+    accounting continue to refer to the original sequence.
+    """
+    missing = -batch["input_ids"].shape[1] % 8
+    if not missing:
+        return batch
+    padded = dict(batch)
+    padded["input_ids"] = torch.nn.functional.pad(batch["input_ids"], (0, missing), value=pad_token_id)
+    padded["attention_mask"] = torch.nn.functional.pad(batch["attention_mask"], (0, missing), value=0)
+    return padded
+
+
 MPS_AMP_MIN_ROWS_DEFAULT = 5
 # An unsupported autocast op fails the same way on every request. Retry that request in
 # full precision, and only turn AMP off after this many failures in a row (#351).
@@ -930,6 +946,8 @@ class Agent(HookRegistry):
 
     def _infer(self, b: Dict):
         """Run the forward pass under autocast, degrading gracefully on OOM or unsupported autocast."""
+        if self._compiled and self._fast is None and self.device.type == "cuda":
+            b = _pad_cuda_compile_batch(b, self.tok.pad_token_id)
         use_amp = self._amp_enabled_for(b["input_ids"].shape[0])
 
         if self._fast is not None and b["input_ids"].shape[1] > self._fast.max_len:
