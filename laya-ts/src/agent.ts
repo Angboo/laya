@@ -157,6 +157,9 @@ function qidStr(qid: string): string {
 }
 
 export function checkQuestion(qid: string, qdef: unknown): void {
+  if (typeof qid !== "string" || !qid.trim()) {
+    throw new Error(`question id must be a non-empty string, got ${qidStr(qid)}`);
+  }
   if (typeof qdef !== "object" || qdef === null || Array.isArray(qdef)) {
     const got = Array.isArray(qdef) ? "list" : qdef === null ? "NoneType" : typeof qdef;
     throw new Error(`question ${qidStr(qid)}: definition must be a dict, got ${got}`);
@@ -170,6 +173,36 @@ export function checkQuestion(qid: string, qdef: unknown): void {
   }
   if (!("instructions" in q)) {
     throw new Error(`question ${qidStr(qid)}: no 'instructions'; add the text the model should answer`);
+  }
+  // `instructions` is the text the model is asked, so a null or empty one is not a weak question
+  // but a question with nothing to answer. Only the key's presence was checked, and `toInternal`
+  // then serialised whatever it found, so a null reached the model as the literal prompt "null",
+  // an empty dict as "{}", and a blank string stayed blank -- the caller's error answered
+  // silently. Python's `Agent._check_question` rejects all of these; these are the same three
+  // rejections in the same order.
+  const ins = q["instructions"];
+  if (ins === null || ins === undefined) {
+    throw new Error(
+      `question ${qidStr(qid)}: 'instructions' must not be None; add the text the model should answer`,
+    );
+  }
+  if (typeof ins === "string" && !ins.trim()) {
+    throw new Error(
+      `question ${qidStr(qid)}: 'instructions' must not be empty; add the text the model should answer`,
+    );
+  }
+  // An object here is a list or a dict, and both are empty exactly when they own no keys.
+  if (typeof ins === "object" && Object.keys(ins as object).length === 0) {
+    throw new Error(
+      `question ${qidStr(qid)}: 'instructions' must not be empty; add the text the model should answer`,
+    );
+  }
+  // Python allows str, dict, list, int and float. A bool is an int there, so it passes as well;
+  // a function or a symbol is nothing either side can turn into a question.
+  if (!["string", "object", "number", "bigint", "boolean"].includes(typeof ins)) {
+    throw new Error(
+      `question ${qidStr(qid)}: 'instructions' must be a string, dict, or list, got ${typeof ins}`,
+    );
   }
   const crit = q["criteria"];
   if (t === "choice") {
