@@ -94,6 +94,23 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
+## What's new in 0.3.23
+
+* **Security.** `GET /health` no longer answers deployment internals to an unauthenticated caller on a server that set `LAYA_API_KEY` (#812): liveness stays open so every shipped probe keeps working, while the resident checkpoint names, revision SHAs, device state and fallback reasons need the bearer. A deployment with no key set is unchanged. `SECURITY.md` now documents private vulnerability reporting.
+* **Concurrency.** A GPU OOM fallback no longer moves the shared model under another in-flight request (#649). Normal forwards stay concurrent through a reader-writer gate; only the device demotion is exclusive.
+* **Per-call controls reach every surface.** `lang`, `lang_guess`, `min_confidence`, `task` and the token budgets now forward through the CLI (`--lang-guess`, `--min-confidence`), `/v1/systemone/batch`, the MCP single-request and batch tools, the TypeScript SDK and the LangChain, CrewAI and LlamaIndex wrappers. The three framework wrappers also gate `confidence_threshold` on `answer_confidence` rather than the entropy confidence, matching core's own gate.
+* **Routing.** Swedish is detected with MASSIVE evidence across all 51 locales and no locale regressing. `LAYA_DEFAULT_MODEL` makes the routing fallback settable from the environment, and a per-checkpoint pin no longer silently disables the caller's digest or revision.
+* **ONNX.** `--quantize` defaults to per-tensor, because per-channel collapsed the decision model to 32 percent agreement with eager. Export declares its dynamic dims in a spelling every torch in the supported range accepts, and verifies the symbolic axes it wrote.
+* **Long documents.** `predict_long` sizes its windows from the room a question actually leaves for the state, so a scan no longer skips part of the document and reports that it read it.
+* **Evals.** Opt-in per-slice quality gates catch a slice regressing while the overall metric improves, shortlist runs attribute errors to retrieval or decision, `--min-confidence` reaches the abstention gate, and `--calibration` works on the ONNX path.
+* **Abstention reporting.** With `min_confidence` set, every answer reports `abstention` and `abstention_threshold`. With no threshold the payload is byte for byte what it was.
+* **Research.** A Spanish phone-turn benchmark (217 frozen sentences, label policy fixed before any model ran) and a Chinese reliability evaluation with source-group isolation and paired bootstrap intervals.
+* **Email.** French mail clients are cleaned the way English, Portuguese and Spanish already were.
+
+64 pull requests from 21 contributors. #742 landed inside #684, which had been rebased onto it. Full list in the [0.3.23 release](https://github.com/NandhaKishorM/laya/releases/tag/v0.3.23).
+
+---
+
 ## What's new in 0.3.21
 
 * **ONNX catches up with PyTorch.** `ONNXAgent` gains `predict_batch` (with `sort_by_length`), `predict_long` and `decide_batch`, `scripts/export_onnx.py --quantize` writes a per-channel INT8 copy for CPU, and `laya-evals run --onnx` scores an export with the same gates as the torch path.
