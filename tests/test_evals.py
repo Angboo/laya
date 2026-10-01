@@ -943,7 +943,7 @@ def test_docs_document_the_run_identity_and_the_refusal():
         if key != "timing":
             assert "`%s`" % key in page, key
     # The keys the CLI adds, and the programmatic entry points, are part of the same contract.
-    for key in ("dataset_sha256", "thresholds", "revisions"):
+    for key in ("dataset_sha256", "thresholds", "gate_policy", "revisions"):
         assert "`%s`" % key in page, key
     for name in ("REPORT_SCHEMA", "questions_fingerprint", "file_fingerprint", "comparable_to"):
         assert name in page, name
@@ -1553,6 +1553,25 @@ def test_slice_gate_absolute_and_increase_direction(tmp_path):
                for f in _eval_policy.check_policy(EvalReport(**candidate), increase, base))
 
 
+def test_slice_gate_ece_requires_boolean_correct_evidence(tmp_path):
+    from laya import _eval_policy
+
+    candidate = _slice_gate_report(171, 12)
+    candidate["slices"]["language"]["zh"]["ece"] = 0.2
+    for case in candidate["cases"]:
+        if case["language"] == "zh":
+            case["correct"] = int(case["correct"])
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "ece",
+                   "min_count": 20, "max": 0.3}))
+    assert any("candidate count 0 is below min_count 20" in failure
+               for failure in _eval_policy.check_policy(EvalReport(**candidate), policy))
+    for case in candidate["cases"]:
+        if case["language"] == "zh":
+            case["correct"] = bool(case["correct"])
+    assert _eval_policy.check_policy(EvalReport(**candidate), policy) == []
+
+
 def test_slice_gate_counts_each_tagged_answer_once_and_accepts_boundary(tmp_path):
     from laya import _eval_policy
 
@@ -1567,10 +1586,15 @@ def test_slice_gate_counts_each_tagged_answer_once_and_accepts_boundary(tmp_path
     policy = _eval_policy.load_policy(_write_gate_policy(
         tmp_path, {"slice": {"tag": "critical"}, "metric": "choice_accuracy",
                    "min_count": 200, "min": 0.915}))
-    assert _eval_policy.check_policy(EvalReport(**candidate), policy) == []
+    report = EvalReport(**candidate)
+    policy["rules"][0]["min_count"] = 201
+    assert any("candidate count 200 is below min_count 201" in failure
+               for failure in _eval_policy.check_policy(report, policy))
+    policy["rules"][0]["min_count"] = 200
+    assert _eval_policy.check_policy(report, policy) == []
     for dimension, value in (("qid", "intent"), ("model", "stub")):
         policy["rules"][0]["slice"] = {dimension: value}
-        assert _eval_policy.check_policy(EvalReport(**candidate), policy) == []
+        assert _eval_policy.check_policy(report, policy) == []
 
 
 @pytest.mark.parametrize("rule", [
@@ -1578,6 +1602,8 @@ def test_slice_gate_counts_each_tagged_answer_once_and_accepts_boundary(tmp_path
      "min": 0.6, "max_drop": 0.1},
     {"slice": {"language": "zh", "tag": "critical"}, "metric": "choice_accuracy",
      "min_count": 20, "min": 0.6},
+    {"slice": {"region": "cn"}, "metric": "choice_accuracy", "min_count": 20,
+     "min": 0.6},
     {"slice": {"language": "zh"}, "metric": "choice_accuracy", "min_count": 0,
      "min": 0.6},
     {"slice": {"language": "zh"}, "metric": "choice_accuracy", "min_count": 20,
@@ -1644,6 +1670,34 @@ def test_cli_run_slice_gate_and_saved_compare_share_policy(monkeypatch, tmp_path
     assert json.loads(candidate.read_text())["config"]["gate_policy"]["rules"][0]["max_drop"] == 0.1
     assert evals_cli.main(["compare", str(candidate), *flags]) == 1
     assert "language=zh" in capsys.readouterr().err
+
+
+def test_cli_compare_reports_a_different_recorded_gate_policy(tmp_path, capsys):
+    from laya import evals_cli
+
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    policy_path = tmp_path / "policy.json"
+    strict = {"version": 1, "rules": [{"slice": {"language": "zh"},
+                                       "metric": "choice_accuracy", "min_count": 20,
+                                       "min": 0.99}]}
+    lax = {"version": 1, "rules": [{"slice": {"language": "zh"},
+                                    "metric": "choice_accuracy", "min_count": 20,
+                                    "min": 0.0}]}
+    baseline.write_text(json.dumps(_slice_gate_report(162, 18)), encoding="utf-8")
+    document = _slice_gate_report(171, 12)
+    document["config"]["gate_policy"] = strict
+    candidate.write_text(json.dumps(document), encoding="utf-8")
+    args = ["compare", str(candidate), "--baseline", str(baseline),
+            "--tolerance", "choice_accuracy=0.02"]
+    policy_path.write_text(json.dumps(lax), encoding="utf-8")
+    assert evals_cli.main(args + ["--gate-policy", str(policy_path)]) == 0
+    assert "warning: --gate-policy differs from the report's recorded gate_policy" in capsys.readouterr().err
+    policy_path.write_text(json.dumps(strict), encoding="utf-8")
+    assert evals_cli.main(args + ["--gate-policy", str(policy_path)]) == 1
+    assert "warning: --gate-policy differs" not in capsys.readouterr().err
+    assert evals_cli.main(args) == 0
+    assert capsys.readouterr().err == ""
 
 
 def test_slice_gate_fails_closed_on_identity_or_skipped_cases(tmp_path):

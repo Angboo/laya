@@ -147,8 +147,6 @@ def check_policy(report: evals.EvalReport, policy: Dict[str, Any],
         comparator = next(name for name in _LIMITS if name in rule)
         limit = rule[comparator]
         if comparator in _RELATIVE:
-            if base_report is None:
-                continue
             previous = _value(base_report, dimension, value, metric)
             previous_count = _count(base_report, dimension, value, metric)
             if previous is None:

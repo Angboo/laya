@@ -168,12 +168,15 @@ exactly as it appears in the slice report. It has a positive `min_count` and exa
 `min` or `max` checks the candidate value; `max_drop` permits at most that decrease from the
 baseline; `max_increase` permits at most that increase. The latter two require `--baseline`.
 The count is the number of scored answers for that metric in the selected slice, in **both**
-reports for a relative rule. For `ece`, it is the number of answers with a confidence/correctness
-pair. A missing slice or metric, too few scored answers, or skipped/errored cases fails the opted-in
-gate. Relative rules also require both reports to carry matching run identities, so missing
-evidence cannot appear as a pass. A measured regression reports the slice, metric, counts, values,
-and limit. Invalid policy syntax exits 2 before a checkpoint loads;
-a quality failure exits 1. The policy is recorded in `config.gate_policy` of a `run --json` report.
+reports for a relative rule. For `ece`, it is the number of answers with a finite confidence and
+boolean `correct` value. A missing slice or metric, too few scored answers, or skipped/errored
+cases fails the opted-in gate. Relative rules also require both reports to carry matching run
+identities, so missing evidence cannot appear as a pass. A measured regression reports the slice,
+metric, counts, values, and limit. Invalid policy syntax exits 2 before a checkpoint loads; a
+quality failure exits 1. The policy is recorded in `config.gate_policy` of a `run --json` report.
+`compare --gate-policy` applies the policy supplied on that command line to the saved measurements.
+If it differs from the report's recorded policy, `compare` says so; an explicit re-check under a
+new policy does not change the policy under which the original run was made.
 
 The regular overall comparison still applies, including its tolerance and legacy-baseline
 behavior. Without `--gate-policy`, slice reporting and comparison behave as before.
@@ -191,6 +194,7 @@ is reviewable on its own:
 | `questions_sha256` | a fingerprint of the question schema: every question's id, type, `instructions` and `criteria`, over the whole dataset |
 | `laya_version` | the `laya` that computed the numbers |
 | `thresholds` | the gate this run applied: `min`, `max` and `baseline_tolerance` |
+| `gate_policy` | the optional slice gate policy applied by `run --gate-policy` |
 | `revisions` | the commit each checkpoint that answered was loaded from (see [below](#baseline-and-ci-gate)) |
 
 `dataset` is a path, and a path is not an identity: a dataset can be edited in place, moved, or

@@ -386,6 +386,9 @@ def _cmd_compare(args) -> int:
     report = evals.EvalReport(
         config=evals._identity_of(document),
         **{k: v for k, v in document.items() if k in ("overall", "slices", "cases")})
+    if policy and report.config.get("gate_policy") not in (None, policy):
+        print("laya-evals: warning: --gate-policy differs from the report's recorded gate_policy; "
+              "this verdict uses --gate-policy", file=sys.stderr)
     baseline = _load_report(args.baseline)
     ok, deltas = report.compare(baseline, _parse_pairs(args.tolerance))
     _print_deltas(deltas)
