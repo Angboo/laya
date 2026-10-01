@@ -960,8 +960,11 @@ class _RemoteDecisionRunner:
         self.base_url = base_url
         self.api_key = api_key
 
-    def predict(self, state: Any, questions: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
-        return _call_remote(self.base_url, state, questions, api_key=self.api_key, model=model)
+    def predict(self, state: Any, questions: Dict[str, Any], **overrides: Any) -> Dict[str, Any]:
+        # `overrides` carries only the controls that were actually set -- `LayaDecision.invoke`
+        # builds it with the shared omit-unset helpers -- so an unset budget never reaches
+        # `_call_remote` and never shadows what the endpoint was started with.
+        return _call_remote(self.base_url, state, questions, api_key=self.api_key, **overrides)
 
 
 class LayaDecision(RunnableSerializable):
@@ -983,6 +986,13 @@ class LayaDecision(RunnableSerializable):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
+    max_len: Optional[int] = None
+    head_max_len: Optional[int] = None
+    hooks: Optional[Any] = None
+    on_predict_start: Optional[Any] = None
+    on_predict_end: Optional[Any] = None
+    hooks_raise: Optional[bool] = None
+    hooks_timeout: Optional[float] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -997,6 +1007,13 @@ class LayaDecision(RunnableSerializable):
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        max_len: Optional[int] = None,
+        head_max_len: Optional[int] = None,
+        hooks: Optional[Any] = None,
+        on_predict_start: Optional[Any] = None,
+        on_predict_end: Optional[Any] = None,
+        hooks_raise: Optional[bool] = None,
+        hooks_timeout: Optional[float] = None,
         **kwargs: Any,
     ):
         _validate_decision_schema(decision_schema)
@@ -1009,6 +1026,13 @@ class LayaDecision(RunnableSerializable):
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
+                max_len=max_len,
+                head_max_len=head_max_len,
+                hooks=hooks,
+                on_predict_start=on_predict_start,
+                on_predict_end=on_predict_end,
+                hooks_raise=hooks_raise,
+                hooks_timeout=hooks_timeout,
                 **kwargs,
             )
         else:
@@ -1019,23 +1043,34 @@ class LayaDecision(RunnableSerializable):
             self.base_url = base_url
             self.api_key = api_key
             self.model = model
+            self.max_len = max_len
+            self.head_max_len = head_max_len
+            self.hooks = hooks
+            self.on_predict_start = on_predict_start
+            self.on_predict_end = on_predict_end
+            self.hooks_raise = hooks_raise
+            self.hooks_timeout = hooks_timeout
 
     def invoke(self, input: Any, config: Optional[RunnableConfig] = None) -> Any:
         """Decide ``input`` against the schema and return its values, or a ``DecisionResult``."""
         from ..structured import decide
 
         text = _extract_text(input, self.state_key)
+        hook_kwargs = _hook_kwargs(self.hooks, self.on_predict_start, self.on_predict_end,
+                                   self.hooks_raise, self.hooks_timeout)
+        overrides = _predict_kwargs(self.model, self.max_len, self.head_max_len)
         if self.base_url:
+            _reject_remote_hooks(hook_kwargs, self.base_url)
             runner: Any = _RemoteDecisionRunner(self.base_url, self.api_key)
         else:
             runner = self.agent if self.agent is not None else _get_default_router()
-        kwargs = {"model": self.model} if self.model else {}
+            overrides.update(hook_kwargs)
         return decide(
             runner,
             text,
             schema=self.decision_schema,
             return_details=self.return_details,
-            **kwargs,
+            **overrides,
         )
 
     def __call__(self, state: Any) -> Any:
