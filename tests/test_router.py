@@ -15,9 +15,11 @@ from laya.router import (  # noqa: E402
     STANDALONE_MODELS,
     _english_from_code,
     _repo_str,
+    _split,
     Router,
     match_typed_decisions_workflow,
     normalise_name,
+    resolve_model_spec,
 )
 
 PASS, FAIL = [], []
@@ -313,6 +315,25 @@ try:
     FAIL.append("alias/unknown: should have raised")
 except ValueError:
     PASS.append("alias/unknown raises")
+
+
+# --------------------------------------------------------------------- registry spec resolution (#780)
+# `load()` resolves a name or alias through this table instead of forwarding it to the Hub as a
+# repo id, so both entry points read one registry. Anything the registry does not know -- a repo
+# id, a local path, an ONNX export -- resolves to None and is left alone.
+for name, want in [("english", ("convaiinnovations/laya", None)),
+                   ("laya", ("convaiinnovations/laya", None)),
+                   ("typed-decisions", ("convaiinnovations/laya", "typed-decisions")),
+                   ("typed", ("convaiinnovations/laya", "typed-decisions")),
+                   ("ml", ("convaiinnovations/laya", "multilingual")),
+                   ("MULTI", ("convaiinnovations/laya", "multilingual")),
+                   (" typed-decisions ", ("convaiinnovations/laya", "typed-decisions"))]:
+    check("spec/" + name, resolve_model_spec(name), want)
+check("spec/agrees with normalise_name",
+      resolve_model_spec("decisions"), tuple(_split(DEFAULT_MODELS[normalise_name("decisions")])))
+for unknown in ("convaiinnovations/laya", "test/custom-model", "/tmp/checkpoint", "./local",
+                "nope", "", "convaiinnovations/laya-typed-decisions"):
+    check("spec/not a name: " + (unknown or "<empty>"), resolve_model_spec(unknown), None)
 
 
 # --------------------------------------------------------------------- routing decisions

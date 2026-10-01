@@ -34,7 +34,7 @@ import os
 import threading
 import time
 from collections.abc import Sequence as SequenceABC
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .confidence import apply_confidence_gate, check_min_confidence
 from .hooks import (
@@ -116,6 +116,22 @@ def normalise_name(name: str) -> str:
         raise ValueError("unknown model %r; choose one of %s (or an alias: %s)"
                          % (name, sorted(DEFAULT_MODELS), sorted(_ALIASES)))
     return key
+
+
+def resolve_model_spec(name: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Registry spec for a checkpoint name or alias, or None when it is not one.
+
+    The non-raising sibling of :func:`normalise_name`, for callers that also accept
+    things the registry knows nothing about -- a Hub repo id, a local directory, an
+    ONNX export. Those pass through untouched; a name or alias the registry does know
+    resolves to its ``(repo, subfolder)`` pair, so ``load("typed-decisions")`` and
+    ``Router(model="typed-decisions")`` name the same checkpoint from one table.
+    """
+    try:
+        key = normalise_name(name)
+    except ValueError:
+        return None
+    return tuple(_split(DEFAULT_MODELS[key]))
 
 
 def match_typed_decisions_workflow(questions: Dict[str, Any]) -> Optional[str]:
