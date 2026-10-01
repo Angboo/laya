@@ -178,6 +178,118 @@ for name in names:
                re.search(r"^\| `%s` \|" % name, docker_md, re.M) is not None,
                "a variable Compose forwards with no row in the table is one a reader cannot find")
 
+# 4b. the other half of a passthrough. `"${NAME:-}"` promises the runtime's own default and says so
+#     by being empty; `"${NAME:-x}"` promises `x`, which is a claim about what an operator gets for
+#     free, and the table above prints exactly one such claim per name. Check 3 holds the empty
+#     half to the code; this holds the non-empty half to the page.
+#
+#     The scope is every Compose file the tree has, not the four `COMPOSE_FILES` lists. That tuple
+#     is this file's dtype sweep, and its subject is a device selection -- `compose.example.yml`
+#     changes no device and forwards no dtype, so leaving it out of *that* loop is right. It was
+#     also leaving it out of every loop, which is how a fifth file could ship a default the page
+#     contradicts: its own header says it is for "request, checkpoint and secret-file mounts", and
+#     it pinned `LAYA_MODEL` to `english` where the row prints `auto`. `examples/docker/quickstart.py`
+#     reads that name, treats anything but `auto` as an explicit alias, and refuses it the moment
+#     the operator enables the local-checkpoint mount the same file shows -- so the one line nobody
+#     annotated both silences language routing and breaks the mount the file exists to demonstrate.
+#
+#     A file may still deviate: the deviation has to be *said*, in a comment in that same file --
+#     the operator reads the file, not this gate. That is what makes `english` the finding rather
+#     than `cuda` in `compose.cuda.yaml`, whose row prints `cpu` / `cuda` both, or the offline pin
+#     an override file that bakes checkpoints from another mirror needs. A word that appears in no
+#     prose in the file is a value nobody chose on purpose.
+ALL_COMPOSE = tuple(sorted(f for f in os.listdir(ROOT)
+                           if f.startswith("compose") and f.endswith((".yaml", ".yml"))))
+# The two scopes have to stay two scopes: a sixth file appearing is a decision about which sweep it
+# belongs to, and a silent omission is the bug this section was written because of.
+check("compose/files outside the dtype sweep are exactly the ones excluded",
+      sorted(set(ALL_COMPOSE) - set(COMPOSE_FILES)), ["compose.example.yml"])
+
+PINNED = re.compile(r'^([A-Z][A-Z0-9_]+):\s*"\$\{([A-Z][A-Z0-9_]+):-([^"}]+)\}"$')
+
+
+def pins(text: str) -> List[tuple]:
+    """`(service, name, pinned default)` for every `"${NAME:-value}"` entry in an environment block.
+
+    Same indent walk as `env_blocks`, and the same reason for it: a key at this indent under
+    `environment:` is what the container gets, and nothing else is.
+    """
+    out: List[tuple] = []
+    in_services = service = None
+    in_env = False
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        stripped = raw.strip()
+        if indent == 0:
+            in_services = stripped == "services:"
+            service = in_env = None
+            continue
+        if not in_services:
+            continue
+        if indent == 2 and stripped.endswith(":"):
+            service, in_env = stripped[:-1].strip(), False
+            continue
+        if service is None:
+            continue
+        if indent == 4 and stripped == "environment:":
+            in_env = True
+            continue
+        if indent == 4:
+            in_env = False
+            continue
+        if in_env and indent == 6 and not stripped.startswith("#") and ":" in stripped:
+            match = PINNED.match(stripped)
+            # The key and the interpolated name are the same variable here; a file that forwards
+            # `FOO: "${BAR:-x}"` is a different drift, and the passthrough checks above own it.
+            if match and match.group(1) == match.group(2):
+                out.append((service, match.group(1), match.group(3)))
+    return out
+
+
+def comments(text: str) -> str:
+    """Everything a Compose file says about itself, and nothing it says to Compose."""
+    return "\n".join(line[line.rindex("#"):] for line in text.splitlines() if "#" in line.lstrip())
+
+
+# name -> every default cell the page prints for it, across all of docker.md's tables. A row whose
+# variable column names two spellings (`HF_TOKEN` / `HF_TOKEN_FILE`) documents both.
+doc_rows: Dict[str, set] = {}
+for _line in docker_md.splitlines():
+    if not _line.startswith("|"):
+        continue
+    _cells = [c.strip() for c in _line.strip().strip("|").split("|")]
+    if len(_cells) < 2:
+        continue
+    for _n in re.findall(r"\b([A-Z][A-Z0-9_]{3,})\b", _cells[0]):
+        doc_rows.setdefault(_n, set()).add(_cells[1])
+
+pinned_compared = 0
+for rel in ALL_COMPOSE:
+    _text = read(rel)
+    _say = comments(_text)
+    for service, name, value in pins(_text):
+        if name not in doc_rows:
+            continue
+        literals = {t for cell in doc_rows[name] for t in re.findall(r"`([^`]+)`", cell)}
+        if not literals:
+            # A row that describes its default in prose ("bundled request") states no value to
+            # compare against. Counted below so the skip cannot quietly become the whole sweep.
+            continue
+        pinned_compared += 1
+        check_true("compose/%s/%s/%s default is what docs/docker.md prints" % (rel, service, name),
+                   value in literals or value in _say,
+                   "the page's `%s` row prints %s, this file ships %r without ever naming it, and "
+                   "an operator following the page gets it anyway"
+                   % (name, sorted(literals), value))
+# Non-vacuity: the comparison has to have run. Twenty-six of these hold on the current tree; the
+# floor is low enough to survive a table edit and high enough that a broken row parser or an
+# empty `ALL_COMPOSE` reports itself instead of passing.
+check_true("core/the default comparison compared the pinned entries", pinned_compared >= 15,
+           "compared %d of %d Compose files; doc rows: %d" % (pinned_compared, len(ALL_COMPOSE),
+                                                              len(doc_rows)))
+
 # 5. the exclusion this file relies on stays falsifiable: MPS's row gate is not forwarded because
 #    no Compose file here can select MPS. The day one does, this check fails and the decision has
 #    to be made again rather than quietly missing a name.
