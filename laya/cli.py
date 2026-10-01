@@ -250,6 +250,10 @@ def run(text, args, router=None):
 def read_batch_lines(source):
     """One request per non-blank line of FILE, or of stdin for '-'."""
     if source == "-":
+        # A pipe is decoded with the locale's codec by default (cp1252 on Windows), not the utf-8 a
+        # FILE is read with, so piped non-Latin requests arrived as mojibake.
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8")
         lines = sys.stdin.read().splitlines()
     else:
         with open(source, encoding="utf-8") as handle:
