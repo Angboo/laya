@@ -823,6 +823,86 @@ try:
 finally:
     langchain_module._get_default_router = _real_default_router
 
+# --------------------------------------------------------------- 6b. LayaDecision per-call controls
+#
+# The other four nodes route through `_execute_decision`, which has forwarded the two token
+# budgets (#530) and the five hook arguments (#532) since they landed. `LayaDecision` bypasses
+# that executor and calls `decide` directly, so it historically forwarded only `model`: a schema
+# decision could not widen its own window or attach the cache/audit hook its siblings can. These
+# checks drive the whole control family through the bypass and read it back off the runner.
+import inspect  # noqa: E402
+from laya.agent import Agent  # noqa: E402
+from laya.integrations import _controls  # noqa: E402
+from laya.router import Router  # noqa: E402
+
+DECISION_ALL_CONTROLS = {"max_len": 1024, "head_max_len": 512, "hooks": ["H"],
+                         "on_predict_start": "S", "on_predict_end": "E",
+                         "hooks_raise": True, "hooks_timeout": 0.5}
+
+_dplain = RecordingAgent()
+LayaDecision(DECISION_SCHEMA, agent=_dplain).invoke("x")
+check("decision/controls default sends nothing", _dplain.calls[0]["kwargs"], {})
+
+_devery = RecordingAgent()
+LayaDecision(DECISION_SCHEMA, agent=_devery, **DECISION_ALL_CONTROLS).invoke("x")
+check("decision/controls forwards every control", _devery.calls[0]["kwargs"],
+      DECISION_ALL_CONTROLS)
+
+_dbudget = RecordingAgent()
+LayaDecision(DECISION_SCHEMA, agent=_dbudget, head_max_len=256).invoke("x")
+check("decision/controls forwards one budget alone", _dbudget.calls[0]["kwargs"],
+      {"head_max_len": 256})
+
+# 0 and [] are decisions, not absences: a truthiness test would silently drop them.
+_dfalsy = RecordingAgent()
+LayaDecision(DECISION_SCHEMA, agent=_dfalsy, head_max_len=0, hooks=[], hooks_raise=False).invoke("x")
+check("decision/controls keeps falsy values", _dfalsy.calls[0]["kwargs"],
+      {"head_max_len": 0, "hooks": [], "hooks_raise": False})
+
+_dmixed = RecordingAgent()
+LayaDecision(DECISION_SCHEMA, agent=_dmixed, model="laya-multilingual", max_len=1024).invoke("x")
+check("decision/controls alongside model", _dmixed.calls[0]["kwargs"],
+      {"model": "laya-multilingual", "max_len": 1024})
+
+# The names it reads out of the shared module are the names it actually forwards -- a control
+# added to `._controls` without reaching this bypass fails here rather than being dropped silently.
+check("decision/controls reads both budgets", set(_controls.PREDICT_CONTROLS),
+      {"max_len", "head_max_len"})
+_dag = set(inspect.signature(Agent.system_one).parameters)
+_dr = set(inspect.signature(Router.predict).parameters)
+for _c in DECISION_ALL_CONTROLS:
+    check_true("decision/controls/%s accepted by Agent" % _c, _c in _dag)
+    check_true("decision/controls/%s accepted by Router.predict" % _c, _c in _dr)
+
+# Remote mode: the two budgets travel in the request body; a hook is a Python callable that runs
+# inside `predict` and no wire format carries it, so refuse rather than report a success that
+# never called it.
+_dremote = []
+
+
+def _dspy_remote(base_url, state, questions, api_key=None, model=None, **extras):
+    _dremote.append(dict({"model": model}, **extras))
+    return {"model": "mock", "answers": dict(DECISION_ANSWERS)}
+
+
+_dreal = langchain_module._call_remote
+langchain_module._call_remote = _dspy_remote
+try:
+    LayaDecision(DECISION_SCHEMA, base_url="http://laya:8000",
+                 max_len=1024, head_max_len=384).invoke("x")
+    check("decision/remote forwards both budgets", _dremote[-1],
+          {"model": None, "max_len": 1024, "head_max_len": 384})
+    LayaDecision(DECISION_SCHEMA, base_url="http://laya:8000").invoke("x")
+    check("decision/remote omits an unset budget", _dremote[-1], {"model": None})
+    _drefused = False
+    try:
+        LayaDecision(DECISION_SCHEMA, base_url="http://laya:8000", hooks=[object()]).invoke("x")
+    except ValueError as exc:
+        _drefused = "hooks" in str(exc) and "laya-serve" in str(exc)
+    check_true("decision/remote refuses a hook", _drefused)
+finally:
+    langchain_module._call_remote = _dreal
+
 # A pydantic model is a schema too, so the same class can type a chain and a call site. Note
 # `Literal[0, 1, 2]` plans as an enum choice rather than a score scale, so the answer carries a
 # label and the value comes back as the schema's own int.
