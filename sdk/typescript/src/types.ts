@@ -53,6 +53,20 @@ export interface PredictOptions extends RequestOptions {
 interface AnswerBase {
   /** Optional action metadata returned by Laya. */
   action?: { act_probability: number };
+  /** The probability mass on the answer actually reported (`max(p)`). Unlike `confidence`, which
+   *  means normalized entropy on `choice` and `score` and `max(p_yes, p_no)` on `noul`, this is
+   *  the same quantity on all three types, so one threshold gates across them. */
+  answer_confidence: number;
+  /** Set by the abstention gate on the answers that fell below `minConfidence`, and only then:
+   *  `flag_low_confidence` writes `True` and never writes the key otherwise. */
+  low_confidence?: true;
+  /** How the gate decided this answer, reported on every answer of a gated call. Absent means no
+   *  gate ran (`minConfidence` unset); `unevaluated` means a gate ran and this answer carried no
+   *  usable confidence, which the boolean above cannot tell apart from a pass. */
+  abstention?: 'passed' | 'abstained' | 'unevaluated';
+  /** The threshold that produced `abstention`, echoed on the same answers: the gate consumes
+   *  `minConfidence`, so without this a batch run cannot be re-split by the threshold it used. */
+  abstention_threshold?: number;
 }
 export interface ChoiceAnswer<Label extends string = string> extends AnswerBase {
   type: 'choice';

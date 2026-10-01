@@ -47,6 +47,25 @@ export function validatePrediction(value: unknown, questions: Questions): void {
     if (answer.action !== undefined) {
       expect(isRecord(answer.action) && probability(answer.action.act_probability), `answers.${id}.action`);
     }
+    // Checked when the server sends them, like the optional fields of `health` and of `usage`:
+    // `answer_confidence` (#126) and the gate fields (#361) are recent additions to an answer that
+    // predates them, so requiring a key here would fail every prediction against a deployment that
+    // has not shipped it. A caller that asked for a gate (`minConfidence`) and got no `abstention`
+    // back reads it as `undefined` on the typed answer, which is the truth: the gate did not run.
+    if (answer.answer_confidence !== undefined) {
+      expect(probability(answer.answer_confidence), `answers.${id}.answer_confidence`);
+    }
+    if (answer.low_confidence !== undefined) {
+      expect(answer.low_confidence === true, `answers.${id}.low_confidence`);
+    }
+    if (answer.abstention !== undefined || answer.abstention_threshold !== undefined) {
+      // The gate writes both onto the same answer or onto neither, so one without the other is a
+      // half-report: an `abstention` with no echoed threshold cannot be re-split, and a threshold
+      // with no state says nothing about the answer it was measured against.
+      expect(answer.abstention === 'passed' || answer.abstention === 'abstained' ||
+        answer.abstention === 'unevaluated', `answers.${id}.abstention`);
+      expect(probability(answer.abstention_threshold), `answers.${id}.abstention_threshold`);
+    }
     if (question.type === 'noul') {
       expect(probability(answer.noul), `answers.${id}.noul`);
     } else {
