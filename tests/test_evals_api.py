@@ -55,16 +55,28 @@ check("EvalReport fields are unchanged", [f.name for f in dataclasses.fields(eva
 # names and order are the contract. `sort_by_length` is core's #294 forward-pass grouping knob
 # reaching a scored run through `laya-evals run --sort-by-length`; it is appended, never inserted,
 # because a caller that passed `on_error` or `config` positionally must still mean the same thing.
+# `min_confidence` extends the same rule: it is appended after `sort_by_length`, defaults to None
+# (an unset abstention threshold means "score the raw argmax", which is what a pre-#361 run did),
+# and sits after the batch size the calls that carry it can group inside.
 _sig = inspect.signature(evals.evaluate)
 check("evaluate signature", [p.name for p in _sig.parameters.values()],
-      ["runner", "dataset", "evaluators", "batch_size", "on_error", "config", "sort_by_length"])
+      ["runner", "dataset", "evaluators", "batch_size", "on_error", "config",
+       "sort_by_length", "min_confidence"])
 check("evaluate: grouping defaults to off", _sig.parameters["sort_by_length"].default, False)
+check("evaluate: abstention threshold defaults to unset",
+      _sig.parameters["min_confidence"].default, None)
 check_true("evaluate: the knob sits after the batch size it groups inside",
            list(_sig.parameters).index("batch_size")
            < list(_sig.parameters).index("sort_by_length"))
+check_true("evaluate: the abstention knob sits after the batch size it may apply within",
+           list(_sig.parameters).index("batch_size")
+           < list(_sig.parameters).index("min_confidence"))
 
 # The two batch entry points the CLI wires up: both have to take the knob by the same name, or a
-# `--sort-by-length` run reports `sort_by_length_sent: false` for the surface it ships.
+# `--sort-by-length` run reports `sort_by_length_sent: false` for the surface it ships. The same
+# is true for the abstention threshold; a `--min-confidence` run that silently dropped the
+# argument would publish a `precision@coverage` figure for a policy that never ran, so the CLI
+# runner shapes have to accept the kwarg under the same name the guard on `evaluate` checks.
 from laya import evals_cli  # noqa: E402
 
 for label, fn in (("RouterRunner.predict_batch", evals_cli.RouterRunner.predict_batch),
@@ -72,6 +84,18 @@ for label, fn in (("RouterRunner.predict_batch", evals_cli.RouterRunner.predict_
     params = inspect.signature(fn).parameters
     check_true("%s takes the grouping knob" % label, "sort_by_length" in params)
     check("%s defaults it to off" % label, params["sort_by_length"].default, False)
+    check_true("%s takes the abstention threshold" % label, "min_confidence" in params)
+    check("%s defaults the threshold to unset" % label,
+          params["min_confidence"].default, None)
+
+# The single-predict fallback path takes the threshold under the same name on both runner shapes,
+# so a run without --batch-size still scores the gate rather than silently skipping it.
+for label, fn in (("RouterRunner.predict", evals_cli.RouterRunner.predict),
+                  ("OnnxRunner.predict", evals_cli.OnnxRunner.predict)):
+    params = inspect.signature(fn).parameters
+    check_true("%s takes the abstention threshold" % label, "min_confidence" in params)
+    check("%s defaults the threshold to unset" % label,
+          params["min_confidence"].default, None)
 
 # A signature is not a wiring: a runner that declares the knob and drops it on the way through
 # would pass both checks above. `OnnxRunner`'s call is gated in test_evals_onnx.py against a
@@ -80,8 +104,10 @@ class _RecordingRouter:
     def __init__(self):
         self.calls = []
 
-    def predict_batch(self, requests, batch_size=None, sort_by_length=False):
-        self.calls.append({"batch_size": batch_size, "sort_by_length": sort_by_length})
+    def predict_batch(self, requests, batch_size=None, sort_by_length=False,
+                      min_confidence=None):
+        self.calls.append({"batch_size": batch_size, "sort_by_length": sort_by_length,
+                           "min_confidence": min_confidence})
         return [{"model": "m", "answers": {}} for _ in requests]
 
 

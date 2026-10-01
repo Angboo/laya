@@ -27,15 +27,22 @@ class RouterRunner:
     def __init__(self, router: Any):
         self.router = router
 
-    def predict(self, state: Any, questions: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+    def predict(self, state: Any, questions: Dict[str, Any], model: Optional[str] = None,
+                min_confidence: Optional[float] = None) -> Dict[str, Any]:
+        if min_confidence is not None:
+            return self.router.predict(state, questions, model=model,
+                                       min_confidence=min_confidence)
         return self.router.predict(state, questions, model=model)
 
     def predict_batch(self, states: Sequence[Any], questions: Dict[str, Any],
                       model: Optional[str] = None, batch_size: Optional[int] = None,
-                      sort_by_length: bool = False) -> List[Dict[str, Any]]:
+                      sort_by_length: bool = False,
+                      min_confidence: Optional[float] = None) -> List[Dict[str, Any]]:
         requests = [{"state": state, "questions": questions, "model": model} for state in states]
-        return self.router.predict_batch(requests, batch_size=batch_size,
-                                         sort_by_length=sort_by_length)
+        kwargs = {"batch_size": batch_size, "sort_by_length": sort_by_length}
+        if min_confidence is not None:
+            kwargs["min_confidence"] = min_confidence
+        return self.router.predict_batch(requests, **kwargs)
 
 
 class OnnxRunner:
@@ -56,23 +63,30 @@ class OnnxRunner:
                 "the ONNX runner serves only %r, but this example asks for %r; "
                 "run them separately or drop --onnx" % (self.agent.model_id, model))
 
-    def predict(self, state: Any, questions: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+    def predict(self, state: Any, questions: Dict[str, Any], model: Optional[str] = None,
+                min_confidence: Optional[float] = None) -> Dict[str, Any]:
         self._check_model(model)
+        if min_confidence is not None:
+            return self.agent.predict(state, questions, min_confidence=min_confidence)
         return self.agent.predict(state, questions)
 
     def predict_batch(self, states: Sequence[Any], questions: Dict[str, Any],
                       model: Optional[str] = None, batch_size: Optional[int] = None,
-                      sort_by_length: bool = False) -> List[Dict[str, Any]]:
+                      sort_by_length: bool = False,
+                      min_confidence: Optional[float] = None) -> List[Dict[str, Any]]:
         self._check_model(model)
         agent_batch = getattr(self.agent, "predict_batch", None)
+        extra = {}
+        if min_confidence is not None:
+            extra["min_confidence"] = min_confidence
         if agent_batch is not None:
             if sort_by_length:
                 # Asked for, so it has to reach the agent's own grouping. The per-state fallback
                 # below cannot honour it: there is no batch to reorder.
                 return agent_batch(list(states), questions, batch_size=batch_size,
-                                   sort_by_length=True)
-            return agent_batch(list(states), questions, batch_size=batch_size)
-        return [self.agent.predict(state, questions) for state in states]
+                                   sort_by_length=True, **extra)
+            return agent_batch(list(states), questions, batch_size=batch_size, **extra)
+        return [self.agent.predict(state, questions, **extra) for state in states]
 
 
 def _parse_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, float]:
@@ -157,6 +171,13 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="with --batch-size N where 1 < N < the run, group similarly sized "
                           "examples into the same forward pass so each pads to a shorter maximum; "
                           "scores the same answers, in the same order")
+    run.add_argument("--min-confidence", dest="min_confidence", type=float, metavar="THRESHOLD",
+                     help="abstention threshold on `answer_confidence` (#361): answers below it "
+                          "come back abstained, so the run scores the policy at that threshold "
+                          "rather than the raw argmax. Accepted range is core's -- "
+                          "`laya.confidence.check_min_confidence` -- not a copy of it here, and a "
+                          "runner that predates the gate is refused with a named error rather "
+                          "than silently scored without it")
     run.add_argument("--on-error", choices=("fail", "skip"), default="fail")
     run.add_argument("--baseline", help="a baseline report JSON to compare against")
     run.add_argument("--tolerance", action="append", metavar="METRIC=VALUE",
@@ -317,7 +338,8 @@ def _cmd_run(args) -> int:
         config["score_within"] = [evaluator.tolerance for evaluator in extra]
     report = evals.evaluate(runner, dataset, evaluators=evals.default_evaluators() + extra,
                             batch_size=args.batch_size, on_error=args.on_error, config=config,
-                            sort_by_length=args.sort_by_length)
+                            sort_by_length=args.sort_by_length,
+                            min_confidence=args.min_confidence)
     # Which commit answered belongs in the artifact a baseline is, and it can only be read after
     # the run: `preload=False` means no checkpoint is resident before the first row.
     # `loaded_revisions` reports the commit each resident agent came from -- the pin when there is
