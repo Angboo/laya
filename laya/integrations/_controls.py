@@ -6,9 +6,10 @@ rule, and three independent copies of it drift -- this module is the copy the La
 and LlamaIndex wrappers import.
 
 The names are listed once, in `PREDICT_CONTROLS` and `HOOK_CONTROLS`, and the signatures below
-are checked against them by `tests/test_crewai.py` and `tests/test_llamaindex.py`, which also
-assert every wrapper's constructor accepts all of them. A control added here without reaching a
-wrapper's `__init__` fails that wrapper's suite rather than being dropped silently.
+are checked against them by `tests/test_langchain.py`, `tests/test_crewai.py` and
+`tests/test_llamaindex.py`, which also assert every wrapper's constructor accepts all of them. A
+control added here without reaching a wrapper's `__init__` fails that wrapper's suite rather than
+being dropped silently.
 """
 from __future__ import annotations
 
