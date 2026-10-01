@@ -14,8 +14,8 @@ And a name being written down is not the same as what it accepts being written d
 ``LAYA_CUDA_AMP`` and ``LAYA_CPU_AMP`` are the two names in the package whose accepted values are
 a literal tuple, and both of the places that list them are wrong: ``docs/docker.md``'s
 ``LAYA_CPU_AMP`` row says "``bf16`` opts the CPU forward into bf16; anything else leaves it fp32"
-while ``laya/agent.py:566`` compares the value against ``("bf16", "bfloat16")``, and
-``_cuda_amp_dtype``'s own docstring -- the text a maintainer editing the function reads -- says
+while the CPU comparison accepts ``bf16`` and ``bfloat16`` alike, and ``_cuda_amp_dtype``'s own
+docstring -- the text a maintainer editing the function reads -- says
 "LAYA_CUDA_AMP=fp16|bf16 when set ... anything else is ignored" while the function accepts four
 spellings. The error is in the direction that hides a working knob: ``LAYA_CPU_AMP=bfloat16``
 turns bf16 on today and the page promises it will not, so the deployment that trusts the page
