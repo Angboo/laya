@@ -6,6 +6,7 @@ function expect(condition: unknown, field: string): asserts condition {
   if (!condition) throw new LayaResponseError(`Invalid Laya response: ${field}`);
 }
 const number = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const count = (value: unknown): value is number => Number.isInteger(value);
 const probability = (value: unknown) => number(value) && value >= 0 && value <= 1;
 const model = (value: unknown) => typeof value === 'string' && ['english', 'multilingual', 'typed-decisions'].includes(value);
 
@@ -34,9 +35,38 @@ export function validateHealth(value: unknown): void {
   }
 }
 
+export function validateUsage(value: unknown): void {
+  // The two token counts are what Jev decodes, so they are the only required fields: a
+  // self-hosted deployment predating the truncation report (#174) answers with those two and is
+  // a valid prediction. `Usage` types the fields the current server always sends. Each of the
+  // rest is checked whenever the server does send it, and a half-report is refused rather than
+  // passed through, because these are the only fields that make a truncated answer visible.
+  expect(isRecord(value), 'usage');
+  expect(Number.isInteger(value.input_tokens) && Number.isInteger(value.output_tokens), 'usage');
+  if (value.state_tokens !== undefined) expect(Number.isInteger(value.state_tokens), 'usage.state_tokens');
+  if (value.state_tokens_dropped !== undefined) {
+    expect(Number.isInteger(value.state_tokens_dropped), 'usage.state_tokens_dropped');
+  }
+  if (value.truncated !== undefined) expect(typeof value.truncated === 'boolean', 'usage.truncated');
+  if (value.truncated_questions !== undefined) {
+    expect(Array.isArray(value.truncated_questions) &&
+      value.truncated_questions.every((qid: unknown) => typeof qid === 'string'), 'usage.truncated_questions');
+  }
+  if (value.options === undefined) return;
+  expect(isRecord(value.options), 'usage.options');
+  for (const collapse of Object.values(value.options)) {
+    expect(isRecord(collapse), 'usage.options');
+    expect(count(collapse.total) && count(collapse.distinct) && collapse.distinct <= collapse.total,
+      'usage.options');
+    expect(Object.hasOwn(collapse, 'tokens_per_option') &&
+      (collapse.tokens_per_option === null || count(collapse.tokens_per_option)),
+    'usage.options.tokens_per_option');
+  }
+}
+
 export function validatePrediction(value: unknown, questions: Questions): void {
   expect(isRecord(value) && typeof value.model === 'string' && isRecord(value.answers), 'prediction');
-  expect(isRecord(value.usage) && Number.isInteger(value.usage.input_tokens) && Number.isInteger(value.usage.output_tokens), 'usage');
+  validateUsage(value.usage);
   if (value.routing !== undefined) validateRoute(value.routing);
   for (const [id, question] of Object.entries(questions)) {
     const answer = value.answers[id];
