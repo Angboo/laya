@@ -258,6 +258,7 @@ def fit_temperature_map(records: Iterable, compute_ece: bool = False, seed: int 
 fit_temperatures = fit_temperature_map
 
 
+@torch.no_grad()
 def records_from_labeled(agent, pairs: Sequence) -> List[Record]:
     """Collect CPU records from `(state, questions, targets)`.
 

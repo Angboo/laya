@@ -25,6 +25,7 @@ from tokenizers.models import WordLevel  # noqa: E402
 from transformers import BertConfig, BertModel, PreTrainedTokenizerFast  # noqa: E402
 
 from laya import load  # noqa: E402
+from laya.calibrate import records_from_labeled  # noqa: E402
 from laya.common import DecisionModel, QTYPES, TEMP_MIN, TEMP_MAX  # noqa: E402
 
 
@@ -163,6 +164,20 @@ class CalibrationPersistenceTests(unittest.TestCase):
         self.cfg.pop("temperature")
         self.write_config()
         self.assert_inference_temperatures({(t, 2): 1.0 for t in QTYPES})
+
+    def test_records_from_labeled_runs_on_a_loaded_agent(self):
+        # `Agent._forward` turns the logits straight into numpy, which fails on a tensor that
+        # tracks gradients. The stand-in agents in test_calibrate.py return numpy and cannot see it.
+        self.write_config()
+        with patch("huggingface_hub.snapshot_download", side_effect=AssertionError("unexpected download")):
+            agent = load(str(self.checkpoint), device="cpu")
+        questions = {"flag": {"type": "noul", "instructions": "hello"}}
+        records = records_from_labeled(agent, [("hello", questions, {"flag": [0.0, 1.0]})])
+        self.assertEqual(len(records), 1)
+        qtype, logits, target, k = records[0]
+        self.assertEqual((qtype, k), (QTYPES["noul"], 2))
+        self.assertEqual(logits.shape, (2,))
+        self.assertEqual(target.tolist(), [0.0, 1.0])
 
     def test_notebook_fit_one_temp_clamps_to_common_bounds(self):
         notebook = Path(__file__).resolve().parents[1] / "notebooks" / (
