@@ -45,6 +45,13 @@ class FastLaya:
         self._forward_lock = threading.RLock()
         self.verbose = verbose
         self.H, self.Dh, self.D = cfg.num_attention_heads, cfg.hidden_size // cfg.num_attention_heads, cfg.hidden_size
+        # The decision head is a separate nn.TransformerEncoderLayer built with its OWN head count
+        # (common.py: `nhead = max(1, d // 64)`), not the encoder's `cfg.num_attention_heads`. The
+        # two agree only when the encoder's head_dim is exactly 64 (every shipped checkpoint), so
+        # reusing `self.H`/`self.Dh` for the head's attention silently mixed the wrong channels on
+        # any checkpoint with a non-64 encoder head_dim. Partition the head by its own heads.
+        self.H_head = max(1, self.D // 64)
+        self.Dh_head = self.D // self.H_head
         self.F = cfg.intermediate_size
         self.eps = cfg.norm_eps
         self.max_len = max_len
@@ -125,6 +132,15 @@ class FastLaya:
             self._attn_k[key] = K.attn_kernel(key[0], key[1], self.H, self.Dh, window=window, dtype=self.kdtype)
         return self._attn_k[key]
 
+    def attn_k_head(self, B, L):
+        # The decision head's full attention, partitioned by the head's own heads (self.H_head),
+        # not the encoder's. Cached apart from `attn_k` so the two never share a kernel built for
+        # the wrong partition. The head always uses full attention (window 0).
+        key = (None, None, 0, "head") if L <= self.DYNAMIC_MAX_L else (B, L, 0, "head")
+        if key not in self._attn_k:
+            self._attn_k[key] = K.attn_kernel(key[0], key[1], self.H_head, self.Dh_head, window=0, dtype=self.kdtype)
+        return self._attn_k[key]
+
     # ------------------------------------------------------------------ encoder + head on padded [B, L]
     def _encode(self, ids, lens, qtype):
         """ids [B,L] long (padded), lens [B] int32, qtype [B] long -> hidden [B, L, D] fp32"""
@@ -157,7 +173,7 @@ class FastLaya:
         for j, h in enumerate(self.head):
             self.k_ln_b(X, Y, h["n1w"], h["n1b"], Y)
             self.k_in(Y, h["in_w"], h["in_b"], qkv)
-            self.attn_k(B, L, 0)(qkv.view(B, L, 3, self.H, self.Dh), lens, O.view(B, L, D))
+            self.attn_k_head(B, L)(qkv.view(B, L, 3, self.H_head, self.Dh_head), lens, O.view(B, L, D))
             self.k_out(O, h["out_w"], h["out_b"], Y)
             self.k_addln_b(X, Y, h["n2w"], h["n2b"], Y)                         # X += attn ; Y = norm2(X)
             self.k_ffn1(Y, h["l1w"], h["l1b"], F1)
