@@ -596,13 +596,16 @@ class Agent(HookRegistry):
         if device is not None:
             target_device = torch.device(device)
             if target_device.type == "cuda" and not torch.cuda.is_available():
-                print("Warning: CUDA requested but not available. Falling back to CPU.")
+                warnings.warn("Warning: CUDA requested but not available. Falling back to CPU.",
+                              RuntimeWarning)
                 self.device = torch.device("cpu")
             elif target_device.type == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
-                print("Warning: MPS requested but not available. Falling back to CPU.")
+                warnings.warn("Warning: MPS requested but not available. Falling back to CPU.",
+                              RuntimeWarning)
                 self.device = torch.device("cpu")
             elif target_device.type == "xpu" and not (hasattr(torch, "xpu") and torch.xpu.is_available()):
-                print("Warning: XPU requested but not available. Falling back to CPU.")
+                warnings.warn("Warning: XPU requested but not available. Falling back to CPU.",
+                              RuntimeWarning)
                 self.device = torch.device("cpu")
             else:
                 self.device = target_device
@@ -742,7 +745,7 @@ class Agent(HookRegistry):
             self.accelerate()
 
         if fell_back_from is not None:
-            print(
+            warnings.warn(
                 "\n[laya] Warning: could not place the model on %s, so it is running on CPU.\n"
                 "  Reason: %s\n"
                 "  Inference will be roughly 10-15x slower (~200-500 ms rather than ~35 ms).\n"
@@ -750,7 +753,7 @@ class Agent(HookRegistry):
                 "  may not support its CUDA architecture:\n"
                 "    pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128\n"
                 "  See https://pytorch.org/get-started/locally/\n"
-                % (fell_back_from, fell_back_why), flush=True)
+                % (fell_back_from, fell_back_why), RuntimeWarning)
 
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,
@@ -780,7 +783,8 @@ class Agent(HookRegistry):
         if self._fast is None:
             if strict:
                 raise last
-            print("Warning: laya fast path unavailable (%s); using the stock forward." % last)
+            warnings.warn("Warning: laya fast path unavailable (%s); using the stock forward." % last,
+                          RuntimeWarning)
             return False
         self._stock_forward = self.model.forward
         self.model.forward = self._fast.forward
@@ -839,8 +843,8 @@ class Agent(HookRegistry):
             self.model.to(torch.device("cpu"))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            print("Warning: could not move the model back to %s after the CPU retry (%s); "
-                  "staying on CPU." % (device, e))
+            warnings.warn("Warning: could not move the model back to %s after the CPU retry (%s); "
+                          "staying on CPU." % (device, e), RuntimeWarning)
             return
         self.device, self.dtype, self.amp_enabled = device, dtype, amp_enabled
         if had_fast:
@@ -1121,7 +1125,8 @@ class Agent(HookRegistry):
             # "cuda" substring used to be accepted too, so any CUDA-shaped RuntimeError (a
             # shape, assert or kernel error) silently and permanently demoted the agent.
             if self.device.type != "cpu" and (isinstance(e, torch.cuda.OutOfMemoryError) or "memory" in low):
-                print("Warning: GPU memory exceeded during inference. Retrying this request on CPU...")
+                warnings.warn("Warning: GPU memory exceeded during inference. "
+                              "Retrying this request on CPU...", RuntimeWarning)
                 # Scoped, not permanent: the demotion used to rewrite device/dtype/amp and move
                 # the model for the life of the process, so one oversized request left every
                 # later call ~10-15x slower on CPU. Demote under the write lock (#649) so any
@@ -1165,8 +1170,9 @@ class Agent(HookRegistry):
                     finally:
                         self._amp_failures += 1
                         if self._amp_failures >= _AMP_FAIL_LIMIT:
-                            print("Warning: autocast failed %d times in a row. Disabling mixed precision."
-                                  % self._amp_failures)
+                            warnings.warn("Warning: autocast failed %d times in a row. "
+                                          "Disabling mixed precision." % self._amp_failures,
+                                          RuntimeWarning)
                             self.amp_enabled = False
                             self.dtype = torch.float32
             raise
