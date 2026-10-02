@@ -530,6 +530,15 @@ def _check_request_limits(state: Any, questions: Any) -> None:
                     status_code=413,
                     detail="too many score levels for %r (%d > %d)" % (qid, count, MAX_SCORE_LEVELS),
                 )
+            # A null level is a hole in the rubric: the answer's `legend` would carry
+            # `{"<i>": null}`, which a Jev client's schema refuses to parse (#302). Reject it as a
+            # malformed request rather than answering 200 with an unparseable legend.
+            if None in crit:
+                raise HTTPException(
+                    status_code=422,
+                    detail="score question %r has a null level at index %d; give every level a "
+                           "description" % (qid, crit.index(None)),
+                )
     if total_options > MAX_TOTAL_OPTIONS:
         raise HTTPException(
             status_code=413,
