@@ -41,7 +41,8 @@ public sealed class LayaRouterOptions
     public int MaxLoaded { get; set; } = 1;
 
     /// <summary>
-    /// Checkpoint used when a state has no letters at all (script <c>"unknown"</c>). Default
+    /// Checkpoint used when a state has no letters or its Latin language is undetermined without
+    /// non-English evidence. Default
     /// <see cref="LayaCheckpoint.English"/>, matching Python's default.
     /// </summary>
     public LayaCheckpoint Default { get; set; } = LayaCheckpoint.English;
@@ -266,12 +267,20 @@ public sealed class LayaRouter : ILayaPredictor, IDisposable
         else if (!det.IsEnglish)
         {
             model2 = LayaCheckpoint.Multilingual;
-            reason = det.Language is { } identified
+            reason = det.MixedSegment is { Length: > 0 } mixed
+                ? $"Latin script, mostly English, but a line or field reads as {PyRepr(det.Language!)} "
+                  + $"({PyRepr(LanguageDetection.SliceCodePoints(mixed, 60))}); the English checkpoint cannot read it"
+                : det.Language is { } identified
                 ? $"Latin script but language looks like {PyRepr(identified)}, not English"
                 // Unidentified Latin-script language: routed on the non-English letters alone,
                 // because no stopword list here covers it.
                 : $"Latin script, language not identified but {FormatPercent0(det.DiacriticRate)}% "
                   + "non-English letters; not safe for the English checkpoint";
+        }
+        else if (det.LanguageUndecided)
+        {
+            model2 = Default;
+            reason = $"Latin script, language not identified and no non-English letters; using default ({CheckpointName(model2)})";
         }
         else
         {

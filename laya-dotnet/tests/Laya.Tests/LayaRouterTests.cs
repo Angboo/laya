@@ -471,6 +471,8 @@ public sealed class LayaRouterTests
             Assert.Equal(wantDetection.GetProperty("language_undecided").GetBoolean(), got.LanguageUndecided);
             Assert.Equal(wantDetection.GetProperty("diacritic_rate").GetDouble(), got.DiacriticRate, 1e-9);
             Assert.Equal(wantDetection.GetProperty("non_latin_fraction").GetDouble(), got.NonLatinFraction, 1e-9);
+            Assert.Equal(wantDetection.GetProperty("mixed_segment").ValueKind == JsonValueKind.Null
+                ? null : wantDetection.GetProperty("mixed_segment").GetString(), got.MixedSegment);
         }
     }
 
