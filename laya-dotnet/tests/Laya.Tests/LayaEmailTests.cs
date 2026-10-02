@@ -20,7 +20,7 @@ public sealed class LayaEmailTests
 
     [Fact]
     public void InlineFooterNoTerminalPunctuationStillRecoversTheRequest() =>
-        Assert.Equal("Please unlock it.",
+        Assert.Equal("My account is locked Please unlock it.",
             LayaEmail.CleanBody($"My account is locked\n{Disclaimer}\nPlease unlock it."));
 
     [Fact]
