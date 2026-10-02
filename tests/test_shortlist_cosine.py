@@ -64,6 +64,20 @@ def choice(labels):
     return {"i": {"type": "choice", "criteria": dict.fromkeys(labels)}}
 
 
+# Twenty labels is the size the module exists for, and long enough that a tie of ten
+# gets visibly shuffled by a non-stable argsort.
+MANY = ["L%02d" % i for i in range(20)]
+
+
+def tied_table(query):
+    """``VECTORS`` plus twenty labels: cosine 1.0 on the even indexes, 0.0 on the odd."""
+    vectors = dict(VECTORS)
+    vectors["q"] = list(query)
+    for i, label in enumerate(MANY):
+        vectors[label] = [1.0, 0.0] if i % 2 == 0 else [0.0, 1.0]
+    return vectors
+
+
 def ranked(labels, k, vectors=VECTORS):
     # criteria values of None make render_options send the bare label as the option text
     return shortlist_choice("q", dict.fromkeys(labels), Embed(vectors), k)
@@ -88,10 +102,16 @@ class ShortlistOrderingTests(unittest.TestCase):
     def test_a_non_finite_vector_scores_zero_not_last(self):
         self.assertEqual(ranked(["nan", "orth", "n1"], 2), ["nan", "orth"])
 
+    def test_ties_come_back_in_criteria_order_not_in_argsort_order(self):
+        # The docstrings' whole tie-break promise is that equal scores fall back to the
+        # declared order. Ten labels tie at 1.0 and ten at 0.0, so the kept twelve are the
+        # evens then L01 and L03 -- a non-stable sort returns them shuffled.
+        self.assertEqual(ranked(MANY, 12, tied_table([1.0, 0.0])),
+                         MANY[0::2] + ["L01", "L03"])
+
     def test_a_zero_query_keeps_criteria_order(self):
-        vectors = dict(VECTORS)
-        vectors["q"] = [0.0, 0.0]
-        self.assertEqual(ranked(["n1", "pos", "zero", "orth"], 2, vectors), ["n1", "pos"])
+        # every cosine is 0, so all twenty labels tie and the top-k is the declared prefix
+        self.assertEqual(ranked(MANY, 12, tied_table([0.0, 0.0])), MANY[:12])
 
     def test_scores_are_signed_not_clamped(self):
         agent = FakeAgent()
@@ -111,7 +131,8 @@ class ShortlistOrderingTests(unittest.TestCase):
 
     def test_passthrough_labels_are_criteria_order(self):
         agent, embed = FakeAgent(), Embed()
-        meta = predict_shortlist(agent, "q", choice(["n1", "pos", "zero"]), embed, k=3)["shortlist"]["i"]
+        result = predict_shortlist(agent, "q", choice(["n1", "pos", "zero"]), embed, k=3)
+        meta = result["shortlist"]["i"]
         # pos would win any ranking and n1 would lose one, so this is only the declared
         # order: nothing was ranked, and embed_fn never ran.
         self.assertEqual(meta["labels"], ["n1", "pos", "zero"])
@@ -124,7 +145,9 @@ class ShortlistOrderingTests(unittest.TestCase):
 class ShortlistOrderingDocTests(unittest.TestCase):
     """Both docstrings render onto docs/reference/helpers.md, so they are the published
     ordering contract. Each rule is witnessed against main's own wording, kept verbatim
-    below, so a rule the old text already satisfied could not be called a fix.
+    below, so a rule the old text already satisfied could not be called a fix. The rules
+    take synonyms -- "declared order" for "criteria order", "points away" for "negative"
+    -- so a rewording that keeps the meaning cannot fail them.
     """
 
     OLD_TIE = ("Ties keep the earlier label. A zero vector scores 0 and does not outrank a\n"
@@ -134,6 +157,12 @@ class ShortlistOrderingDocTests(unittest.TestCase):
                 "dropped), ``k``, ``n``, and ``passthrough``.")
 
     DOES_NOT_OUTRANK = re.compile(r"does not outrank", re.I)
+    NAMES_NEGATIVE_SIDE = re.compile(r"negative|below 0|points away", re.I)
+    NAMES_THE_TIE_RULE = re.compile(r"ties keep|earlier label", re.I)
+    RANK_ORDER = re.compile(r"rank(?:ing)? order", re.I)
+    UNRANKED_PATH = re.compile(r"criteria order|declared order|input order", re.I)
+    SIGNED_SCORES = re.compile(r"signed (?:cosine|similarity|score)", re.I)
+    SIGN_KEPT = re.compile(r"(?:not|never) clamped|negative included", re.I)
 
     def paragraphs(self, fn):
         doc = inspect.getdoc(fn) or ""
@@ -144,25 +173,27 @@ class ShortlistOrderingDocTests(unittest.TestCase):
         self.assertNotRegex(doc, self.DOES_NOT_OUTRANK)
         about = [p for p in self.paragraphs(shortlist_choice) if "outrank" in p]
         self.assertTrue(about, "nothing says what a score of 0 does against a negative one")
-        self.assertIn("ties keep the earlier label", about[0].lower())
-        self.assertIn("negative", about[0].lower())
-        # main's sentence asserts the opposite of the first rule and none of the second.
+        self.assertRegex(about[0], self.NAMES_THE_TIE_RULE)
+        self.assertRegex(about[0], self.NAMES_NEGATIVE_SIDE)
+        # main's sentence asserts the opposite of the ban and satisfies neither rule.
         self.assertRegex(self.OLD_TIE, self.DOES_NOT_OUTRANK)
-        self.assertNotIn("negative", self.OLD_TIE.lower())
+        self.assertNotRegex(self.OLD_TIE, self.NAMES_NEGATIVE_SIDE)
 
     def test_the_metadata_paragraph_names_both_label_orders(self):
-        about = [p for p in self.paragraphs(predict_shortlist) if "rank order" in p]
+        about = [p for p in self.paragraphs(predict_shortlist) if self.RANK_ORDER.search(p)]
         self.assertTrue(about, "the labels/scores contract has left the docstring")
-        self.assertIn("criteria order", about[0].lower())
+        self.assertRegex(about[0], self.UNRANKED_PATH)
         self.assertIn("passthrough", about[0])
-        self.assertIn("signed cosine", about[0].lower())
-        self.assertNotIn("criteria order", self.OLD_META.lower())
-        self.assertNotIn("signed", self.OLD_META.lower())
+        self.assertRegex(about[0], self.SIGNED_SCORES)
+        self.assertNotRegex(self.OLD_META, self.UNRANKED_PATH)
+        self.assertNotRegex(self.OLD_META, self.SIGNED_SCORES)
 
     def test_a_negative_score_really_survives_the_ranking(self):
         # the metadata paragraph promises scores can be negative; prove the pair it
         # describes is what a signed cosine actually returns for a label pointing away.
-        self.assertIn("never clamped to 0", " ".join((inspect.getdoc(predict_shortlist) or "").split()))
+        about = [p for p in self.paragraphs(predict_shortlist) if self.RANK_ORDER.search(p)]
+        self.assertTrue(about and self.SIGN_KEPT.search(about[0]),
+                        "the sign of scores is promised nowhere")
         scores = predict_shortlist(FakeAgent(), "q", choice(["pos", "n1", "n2"]), Embed(),
                                    k=2)["shortlist"]["i"]["scores"]
         self.assertTrue(any(score < 0.0 for score in scores), scores)
