@@ -244,6 +244,22 @@ in
       description = "Let the router auto-select the typed-decisions checkpoint when question ids match its workflows.";
     };
 
+    jevStrict = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Project every `/v1/systemone` answer onto the strict Jev wire contract
+        (sets `LAYA_JEV_STRICT`): only the fields the vendor Jev API itself
+        returns — `model`/`answers`/`usage` at the root, the contracted keys per
+        answer, and a two-key `usage`. Nothing is recomputed; every value is the
+        one the result already carries. A client that validates the response
+        against the contract with no extra fields rejects the full payload, so
+        this makes the server usable with such clients; OpenClaw's
+        `@openclaw/typesafe` decision provider is one. Default off, full payload
+        unchanged.
+      '';
+    };
+
     defaultModel = lib.mkOption {
       type = lib.types.nullOr (lib.types.strMatching "[A-Za-z0-9._/-]+");
       default = null;
@@ -299,6 +315,7 @@ in
         LAYA_PRELOAD = if cfg.preload then "1" else "0";
         LAYA_MODELS = lib.concatStringsSep "," cfg.models;
         LAYA_AUTO_TASK = if cfg.autoTaskDetection then "1" else "0";
+        LAYA_JEV_STRICT = if cfg.jevStrict then "1" else "0";
       } // lib.optionalAttrs (cfg.threads != null) {
         LAYA_THREADS = toString cfg.threads;
         OMP_NUM_THREADS = toString cfg.threads;
