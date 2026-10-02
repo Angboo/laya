@@ -269,6 +269,19 @@ jobs:
       - name: Eval ONNX runner tests
         run: python tests/test_evals_onnx.py
 
+      # The offline research suites. Each claims a CI consumer and had none: `test_laya_eval.py`
+      # says in its own docstring that it "runs in CI next to the other suites", while
+      # `test_presentation_checks.py` and `test_act_head_eval.py` guard the eval harness's own
+      # presentation and act-head math. They need only `laya` and numpy, so they belong here
+      # rather than in the weekly weight lane. `test_metamorphic` is invoked as a module: run as a
+      # script its `research` import fails (`No module named 'research'`).
+      - name: Offline research eval suites
+        run: |
+          python research/eval/test_laya_eval.py
+          python research/eval/test_presentation_checks.py
+          python -m research.eval.test_metamorphic
+          python research/evals/test_act_head_eval.py
+
       - name: Fixture dataset validates
         run: laya-evals validate research/evals/fixture.jsonl
 
