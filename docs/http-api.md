@@ -163,6 +163,21 @@ name of the decision head, and the checkpoint that answered is in `routing`.
 | `score` | `score` (expected level index, may fall between levels), `probabilities` keyed `"0".. "k-1"`, `legend` mapping index to the level text |
 | `noul` | `noul`, the probability of the yes option |
 | all | `confidence`, `answer_confidence`, and `action.act_probability` |
+| gate | `abstention`, `abstention_threshold` and `low_confidence`, written by the abstention gate -- see below |
+
+The gate row is the abstention report (#361), and it is the only way a caller can see that the gate
+it paid for ran. A request that sets `min_confidence` gets it; one that does not gets none of the
+three keys. `abstention` is one of three states, written on **every** answer of a gated request:
+`passed` (its confidence cleared the threshold), `abstained` (it fell below, and `low_confidence` is
+`true` on exactly those answers), or `unevaluated` (the answer carried no usable confidence, so the
+gate could not decide -- reporting that as a pass would be the same lie as reporting it as a flag).
+`abstention_threshold` echoes the threshold those states were measured against, which is what makes a
+batch run with per-class thresholds re-splittable after the fact. With `min_confidence` unset none of
+the three keys appear on any answer: absence is the report, not a fourth state, and it is how a caller
+tells an ungated run from a cleared gate. `min_confidence` of exactly `0.0` *was* set, so states are
+reported, and nothing can fall below it, so every answer reads `passed` -- the echoed `0.0` is what
+distinguishes that from a pass at a real threshold. The answer itself is kept in every state; the gate
+marks, it does not drop.
 
 `usage` reports what the forward pass was built from. How much of a state the model reads is a token
 budget, not a character count, and the budget moves with `max_len`, `head_max_len` and every
