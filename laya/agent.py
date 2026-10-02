@@ -1532,8 +1532,7 @@ class Agent(HookRegistry):
         number of windows that were cut, and the token counts include the overlap), and
         `truncated_questions` is the last window's list. The two can disagree: when only an
         earlier window was cut, `truncated` is above 0 and `truncated_questions` is empty. A
-        window is cut when it is larger than the room a question's head leaves, from a `window`
-        above the default or a start hook that narrows `max_len` / `head_max_len`. Test
+        window is cut when it is larger than the room a question's head leaves. Test
         `usage["truncated"] > 0` here, not `is True`.
         """
         if state is None:
