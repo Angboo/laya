@@ -797,6 +797,52 @@ same ONNX graph. The vectors come from the shipping Python code, not from a seco
 The same golden answers back both the fused and the split parity theories: the split graph is the
 fused graph cut into two ONNX files, not a different model, so one recording serves both.
 
+### Regenerating golden fixtures / CI
+
+The goldens are recorded from the Python package, so they have to be re-recorded whenever a change
+to `laya/` moves something they capture (sequence building, option rendering, calibration,
+language detection, ...). One command does the whole chain: it downloads each checkpoint at the
+Hugging Face revision pinned in `tools/regen_golden.py` (`HF_REVISION`), exports the fused layout
+(`tools/export_onnx.py`) and the split layout (`laya-ts/scripts/export_onnx.py`), then runs
+`tools/dump_golden.py` and `tools/dump_routing_golden.py` into `tests/Laya.Tests/golden/`.
+
+```bash
+# once: CPU-only torch plus the toolchain the committed goldens were recorded with
+pip install "torch==2.14.0" --index-url https://download.pytorch.org/whl/cpu
+pip install -r laya-dotnet/tools/requirements-regen.txt
+
+# from the repository root; all three checkpoints and the routing goldens
+python laya-dotnet/tools/regen_golden.py
+
+# or one piece, with the exported artifacts somewhere that has room (1-3 GB per checkpoint)
+python laya-dotnet/tools/regen_golden.py --checkpoint english --artifacts-root /path/to/artifacts
+python laya-dotnet/tools/regen_golden.py --checkpoint routing   # no model needed
+
+cd laya-dotnet  # global.json selects the SDK and Microsoft.Testing.Platform runner
+LAYA_ONNX_ROOT=/path/to/artifacts/onnx dotnet test --solution Laya.slnx -c Release
+```
+
+Exports are reused when they are already present and were made from the same inputs, so only the
+first run is slow. The tests find the split layout only at `<some ancestor of the test binary>/onnx-split`,
+so with a custom `--artifacts-root` use a directory junction/symlink from the repository's
+`onnx-split` to the exported `onnx-split` directory, or export at the default repository root.
+A diff in `git diff -- laya-dotnet/tests/Laya.Tests/golden` after
+regenerating is expected whenever the Python behavior changed on purpose; review it, and commit it
+together with the C# change that follows it.
+
+`.github/workflows/dotnet.yml` runs the same chain on every push and pull request (there is no path
+filter, so a change under `laya/` triggers it): the `build` job re-records the routing goldens,
+builds the whole solution with warnings as errors and runs the tests that need no model; one
+`parity` job per checkpoint (and one for the router end-to-end tests, which need english and
+multilingual together) exports that checkpoint, re-records its goldens from the Python code at
+that commit and runs its model-backed classes against them. `LAYA_TEST_CHECKPOINTS` selects the
+checkpoint theory rows (ordinary local runs still cover all checkpoints). Every job then runs
+`tools/check_test_skips.py`, because `dotnet test` reports skipped tests as success: it fails the
+run when any test that should have run was skipped, and tolerates only the skips for checkpoints
+the job does not export. The job logs print `git diff --stat` of the regenerated goldens against
+the committed ones; that is informational (the C# tests and their tolerances are the gate).
+Exports are cached on the pinned revision, the exporters, `requirements-regen.txt` and
+`laya/common.py`; pinned Hugging Face downloads are cached separately.
 The test project is an xUnit **v3** application running on Microsoft.Testing.Platform. The .NET 10
 SDK no longer runs these projects through VSTest. That's why `laya-dotnet` has a
 `global.json` that selects the `Microsoft.Testing.Platform` runner, and why the solution is passed

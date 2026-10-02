@@ -23,7 +23,7 @@ public sealed class ShortlistEndToEndTests
     /// <summary>Tolerance for the model's own 4-dp probabilities/confidence, as in <see cref="PredictParityTests"/>.</summary>
     private const double ProbTolerance = 2e-4;
 
-    public static TheoryData<LayaCheckpoint> Checkpoints => new(Enum.GetValues<LayaCheckpoint>());
+    public static TheoryData<LayaCheckpoint> Checkpoints => new(TestArtifacts.ParityCheckpoints);
 
     [Theory]
     [MemberData(nameof(Checkpoints))]

@@ -16,14 +16,14 @@ namespace Laya.Tests;
 public sealed class TokenizerParityTests
 {
     /// <summary>All checkpoints to test against, one theory case per enum value.</summary>
-    public static TheoryData<LayaCheckpoint> Checkpoints => new(Enum.GetValues<LayaCheckpoint>());
+    public static TheoryData<LayaCheckpoint> Checkpoints => new(TestArtifacts.ParityCheckpoints);
 
     /// <summary>
     /// Cross-product of every checkpoint with every success case in its golden data. Cases for a
     /// checkpoint are omitted entirely when its golden data has not been generated yet.
     /// </summary>
     public static IEnumerable<object[]> CheckpointCases() =>
-        from c in Enum.GetValues<LayaCheckpoint>()
+        from c in TestArtifacts.ParityCheckpoints
         where GoldenData.For(c).Available
         // Kind is null for a standard parity case; see the comment in PredictParityTests.
         from info in GoldenData.For(c).Index.Where(i => i.Kind is null && !i.ExpectsError)

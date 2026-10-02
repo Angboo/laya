@@ -27,7 +27,7 @@ public sealed class PredictParityTests(AllEnginesFixture fixture)
     /// with its checkpoint. Cases for checkpoints without golden data are omitted.
     /// </summary>
     public static IEnumerable<object[]> AllSuccessCases() =>
-        from c in Enum.GetValues<LayaCheckpoint>()
+        from c in TestArtifacts.ParityCheckpoints
         where GoldenData.For(c).Available
         // Kind is null for a standard parity case; a "shortlist" case's `result` comes from
         // predict_shortlist over a reduced criteria set, so it is not comparable to a plain
@@ -38,7 +38,7 @@ public sealed class PredictParityTests(AllEnginesFixture fixture)
 
     /// <summary>All error cases across every checkpoint whose golden data is available.</summary>
     public static IEnumerable<object[]> AllErrorCases() =>
-        from c in Enum.GetValues<LayaCheckpoint>()
+        from c in TestArtifacts.ParityCheckpoints
         where GoldenData.For(c).Available
         from info in GoldenData.For(c).Index.Where(i => i.Kind is null && i.ExpectsError)
         select new object[] { c, info };

@@ -153,6 +153,22 @@ public sealed class CheckpointTestArtifacts
 /// </remarks>
 public static class TestArtifacts
 {
+    /// <summary>Checkpoints selected for a parity job; ordinary local runs still cover all three.</summary>
+    public static IEnumerable<LayaCheckpoint> ParityCheckpoints
+    {
+        get
+        {
+            var selected = Environment.GetEnvironmentVariable("LAYA_TEST_CHECKPOINTS");
+            var values = Enum.GetValues<LayaCheckpoint>();
+            if (string.IsNullOrWhiteSpace(selected))
+                return values;
+            var names = selected.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (names.Any(name => !values.Any(c => LayaOptions.CheckpointSubfolder(c) == name)))
+                throw new ArgumentException($"unknown LAYA_TEST_CHECKPOINTS: {selected}");
+            return values.Where(c => names.Contains(LayaOptions.CheckpointSubfolder(c)));
+        }
+    }
+
     // One CheckpointTestArtifacts per enum value; indexed by the enum's integer value.
     private static readonly CheckpointTestArtifacts[] ByCheckpoint =
         Enum.GetValues<LayaCheckpoint>().Select(c => new CheckpointTestArtifacts(c)).ToArray();

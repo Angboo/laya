@@ -44,7 +44,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import time
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +57,7 @@ from laya.common import (  # noqa: E402
     build_sequence,
     collate_items,
 )
-from laya.router import BUNDLE_REPO, DEFAULT_MODELS, STANDALONE_MODELS  # noqa: E402
+from laya.router import DEFAULT_MODELS  # noqa: E402
 
 
 # ─── model catalogue ────────────────────────────────────────────────────────
@@ -67,7 +66,7 @@ from laya.router import BUNDLE_REPO, DEFAULT_MODELS, STANDALONE_MODELS  # noqa: 
 _NAMES = ["english", "multilingual", "typed-decisions"]
 
 
-def _resolve_spec(name_or_path: str, token: str):
+def _resolve_spec(name_or_path: str, token: str, revision: str = None):
     """Return (model_dir, subfolder, label) for a name or a local path."""
     if os.path.exists(name_or_path):
         # Local directory: treat as a self-contained checkpoint.
@@ -85,6 +84,7 @@ def _resolve_spec(name_or_path: str, token: str):
     prefix = (subfolder + "/") if subfolder else ""
     kw = {
         "token": token or os.environ.get("HF_TOKEN"),
+        "revision": revision,
         "allow_patterns": [
             prefix + n for n in (
                 "rl_agent_config.json",
@@ -416,8 +416,6 @@ def verify(out_dir: str, cfg: dict, seq_lens=None, batch_sizes=None, marker_coun
     import onnxruntime as ort
     import torch
 
-    from laya.common import build_model as _build_model
-
     if seq_lens is None:
         seq_lens = [16, 32, 64, 128, 256, cfg.get("max_len", 512)]
     if batch_sizes is None:
@@ -540,7 +538,6 @@ def _make_synthetic_feeds(B, seq, M):
 def _load_pt_model_if_cached(cfg, out_dir):
     """Return a loaded PyTorch model if weights are available locally, else None."""
     from safetensors.torch import load_file
-    import torch
 
     # The export was done from a snapshot_download() cache; try to locate the
     # safetensors file there.  If it is gone (evicted or never downloaded because
@@ -659,7 +656,7 @@ def check_graph_signature(out_dir: str, reference_onnx: str):
 # ─── main per-model export ───────────────────────────────────────────────────
 
 def export_one(name_or_path: str, out_root: str, token: str, opset: int, do_verify: bool,
-               force: bool = False):
+               force: bool = False, revision: str = None):
     """Download (if needed), export, and verify one checkpoint.
 
     Raises RuntimeError if <out_root>/<name>/model.onnx already exists and
@@ -687,7 +684,7 @@ def export_one(name_or_path: str, out_root: str, token: str, opset: int, do_veri
         )
 
     # 2. Resolve model directory (may trigger a HuggingFace download).
-    model_dir, subfolder, label = _resolve_spec(name_or_path, token)
+    model_dir, subfolder, label = _resolve_spec(name_or_path, token, revision)
     if subfolder:
         model_dir = os.path.join(model_dir, subfolder)
 
@@ -760,8 +757,6 @@ def export_one(name_or_path: str, out_root: str, token: str, opset: int, do_veri
 
 def _check_against_reference(out_dir: str, label: str):
     """If a pre-built reference exists in onnx/, compare signatures."""
-    import onnx
-
     ref_candidates = {
         "english": os.path.join(REPO, "onnx", "english", "model.onnx"),
         "multilingual": os.path.join(REPO, "onnx", "multilingual", "model.onnx"),
@@ -817,6 +812,13 @@ def main():
              "across a range of tensor shapes.",
     )
     ap.add_argument(
+        "--revision",
+        default=None,
+        metavar="SHA",
+        help="Hugging Face commit (or branch/tag) to download the checkpoint from "
+             "(default: the repo's main branch).",
+    )
+    ap.add_argument(
         "--force",
         action="store_true",
         help="Overwrite an existing export.  By default the script refuses to "
@@ -850,6 +852,7 @@ def main():
                 opset=args.opset,
                 do_verify=args.verify,
                 force=args.force,
+                revision=args.revision,
             )
             out_dirs.append((target, od))
             # Signature check against the pre-built reference (if any).

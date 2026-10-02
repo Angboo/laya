@@ -42,7 +42,7 @@ public sealed class ShapeSweepTests(AllEnginesFixture fixture)
     /// </summary>
     public static IEnumerable<object[]> CheckpointShapes()
     {
-        foreach (var checkpoint in Enum.GetValues<LayaCheckpoint>())
+        foreach (var checkpoint in TestArtifacts.ParityCheckpoints)
         {
             // Derive max_len from the artifact config without loading the ONNX graph.
             // Default to 1024 (the largest value across all checkpoints) when the artifact
@@ -175,7 +175,7 @@ public sealed class ShapeSweepTests(AllEnginesFixture fixture)
     /// </summary>
     public static IEnumerable<object[]> CheckpointShapesSplit()
     {
-        foreach (var checkpoint in Enum.GetValues<LayaCheckpoint>())
+        foreach (var checkpoint in TestArtifacts.ParityCheckpoints)
         {
             var maxLen = 1024;
             var dir = TestArtifacts.For(checkpoint).SplitDirectoryOrNull;
