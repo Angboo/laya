@@ -993,10 +993,11 @@ def create_app(router: Optional[Any] = None):
                                    for s in states]
                     else:
                         results = [router.predict(s, questions, model=model) for s in states]
-                    total_tokens = sum(r.get("usage", {}).get("input_tokens", 0) for r in results)
+                    total_in = sum(r.get("usage", {}).get("input_tokens", 0) for r in results)
+                    total_out = sum(r.get("usage", {}).get("output_tokens", 0) for r in results)
                     return {
                         "results": results,
-                        "total_usage": {"input_tokens": total_tokens, "output_tokens": 0},
+                        "total_usage": {"input_tokens": total_in, "output_tokens": total_out},
                     }
 
                 t0 = time.perf_counter()

@@ -1188,6 +1188,26 @@ def test_batch_happy_path(monkeypatch):
     assert "X-Inference-Time-Ms" in r.headers
 
 
+def test_batch_sums_output_tokens():
+    """total_usage must sum output_tokens, not report a hardcoded 0 (each result carries its own)."""
+    class _UsageRouter:
+        def predict(self, state, questions, model=None, **kwargs):
+            return {"model": "laya-rl-agent",
+                    "answers": {"dept": {"type": "choice", "choice": "billing",
+                                         "probabilities": {"billing": 1.0}, "confidence": 1.0}},
+                    "usage": {"input_tokens": 5, "output_tokens": 3},
+                    "routing": {"model": "english"}}
+
+    client = TestClient(create_app(router=_UsageRouter()))
+    r = client.post("/v1/systemone/batch", json=BATCH_REQ)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total_usage"]["output_tokens"] == sum(
+        res["usage"]["output_tokens"] for res in data["results"])
+    assert data["total_usage"]["output_tokens"] == 6   # two states x 3 each
+    assert data["total_usage"]["input_tokens"] == 10
+
+
 def test_batch_missing_state_in_list_returns_400(monkeypatch):
     """A None state inside states list must be rejected with 400 'state' is required."""
     client, _ = _client(monkeypatch)
