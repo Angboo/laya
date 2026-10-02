@@ -205,7 +205,7 @@ _src = inspect.getsource(_agent.Agent.__init__)
 check_true("fallback/flag is initialised", "fell_back_from = fell_back_why = None" in _src)
 check_true("fallback/warns only on a real fallback", "if fell_back_from is not None:" in _src)
 check_true("fallback/reports the underlying reason", "Reason: %s" in _src)
-check_true("fallback/keeps the actionable advice", "download.pytorch.org/whl/nightly" in _src)
+check_true("fallback/keeps the actionable advice", "download.pytorch.org/whl/cu130" in _src)
 check_true("fallback/no bare cuda probe for the warning",
            "torch.cuda.is_available() or getattr(torch.version" not in _src)
 

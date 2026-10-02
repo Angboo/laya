@@ -593,12 +593,28 @@ class Agent(HookRegistry):
             )
 
         # 1. Device resolution with automatic fallback
+        if isinstance(device, str) and device.strip().lower() == "auto":
+            device = None
         if device is not None:
             target_device = torch.device(device)
             if target_device.type == "cuda" and not torch.cuda.is_available():
                 warnings.warn("Warning: CUDA requested but not available. Falling back to CPU.",
                               RuntimeWarning)
                 self.device = torch.device("cpu")
+            elif target_device.type == "cuda" and target_device.index is not None:
+                # `is_available` only says a GPU exists; a bad ordinal sails through it
+                # and dies later in `.to()` with a bare CUDA error. Check up front.
+                try:
+                    count = torch.cuda.device_count()
+                except (RuntimeError, AttributeError):
+                    count = 0
+                if target_device.index < 0 or target_device.index >= max(count, 1):
+                    warnings.warn("Warning: CUDA device %s not found (%d visible). Falling back to CPU."
+                                  % (target_device, count),
+                                  RuntimeWarning)
+                    self.device = torch.device("cpu")
+                else:
+                    self.device = target_device
             elif target_device.type == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
                 warnings.warn("Warning: MPS requested but not available. Falling back to CPU.",
                               RuntimeWarning)
@@ -703,10 +719,20 @@ class Agent(HookRegistry):
         self.mps_amp_min_rows = _mps_amp_min_rows()
         if self.device.type == "cuda":
             self.amp_enabled = True
-            if torch.cuda.get_device_capability(self.device)[0] < 8:
+            try:
+                major = torch.cuda.get_device_capability(self.device)[0]
+            except (RuntimeError, AttributeError):
+                # A driver that reports a GPU but cannot answer the capability query
+                # cannot be trusted with bf16 either; fp16 is the safe default and
+                # placement below still decides whether the device is usable at all.
+                warnings.warn("Warning: could not query CUDA capability; assuming fp16 defaults.",
+                              RuntimeWarning)
                 self.dtype = torch.float16
             else:
-                self.dtype = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
+                if major < 8:
+                    self.dtype = torch.float16
+                else:
+                    self.dtype = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
@@ -750,8 +776,9 @@ class Agent(HookRegistry):
                 "  Reason: %s\n"
                 "  Inference will be roughly 10-15x slower (~200-500 ms rather than ~35 ms).\n"
                 "  If this is a newer NVIDIA GPU (Blackwell / RTX 50-series), your PyTorch build\n"
-                "  may not support its CUDA architecture:\n"
-                "    pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128\n"
+                "  may predate stable Blackwell support (stable since torch 2.6, CUDA 12.8+).\n"
+                "  Upgrade to a current stable build with a CUDA 13.x wheel, e.g.:\n"
+                "    pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130\n"
                 "  See https://pytorch.org/get-started/locally/\n"
                 % (fell_back_from, fell_back_why), RuntimeWarning)
 
