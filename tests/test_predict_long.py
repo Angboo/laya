@@ -997,6 +997,28 @@ check_raises("hook budget/the smallest room wins across questions", ValueError,
                  _probe_agent, _evidence(questions={"a": q_many(2), "b": q_many(16)}), 72, *_CFG,
                  asked={"a": q_many(2)}))
 
+
+# A hook that widens a question IN PLACE is the case the guard was written for, and the one a
+# shallow snapshot missed. `predict_long` has to compare against the questions as they were when it
+# sized the scan, not against the caller's mapping, which the hook mutates too: with the same object
+# on both sides `questions == asked` stayed True, the checker returned early, and the scan proceeded
+# with windows `build_sequence` would re-truncate -- silently worse than not windowing at all.
+# `widen_for_high_cardinality` (docs/hooks/patterns.md) is exactly this shape. The questions are a
+# fresh mapping because the hook mutates what it is handed.
+_inplace_questions = {"dept": {"type": "choice", "instructions": "?",
+                               "criteria": {"a": "x", "b": "y"}},
+                      "flag": dict(Q["flag"])}
+
+
+def _widen_in_place(ctx):
+    ctx.questions["dept"]["criteria"].update(q_many(16)["criteria"])
+
+
+_widened, _widen_exc = _attempt(
+    lambda: make_real_agent().predict_long(LONG, _inplace_questions,
+                                           on_predict_start=_widen_in_place))
+check("hook budget/an in-place question rewrite is refused", _kind(_widen_exc), "ValueError")
+
 # What the probe RECORDS is half the check: synthesising an evidence dict in the tests above leaves
 # the recording itself unpinned, and dropping either field made the checker silently inert.
 _rec_probe, _rec = _start_evidence()

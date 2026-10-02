@@ -1,4 +1,5 @@
 """High-level inference runtime for laya System 1 decision models."""
+import copy
 import json
 import os
 import tempfile
@@ -1560,6 +1561,15 @@ class Agent(HookRegistry):
         internal = {qid: self._to_internal(questions[qid]) for qid in ids}
         budget, step, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
                                         head_max_len, window=window, stride=stride)
+        # Snapshot the questions the scan was just sized against, BEFORE any start hook can
+        # rewrite them, and compare against this instead of `questions` itself. `==` over the
+        # mapping cannot see an in-place rewrite: a hook that adds options to
+        # `ctx.questions[q]["criteria"]` -- the `widen_for_high_cardinality` pattern in
+        # `docs/hooks/patterns.md`, and the case this guard exists for -- mutates the same nested
+        # dict the caller's mapping holds, so both sides change together and compare equal. A deep
+        # copy is independent, so `_check_scan_budget` sees the difference; a shallow one would
+        # share the nested dicts and miss it exactly as before.
+        asked = copy.deepcopy(questions)
 
         state_ids = self.tok(serialize_state(state).replace(self.tok.mask_token, " "),
                              add_special_tokens=False)["input_ids"]
@@ -1579,7 +1589,7 @@ class Agent(HookRegistry):
             # fit one window was silently truncated by a re-budgeting hook and still reported
             # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
             # never reached the model, while a longer document on the identical input hard-failed.
-            _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
+            _check_scan_budget(self, evidence, budget, max_len, head_max_len, asked)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
@@ -1605,7 +1615,7 @@ class Agent(HookRegistry):
                                batch_size)
         results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
                                      **_with_start_probe(hook_kwargs, probe))
-        _check_scan_budget(self, evidence, budget, max_len, head_max_len, questions)
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len, asked)
 
         if evidence["answered"]:
             # The hook replaced the call before any window was scored. Aggregating over its payload
