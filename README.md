@@ -94,6 +94,22 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
+## What's new in 0.3.24
+
+* **Concurrency.** `Router.load` builds a checkpoint outside the lifecycle lock, so a cold build no longer blocks calls for a checkpoint that is already resident, and `unload` is synchronized per checkpoint rather than globally (#848). `predict_long` holds the tokenizer lock like every other encode, so scanning a document next to ordinary predictions no longer raises `Already borrowed` (#825).
+* **Calibration.** Per-option-count abstention thresholds, because one `min_confidence` does not transfer across option counts (#394): `fit_abstention_thresholds` fits one cut per bucket, keyed like `temperature_by_options`, and fails closed on a bucket too unreliable to accept anything. Histogram binning (`fit_binning_map`, `apply_binning_map`) recalibrates a bucket whose reliability curve temperature scaling cannot reach. `save_calibration` writes atomically, and `records_from_labeled` works on a loaded agent (#826).
+* **Evals.** Selective-classification metrics (Brier, AURC, selective accuracy) from the same pairs ECE already uses, so the abstention gate has a yardstick. A NaN metric, limit or tolerance can no longer pass a gate (#830).
+* **Stricter inputs.** A non-finite `hooks_timeout` (#828), a non-scalar `choice` label, a batch item's untyped `lang_guess`, and an unvalidated `min_confidence` or `hooks_timeout` on `laya_predict_batch` are all refused where they are read. `hooks_installed` accepts a sequence, as documented (#829). A `null` score level is a 422 instead of a response no Jev client can parse.
+* **laya-serve.** `LAYA_JEV_STRICT` projects the response onto the strict Jev wire contract for clients that reject unknown fields. `/v1/systemone/batch` sums `output_tokens` instead of reporting zero, and refuses an unpaired surrogate like the single endpoint.
+* **Fallback notes are warnings, not prints.** Eight device- and inference-fallback notes went to stdout, which corrupted `laya --json` output; they are `warnings.warn` now, so they are filterable.
+* **One test list.** CI and the release gate run the same shared suite list (`scripts/test_suites.py`). They had drifted to 80 suites against 47, so a regression in any of the 33 CI-only suites could reach PyPI.
+* **TypeScript.** The SDK types and validates the whole `usage` report, the four confidence fields, and the routing detection's `mixed_segment`. `laya-ts` reports collapsed options like `laya.common` and keeps bytecode out of the npm tarball.
+* **Docs and examples.** Nine example and page corrections where the prose contradicted the code, each with a test that holds the page to the source. The PyPI README links absolutely, so its 31 relative links no longer 404 on the project page.
+
+56 pull requests from 16 contributors.
+
+---
+
 ## What's new in 0.3.23
 
 * **Security.** `GET /health` no longer answers deployment internals to an unauthenticated caller on a server that set `LAYA_API_KEY` (#812): liveness stays open so every shipped probe keeps working, while the resident checkpoint names, revision SHAs, device state and fallback reasons need the bearer. A deployment with no key set is unchanged. `SECURITY.md` now documents private vulnerability reporting.
