@@ -150,6 +150,7 @@ jobs:
           python tests/test_shortlist_cosine.py
           python tests/test_temperature_loading.py
           python tests/test_confidence.py
+          python tests/test_conformal_abstention.py
           python tests/test_cli.py
           python tests/test_cli_lang_guess.py
           python tests/test_mcp.py

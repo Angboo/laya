@@ -297,6 +297,84 @@ def fit_temperature_map(records: Iterable, compute_ece: bool = False, seed: int 
 fit_temperatures = fit_temperature_map
 
 
+# Per-bucket floor for abstention thresholds. Lower than `MIN_BUCKET_N` (which governs temperature
+# fitting): a threshold is a single order statistic of the calibrated confidences, so it stabilises
+# on far fewer examples than an LBFGS temperature does. Buckets below this are omitted; the caller's
+# scalar `min_confidence` (or the map's "default") covers them.
+MIN_ABSTAIN_BUCKET_N = 100
+
+
+def _select_abstention_threshold(pairs: Sequence[Tuple[float, int]], target_error: float,
+                                 conservative: bool) -> float:
+    """Smallest confidence `tau` whose accepted set (`conf >= tau`) keeps error <= `target_error`.
+
+    `pairs` are `(confidence, correct)`. Sweeping from the most confident down maximises coverage
+    at the target risk (the selective-classification / split-conformal cut). `conservative` adds one
+    pseudo-error so a bucket does not clear the gate on a lucky short run. Returns 1.0 when no cut
+    holds the risk -- the bucket is too unreliable to accept anything short of a reported certainty.
+    """
+    ordered = sorted(pairs, key=lambda cc: cc[0], reverse=True)
+    levels = sorted({c for c, _ in ordered}, reverse=True)
+    n = len(ordered)
+    n_acc = n_err = idx = 0
+    best = None
+    # Evaluate the error over the WHOLE accepted set {conf >= tau} at each distinct level, not
+    # incrementally within a tie: a threshold accepts every answer at its own confidence, so a tie
+    # group's errors must all be counted before the level is judged (else the cut sinks into a bad
+    # cohort on its first few correct members).
+    for tau in levels:
+        while idx < n and ordered[idx][0] >= tau:
+            n_acc += 1
+            n_err += 0 if ordered[idx][1] else 1
+            idx += 1
+        rate = (n_err + 1.0) / (n_acc + 1.0) if conservative else (n_err / n_acc)
+        if n_acc > 0 and rate <= target_error:
+            best = tau
+    if best is None:
+        return 1.0
+    return float(min(1.0, max(0.0, best)))
+
+
+def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
+                              temperature_by_options: Dict[str, float], *,
+                              target_error: float = 0.10,
+                              min_bucket_n: int = MIN_ABSTAIN_BUCKET_N,
+                              conservative: bool = True) -> Dict[str, float]:
+    """Fit a per-`temp_bucket` abstention threshold so a gate keeps a target error in every bucket.
+
+    A single `min_confidence` does not transfer across option counts (#394): the calibrated
+    confidence of a 2-option and a 12-option answer live on different scales, so one cut over- or
+    under-abstains depending on the question. This fits one cut per bucket instead, keyed exactly
+    like `temperature_by_options` (`common.temp_bucket`, e.g. ``"choice:3-5"``), and the result is a
+    `min_confidence` map that :func:`laya.confidence.check_min_confidence` /
+    :func:`laya.confidence.apply_confidence_gate` accept directly.
+
+    `records` are the same `(qtype, logits, target[, k])` tuples `fit_temperature_map` consumes
+    (`records_from_labeled` builds them). Confidence is the **calibrated** `max(p)` -- the logits are
+    scaled by the fitted `temperature` / `temperature_by_options` first, so thresholds and the
+    numbers the runtime reports are on the same scale. `target_error` is the tolerated error among
+    accepted answers; `min_bucket_n` omits buckets too small to fit, and `conservative` adds a
+    one-sample margin. The thresholds are empirical cuts on the calibration set, not a formal
+    coverage guarantee -- validate on held-out data (`fit_temperature_map(..., compute_ece=True)`
+    gives a held-out split) for a production gate.
+    """
+    if not 0.0 <= target_error <= 1.0:
+        raise ValueError("target_error must be in [0.0, 1.0], got %r" % (target_error,))
+    recs = _iter_records(records)
+    by_bucket: Dict[str, List[Tuple[float, int]]] = {}
+    for qt, z, t, k in recs:
+        y = int(np.argmax(t[:k]))
+        t_scale = temperature_by_options.get(temp_bucket(qt, k), temperature[qt])
+        p = _softmax(z[:k], t_scale)
+        by_bucket.setdefault(temp_bucket(qt, k), []).append((float(p.max()), int(int(p.argmax()) == y)))
+    out: Dict[str, float] = {}
+    for key, pairs in by_bucket.items():
+        if len(pairs) < min_bucket_n:
+            continue
+        out[key] = _select_abstention_threshold(pairs, target_error, conservative)
+    return out
+
+
 @torch.no_grad()
 def records_from_labeled(agent, pairs: Sequence) -> List[Record]:
     """Collect CPU records from `(state, questions, targets)`.
