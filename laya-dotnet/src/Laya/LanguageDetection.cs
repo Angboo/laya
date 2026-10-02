@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Laya;
 
@@ -67,7 +68,7 @@ public static class LanguageDetection
     // weighted and a margin is required before calling something non-English. Order is load
     // bearing: LatinProfile's tie-break walks this list (excluding "en") and the first language
     // with the highest score wins.
-    private static readonly string[] StopOrder = ["en", "fr", "de", "es", "pt", "it", "nl", "ro"];
+    private static readonly string[] StopOrder = ["en", "fr", "de", "es", "pt", "it", "nl", "sv", "ro", "bn", "az"];
 
     private static readonly Dictionary<string, HashSet<string>> Stop = new(StringComparer.Ordinal)
     {
@@ -91,6 +92,10 @@ public static class LanguageDetection
         {
             "der", "die", "das", "und", "ist", "ein", "eine", "den", "dem", "nicht", "mit", "für",
             "auf", "von", "zu", "sich", "auch", "werden", "wurde", "haben", "sind", "oder", "aber",
+            "aus", "bei", "bitte", "dich", "diese", "diesen", "dieser", "dieses", "dir", "einem",
+            "einen", "einer", "gibt", "habe", "heute", "ich", "im", "in", "jetzt", "kann", "kannst",
+            "mein", "meine", "meinem", "meinen", "meiner", "mich", "mir", "nach", "noch", "uns",
+            "wann", "was", "welche", "wie", "wir", "wird", "wo", "zum", "zur",
         },
         ["es"] = new(StringComparer.Ordinal)
         {
@@ -111,6 +116,10 @@ public static class LanguageDetection
             "sua", "isso", "isto", "aqui", "ali", "como", "quando", "onde", "porque", "mais",
             "já", "ainda", "agora", "hoje", "ontem", "dois", "três", "tudo", "nada", "obrigado",
             "olá",
+            "alguem", "alguém", "antes", "até", "boa", "cadê", "consigo", "depois", "deu", "entao",
+            "então", "estamos", "estava", "estou", "ficou", "fiz", "gostaria", "ja", "meus", "minhas",
+            "nao", "nenhum", "nenhuma", "ninguem", "ninguém", "noite", "nossa", "nosso", "obrigada",
+            "pra", "sao", "tambem", "também", "tarde", "tá", "vc", "vcs", "voce", "voces", "você", "vocês",
         },
         ["it"] = new(StringComparer.Ordinal)
         {
@@ -129,13 +138,60 @@ public static class LanguageDetection
             "het", "een", "van", "is", "op", "te", "dat", "niet", "met", "voor", "zijn", "aan",
             "door", "maar", "ook", "worden", "deze", "naar", "wordt",
         },
+        ["sv"] = new(StringComparer.Ordinal)
+        {
+            "jag", "är", "och", "inte", "att", "från", "till", "behöver", "får", "skulle", "ska",
+            "vill", "måste", "utan", "också", "min", "mitt", "mig", "vi", "om", "nästa", "här",
+            "dessa", "detta", "hittar", "kommer", "säger", "återbetalning", "återbetala", "gör", "göra",
+            "faktura", "gång", "gånger", "hjälp", "hjälpa", "inställningen", "inställningarna",
+            "lösenord", "när", "öppnar", "spårningen", "två", "upp", "aterbetalning", "aterbetala",
+            "behover", "fel", "ganger", "hjalp", "hjalpa", "installningen", "installningarna",
+            "kraschar", "kvittot", "losenord", "nar", "oppnar", "paket", "skicka", "sparningen",
+            "tva", "uppdaterats", "blivit", "debiterade", "appen",
+        },
         ["ro"] = new(StringComparer.Ordinal)
         {
             "și", "să", "este", "sunt", "care", "pentru", "din", "dar", "după", "până", "fără",
             "ale", "lui", "în", "fost", "acum", "vreau", "trebuie", "foarte", "acest", "această",
             "acesta", "aceasta", "mi", "ți", "vă", "nu",
         },
+        ["bn"] = new(StringComparer.Ordinal)
+        {
+            "ami", "amar", "amake", "amra", "amader", "apni", "apnar", "apnake", "apnara",
+            "tumi", "tomar", "tomake", "tomra", "tader", "ota", "eita", "oita", "ekta", "ei", "oi",
+            "ki", "keno", "kivabe", "kibhabe", "kothay", "kokhon", "kobe", "koto", "kintu", "jodi",
+            "tahole", "ar", "theke", "jonno", "sathe", "shathe", "diye", "niye", "moddhe", "kore",
+            "korte", "korchi", "korsi", "korbo", "korechi", "koreche", "korun", "koren", "korlam",
+            "hobe", "hoyeche", "hoise", "hocche", "hoyni", "chai", "chaina", "lagbe", "parchi",
+            "parbo", "parchina", "peyechi", "paini", "dite", "dilam", "diyechi", "nai", "khub",
+            "onek", "ekhon", "akhon", "ekhono", "abar", "ekbar", "duibar", "ajke", "kalke", "taka",
+            "bhalo", "valo", "kharap", "shomossa", "somossa", "dhonnobad", "bhai", "shob", "keu",
+            "kichu", "bolte", "bolun", "parben", "asbe", "jabe", "pabo", "ferot", "dorkar",
+            "hoye", "geche", "gese",
+        },
+        ["az"] = new(StringComparer.Ordinal)
+        {
+            "və", "ve", "bir", "bu", "üçün", "ucun", "ilə", "ile", "olan", "olub", "olmasa",
+            "var", "yox", "yoxdur", "mən", "sən", "biz", "siz", "onlar", "daha", "çox", "cox",
+            "hər", "nə", "kimi", "görə", "sonra", "əgər", "eger", "deyil", "lakin", "amma",
+            "ancaq", "artıq", "artiq", "də", "isə", "həm", "yalnız", "yalniz",
+        },
     };
+
+    private static readonly HashSet<string> NordicOverlapWords = new(StringComparer.Ordinal)
+        { "får", "hej", "ja", "jo", "kommer", "mig", "min", "nej", "om", "skulle", "tack", "vi" };
+    private static readonly HashSet<string> ShortSwedishWords = new(StringComparer.Ordinal)
+    {
+        "åtkomst", "atkomst", "lösenord", "losenord", "fakturan", "betalningen", "inloggningen",
+        "glömt", "glomt", "behöver", "behover", "återbetalning", "aterbetalning", "kvitto",
+        "kvittot", "spårningen", "sparningen", "inställningen", "installningen", "felmeddelande", "abonnemanget",
+    };
+    private static readonly HashSet<string> EnglishCollisionWords = new(StringComparer.Ordinal)
+        { "care", "come", "do", "im", "per", "plus", "son", "todo" };
+    private static readonly Regex Identifier = new(@"(?<![\w-])[\w-]*(?:[.@][\w-]+)+");
+    private static readonly Regex CodeLine = new(@"[=;{}\[\]]|\w\(");
+    private static readonly Regex Joined = new(@"[^\W_][._/\\][^\W_]");
+    private static readonly Regex LetterRun = new(@"[^\W\d_]{2,}");
 
     // Letters that ordinary English does not use. This is the signal that catches a Latin-script
     // language for which no stopword list is held at all (Romanian, Polish, Czech, Turkish,
@@ -148,7 +204,8 @@ public static class LanguageDetection
         + "őű"                                      // Hungarian
         + "ğı"                                      // Turkish (text is lowercased before matching)
         + "āēģīķļņūž"                               // Baltic
-        + "đ";                                      // Serbo-Croatian / Vietnamese
+        + "đ"                                       // Serbo-Croatian / Vietnamese
+        + "ə";                                      // Azerbaijani
 
     private static readonly HashSet<int> NonEnDiacritics =
         new(NonEnDiacriticChars.EnumerateRunes().Select(r => r.Value));
@@ -169,7 +226,9 @@ public static class LanguageDetection
         foreach (var set in Stop.Values)
             foreach (var w in set)
                 counts[w] = counts.GetValueOrDefault(w) + 1;
-        return new HashSet<string>(counts.Where(kv => kv.Value > 1).Select(kv => kv.Key), StringComparer.Ordinal);
+        var shared = new HashSet<string>(counts.Where(kv => kv.Value > 1).Select(kv => kv.Key), StringComparer.Ordinal);
+        shared.UnionWith(NordicOverlapWords);
+        return shared;
     }
 
     /// <summary>
@@ -228,13 +287,20 @@ public static class LanguageDetection
         {
             if (!Rune.IsLetter(rune)) continue;
             var cp = rune.Value;
-            if (cp < 0x0250 || (cp >= 0x1E00 && cp <= 0x1EFF)) { latin++; continue; }
+            if (IsLatin(cp)) { latin++; continue; }
+            var claimed = false;
             foreach (var (name, ranges) in ScriptRanges)
             {
                 if (!InRanges(cp, ranges)) continue;
                 if (!counts.ContainsKey(name)) order.Add(name);
                 counts[name] = counts.GetValueOrDefault(name) + 1;
+                claimed = true;
                 break;
+            }
+            if (!claimed)
+            {
+                if (!counts.ContainsKey("other")) order.Add("other");
+                counts["other"] = counts.GetValueOrDefault("other") + 1;
             }
         }
 
@@ -264,13 +330,16 @@ public static class LanguageDetection
         {
             if (!Rune.IsLetter(rune)) continue;
             var cp = rune.Value;
-            if (cp < 0x0250 || (cp >= 0x1E00 && cp <= 0x1EFF)) { counts["latin"]++; continue; }
+            if (IsLatin(cp)) { counts["latin"]++; continue; }
+            var claimed = false;
             foreach (var (name, ranges) in ScriptRanges)
             {
                 if (!InRanges(cp, ranges)) continue;
                 counts[name] = counts.GetValueOrDefault(name) + 1;
+                claimed = true;
                 break;
             }
+            if (!claimed) counts["other"] = counts.GetValueOrDefault("other") + 1;
         }
 
         var total = counts.Values.Sum();
@@ -288,6 +357,10 @@ public static class LanguageDetection
             if (cp >= lo && cp <= hi) return true;
         return false;
     }
+
+    private static bool IsLatin(int cp) =>
+        cp < 0x02B0 || (cp >= 0x1E00 && cp <= 0x1EFF)
+        || (cp >= 0xFF21 && cp <= 0xFF3A) || (cp >= 0xFF41 && cp <= 0xFF5A);
 
     /// <summary>
     /// Evidence behind the Latin-script language guess: <see cref="Language"/> (may be
@@ -317,7 +390,7 @@ public static class LanguageDetection
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        var words = ExtractWords(text).Select(PythonLower).ToList();
+        var words = ExtractWords(PythonLower(Identifier.Replace(text, " ").Replace("İ", "i"))).ToList();
         var lowered = PythonLower(text);
 
         var diac = 0;
@@ -329,14 +402,20 @@ public static class LanguageDetection
         }
         var diacRate = (double)diac / Math.Max(1, loweredLen);
         var nonEnglish = diacRate >= NonEnDiacriticRate;
+        var wordSet = new HashSet<string>(words, StringComparer.Ordinal);
+        var nordicOverlap = wordSet.Overlaps(NordicOverlapWords)
+            && !wordSet.Any(w => Stop["en"].Contains(w) && !SharedWords.Contains(w));
+        if (words.Count is > 1 and < 4 && wordSet.Overlaps(ShortSwedishWords))
+            return new LatinProfileResult("sv", 0, diacRate, nonEnglish);
 
         if (words.Count < 4)
-            return new LatinProfileResult(null, 0, diacRate, nonEnglish);
+            return new LatinProfileResult(null, 0, diacRate, nonEnglish || nordicOverlap);
 
-        var wordSet = new HashSet<string>(words, StringComparer.Ordinal);
         var scores = new Dictionary<string, int>(StringComparer.Ordinal);
+        var counts = words.GroupBy(w => w).ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
         foreach (var lang in StopOrder)
-            scores[lang] = words.Count(w => Stop[lang].Contains(w));
+            scores[lang] = wordSet.Where(w => Stop[lang].Contains(w))
+                .Sum(w => EnglishCollisionWords.Contains(w) ? 1 : counts[w]);
         var en = scores.GetValueOrDefault("en");
 
         // Only a language that matched at least one word no other list claims may be named.
@@ -363,18 +442,25 @@ public static class LanguageDetection
             // a non-English language needs a clear margin over English function words
             language = bestLg;
         }
+        else if (bestLg == "sv" && wordSet.Contains("inte") && wordSet.Contains("kan")
+            && words[0] is "kan" or "jag" or "vi" && en <= 1)
+        {
+            language = bestLg;
+        }
         else if (bestLg is not null && nonEnglish && best >= Math.Max(2, en))
         {
             // Needs two hits here too: one shared function word on the strength of the
             // diacritics alone is a guess dressed as a detection.
             language = bestLg;
         }
-        else if (en > 0 && !nonEnglish)
+        else if (en > 0 && (!nonEnglish || (diacRate < 0.06
+            && wordSet.Count(w => Stop["en"].Contains(w) && !SharedWords.Contains(w)) >= 2
+            && wordSet.Count(w => w.EnumerateRunes().Any(r => NonEnDiacritics.Contains(r.Value))) <= 1)))
         {
             language = "en";
         }
 
-        return new LatinProfileResult(language, en, diacRate, nonEnglish);
+        return new LatinProfileResult(language, en, diacRate, nonEnglish || (language is null && nordicOverlap));
     }
 
     /// <summary>
@@ -392,10 +478,91 @@ public static class LanguageDetection
     /// <summary>Full detection result for a state.</summary>
     public static LanguageAnalysis Analyse(object? state)
     {
-        var text = StateText(state);
+        var result = AnalyseText(StateText(state));
+        var leaves = new List<string>();
+        CollectText(state, leaves, 0);
+        if (result.Script == "latin" && result.IsEnglish
+            && (leaves.Count > 1 || leaves.Any(leaf => leaf.Contains('\n'))))
+        {
+            var seen = 0;
+            foreach (var segment in leaves.SelectMany(leaf => leaf.Split('\n')))
+            {
+                if (seen >= 4000) break;
+                var sample = SliceCodePoints(segment, 4000 - seen);
+                seen += sample.EnumerateRunes().Count();
+                var language = NamedProseLanguage(sample);
+                if (language is not null)
+                {
+                    result = result with
+                    {
+                        Language = language, IsEnglish = false, LanguageUndecided = false,
+                        MixedSegment = sample.Trim(),
+                    };
+                    break;
+                }
+            }
+        }
+        if (state is null or string or byte[] || !result.IsEnglish) return result;
+        LanguageAnalysis? best = null;
+        var bestCount = -1;
+        foreach (var leaf in leaves)
+        {
+            LanguageAnalysis? candidate = null;
+            var lineCount = -1;
+            foreach (var line in leaf.Split('\n'))
+            {
+                if (line.EnumerateRunes().Count() < 7) continue;
+                var sample = SliceCodePoints(line, 4000);
+                if (string.IsNullOrWhiteSpace(sample) || CodeLine.IsMatch(sample)) continue;
+                var detection = AnalyseText(sample);
+                if (detection.IsEnglish) continue;
+                var alphaCount = sample.EnumerateRunes().Count(Rune.IsLetter);
+                if (detection.Language is not null and not "en")
+                {
+                    if (NamedProseLanguage(sample) is null) continue;
+                }
+                else if (detection.Script is not "latin" and not "unknown")
+                {
+                    if (!HasNonLatinWords(sample) || alphaCount < 10) continue;
+                }
+                else if (!(detection.LanguageUndecided && detection.DiacriticRate >= NonEnDiacriticRate
+                    && ExtractWords(sample).Count >= 4)) continue;
+                if (alphaCount > lineCount) { lineCount = alphaCount; candidate = detection; }
+            }
+            var count = SliceCodePoints(leaf, 4000).EnumerateRunes().Count(Rune.IsLetter);
+            if (candidate is not null && count > bestCount) { bestCount = count; best = candidate; }
+        }
+        return best is null ? result : result with
+        {
+            Language = best.Language, IsEnglish = false, LanguageUndecided = best.LanguageUndecided,
+        };
+    }
+
+    private static string? NamedProseLanguage(string segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment) || CodeLine.IsMatch(segment)) return null;
+        var prose = string.Join(' ', segment.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => !Joined.IsMatch(token)));
+        if (prose.EnumerateRunes().Any(Rune.IsLower))
+            prose = LetterRun.Replace(prose, match => match.Value.EnumerateRunes().Any(Rune.IsUpper)
+                && !match.Value.EnumerateRunes().Any(Rune.IsLower) ? " " : match.Value);
+        var tokens = ExtractWords(prose);
+        if (tokens.Count < 4) return null;
+        var language = LatinProfile(prose).Language;
+        if (language is null or "en") return null;
+        return tokens.Select(PythonLower).Distinct().Count(w => Stop[language].Contains(w)) >= 2
+            ? language : null;
+    }
+
+    private static LanguageAnalysis AnalyseText(string text)
+    {
         var prof = ScriptProfile(text);
         var script = DetectScript(text);
         var nonLatin = prof.Count > 0 ? Calibration.Round4(1.0 - prof.GetValueOrDefault("latin", 0.0)) : 0.0;
+        var nonLatinLetters = Math.Round(nonLatin * text.EnumerateRunes().Count(Rune.IsLetter));
+        if (script == "latin" && HasNonLatinWords(text)
+            && (nonLatin >= 0.2 || (nonLatin >= 0.1 && nonLatinLetters >= 10)))
+            script = prof.Where(p => p.Key != "latin").MaxBy(p => p.Value).Key;
 
         if (script == "unknown")
             return new LanguageAnalysis("unknown", prof, null, true, true, 0.0, 0.0);
@@ -415,6 +582,28 @@ public static class LanguageDetection
 
     /// <summary>Whether the English checkpoint can be expected to read this state.</summary>
     public static bool IsEnglish(object? state) => Analyse(state).IsEnglish;
+
+    private static bool HasNonLatinWords(string text)
+    {
+        string? script = null;
+        var count = 0;
+        var upper = false;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (Rune.GetUnicodeCategory(rune) is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark)
+                continue;
+            var cp = rune.Value;
+            var next = cp < 0x0250 || (cp >= 0x1E00 && cp <= 0x1EFF)
+                || (cp >= 0xFF21 && cp <= 0xFF3A) || (cp >= 0xFF41 && cp <= 0xFF5A)
+                ? null : ScriptRanges.FirstOrDefault(s => InRanges(cp, s.Ranges)).Name;
+            if (next is not null && next == script) { count++; continue; }
+            if (count >= 2 && !upper) return true;
+            script = next;
+            count = next is null ? 0 : 1;
+            upper = Rune.IsUpper(rune);
+        }
+        return count >= 2 && !upper;
+    }
 
     // ── word extraction ──────────────────────────────────────────────────────
 
@@ -522,4 +711,8 @@ public sealed record LanguageAnalysis(
     bool IsEnglish,
     bool LanguageUndecided,
     double DiacriticRate,
-    double NonLatinFraction);
+    double NonLatinFraction)
+{
+    /// <summary>The foreign line or field that overrides a mostly-English state, otherwise null.</summary>
+    public string? MixedSegment { get; init; }
+}

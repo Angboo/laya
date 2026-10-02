@@ -244,6 +244,7 @@ public sealed class LanguageDetectionTests
         Assert.Equal(wantAnalyse.GetProperty("language_undecided").GetBoolean(), analysed.LanguageUndecided);
         Assert.Equal(wantAnalyse.GetProperty("diacritic_rate").GetDouble(), analysed.DiacriticRate, 1e-9);
         Assert.Equal(wantAnalyse.GetProperty("non_latin_fraction").GetDouble(), analysed.NonLatinFraction, 1e-9);
+        Assert.Equal(GetNullableString(wantAnalyse, "mixed_segment"), analysed.MixedSegment);
     }
 
     private static void AssertScriptProfile(JsonElement want, IReadOnlyDictionary<string, double> got)
