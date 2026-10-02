@@ -96,6 +96,22 @@ missing_from_ci = [
 ]
 check("ci/tests every advertised Python version", missing_from_ci, [])
 
+# ------------------------------------------------- workflows pin every action by a full SHA
+# `.github/dependabot.yml` states the policy, and every job but `typescript-sdk` followed it. That
+# job runs `npm ci` and starts a live server, so a moved major tag executes in a privileged job --
+# the supply-chain risk the pins exist to remove. Enforced here so the next `uses:` cannot float.
+_workflow_dir = os.path.join(ROOT, ".github", "workflows")
+_unpinned = []
+for _wf_name in sorted(os.listdir(_workflow_dir)):
+    if not _wf_name.endswith((".yml", ".yaml")):
+        continue
+    _wf_text = read(os.path.join(".github", "workflows", _wf_name))
+    for _line_no, _line in enumerate(_wf_text.splitlines(), 1):
+        _uses = re.search(r"\buses:\s*(\S+)", _line)
+        if _uses and not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", _uses.group(1)):
+            _unpinned.append("%s:%d %s" % (_wf_name, _line_no, _uses.group(1)))
+check("workflows/pin every action by SHA", _unpinned, [])
+
 # Every test in tests/ must be wired into CI workflows (ci.yml or docker.yml),
 # unless explicitly exempted with a documented rationale (#399).
 def _clean_command_line(line):
