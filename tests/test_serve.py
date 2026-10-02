@@ -1390,6 +1390,237 @@ def test_batch_too_many_states_returns_413(monkeypatch):
     assert "too many states" in r.json()["detail"]
 
 
+def _noul_questions(n):
+    """`n` minimal questions, so a batch's row count is `len(states) * n` and nothing else."""
+    return {("q%03d" % i): {"type": "noul", "instructions": "is it urgent?"} for i in range(n)}
+
+
+def _batch_env_client(monkeypatch, **env):
+    """A batch client with the batch-token knob explicitly set, or explicitly unset.
+
+    Every test below states the budget it measures against. Without this an exported
+    `LAYA_MAX_BATCH_TOKENS` silently changes the chunk and these pass or fail for a reason that is not
+    in the file -- there is no `conftest.py` in this repo to isolate the environment, and
+    `_batch_client` clears only `LAYA_API_KEY`.
+    """
+    if "LAYA_MAX_BATCH_TOKENS" in env:
+        monkeypatch.setenv("LAYA_MAX_BATCH_TOKENS", env["LAYA_MAX_BATCH_TOKENS"])
+    else:
+        monkeypatch.delenv("LAYA_MAX_BATCH_TOKENS", raising=False)
+    return _batch_client(monkeypatch)
+
+
+def _sent_batch_size(fake):
+    """The `batch_size` the route handed `predict_batch`, or the sentinel when it passed none."""
+    _, kwargs = fake.batch_calls[0]
+    return kwargs["batch_size"] if "batch_size" in kwargs else "<absent>"
+
+
+# --------------------------------------------------------------------- the batch token budget
+#
+# `/v1/systemone/batch` collates `states x questions` rows into one tensor and `batch_size` defaults to
+# `None` -- "all in one pass" -- so the two field caps multiply: 64 states of 64 questions is 4096 rows
+# from a 4.1 KB body. The budget SPLITS the work rather than refusing it, because a refusal would have
+# to be right about hardware this process cannot see: measured on english, peak RSS did not move
+# between 32, 64 and 128 rows. So the contract under test is "one pass stays inside the budget, and a
+# request that already fits is passed no `batch_size` at all".
+
+def test_batch_within_the_budget_is_passed_no_batch_size(monkeypatch):
+    """A request that fits must behave byte-identically, which means not passing `batch_size`.
+
+    `predict_batch` warns that changing batch shapes can move floating-point results, so a request
+    that works today must not start answering differently. Not-passing is the only way to guarantee
+    that: it leaves `predict_batch` on its own default.
+    """
+    import laya.serve as serve_mod
+
+    client, fake = _batch_env_client(monkeypatch)
+    rows = serve_mod.DEFAULT_MAX_BATCH_TOKENS // serve_mod._BATCH_ROW_TOKENS_ASSUMED
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * 8, "questions": _noul_questions(rows // 8)})
+    assert r.status_code == 200, r.text
+    requests, kwargs = fake.batch_calls[0]
+    assert len(requests) * len(requests[0]["questions"]) == rows, "exactly at the budget"
+    assert "batch_size" not in kwargs, kwargs
+
+
+def test_batch_over_the_budget_is_split_not_refused(monkeypatch):
+    """The 4096-row shape still answers; it is chunked so one pass stays inside the budget."""
+    import laya.serve as serve_mod
+
+    client, fake = _batch_env_client(monkeypatch)
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * serve_mod.MAX_BATCH_STATES,
+                          "questions": _noul_questions(serve_mod.MAX_QUESTIONS)})
+    assert r.status_code == 200, r.text
+    rows_per_pass = serve_mod.DEFAULT_MAX_BATCH_TOKENS // serve_mod._BATCH_ROW_TOKENS_ASSUMED
+    expected = max(1, rows_per_pass // serve_mod.MAX_QUESTIONS)
+    assert _sent_batch_size(fake) == expected
+    requests, _ = fake.batch_calls[0]
+    assert len(requests) == serve_mod.MAX_BATCH_STATES, "every state is still sent"
+    assert expected * serve_mod.MAX_QUESTIONS * serve_mod._BATCH_ROW_TOKENS_ASSUMED \
+        <= serve_mod.DEFAULT_MAX_BATCH_TOKENS, "one pass must fit the budget"
+
+
+def test_batch_one_row_over_the_budget_is_split(monkeypatch):
+    """One row over, with both factors inside their own caps, so the comparison cannot be off by one."""
+    import laya.serve as serve_mod
+
+    client, fake = _batch_env_client(monkeypatch)
+    rows = serve_mod.DEFAULT_MAX_BATCH_TOKENS // serve_mod._BATCH_ROW_TOKENS_ASSUMED
+    states, questions = 9, rows // 8
+    assert states <= serve_mod.MAX_BATCH_STATES and questions <= serve_mod.MAX_QUESTIONS
+    assert states * questions > rows, "must be over by at least one row"
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * states, "questions": _noul_questions(questions)})
+    assert r.status_code == 200, r.text
+    assert _sent_batch_size(fake) == max(1, rows // questions)
+
+
+def test_batch_a_raised_max_len_chunks_harder(monkeypatch):
+    """A row cap would be the wrong bound, because `max_len` is a request field.
+
+    `max_len` is capped only by `DEFAULT_MAX_TOKEN_BUDGET` (8192), 16x the english checkpoint's own
+    512, so 256 rows at 8192 is the same token count as 4096 rows at 512 and collates the same tensor.
+    Counting tokens means a wider row buys proportionally fewer rows per pass.
+    """
+    import laya.serve as serve_mod
+
+    wide = serve_mod.DEFAULT_MAX_TOKEN_BUDGET
+    assert wide > serve_mod._BATCH_ROW_TOKENS_ASSUMED
+    rows = serve_mod.DEFAULT_MAX_BATCH_TOKENS // serve_mod._BATCH_ROW_TOKENS_ASSUMED
+
+    narrow_client, narrow = _batch_env_client(monkeypatch)
+    narrow_client.post("/v1/systemone/batch",
+                       json={"states": ["hi"] * 8, "questions": _noul_questions(rows // 8)})
+    assert "batch_size" not in narrow.batch_calls[0][1], "fits at the default width"
+
+    wide_client, wide_fake = _batch_env_client(monkeypatch)
+    r = wide_client.post("/v1/systemone/batch",
+                         json={"states": ["hi"] * 8, "questions": _noul_questions(rows // 8),
+                               "max_len": wide})
+    assert r.status_code == 200, r.text
+    rows_per_pass = serve_mod.DEFAULT_MAX_BATCH_TOKENS // wide
+    assert _sent_batch_size(wide_fake) == max(1, rows_per_pass // (rows // 8))
+
+
+def test_batch_an_explicit_batch_size_is_never_overridden(monkeypatch):
+    """The caller asked for a shape. Planning one on top would silently change what they requested."""
+    import laya.serve as serve_mod
+
+    client, fake = _batch_env_client(monkeypatch)
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * serve_mod.MAX_BATCH_STATES,
+                          "questions": _noul_questions(serve_mod.MAX_QUESTIONS),
+                          "batch_size": 7})
+    assert r.status_code == 200, r.text
+    assert _sent_batch_size(fake) == 7
+
+
+def test_batch_chunking_follows_a_raised_budget(monkeypatch):
+    """A deployment whose hardware can take more stops being chunked."""
+    import laya.serve as serve_mod
+
+    client, fake = _batch_env_client(monkeypatch, LAYA_MAX_BATCH_TOKENS="2097152")
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * serve_mod.MAX_BATCH_STATES,
+                          "questions": _noul_questions(serve_mod.MAX_QUESTIONS)})
+    assert r.status_code == 200, r.text
+    assert "batch_size" not in fake.batch_calls[0][1], "4096 rows x 512 fits a 2 097 152 budget"
+
+
+def test_batch_chunking_follows_a_lowered_budget(monkeypatch):
+    """And a LOWERED one -- the regime an operator on small hardware actually uses."""
+    import laya.serve as serve_mod
+
+    assert 2048 < serve_mod.DEFAULT_MAX_BATCH_TOKENS, "2048 must be the lowered regime"
+    client, fake = _batch_env_client(monkeypatch, LAYA_MAX_BATCH_TOKENS="2048")
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * 8, "questions": _noul_questions(2)})
+    assert r.status_code == 200, r.text
+    # 2048 / 512 = 4 rows per pass, / 2 questions = 2 states per pass
+    assert _sent_batch_size(fake) == 2
+
+
+@pytest.mark.parametrize("raw", ["nonsense", "0", "-5", "3.5"])
+def test_batch_budget_warns_and_falls_back_on_an_unusable_value(monkeypatch, caplog, raw):
+    """A bad knob must not disable the chunking, and must say so in the log."""
+    import laya.serve as serve_mod
+
+    monkeypatch.setenv("LAYA_MAX_BATCH_TOKENS", raw)
+    with caplog.at_level(logging.WARNING, logger="laya.serve"):
+        assert serve_mod._resolve_max_batch_tokens() == serve_mod.DEFAULT_MAX_BATCH_TOKENS
+    assert "LAYA_MAX_BATCH_TOKENS" in caplog.text, caplog.text
+    assert ("invalid" in caplog.text or "must be positive" in caplog.text), caplog.text
+
+    client, fake = _batch_client(monkeypatch)
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"] * serve_mod.MAX_BATCH_STATES,
+                          "questions": _noul_questions(serve_mod.MAX_QUESTIONS)})
+    assert r.status_code == 200, r.text
+    assert _sent_batch_size(fake) != "<absent>", "the fallback budget must still chunk"
+
+
+def test_batch_an_empty_environment_value_falls_back_silently(monkeypatch):
+    """Unset and empty both mean "not configured", which is not worth a warning."""
+    import laya.serve as serve_mod
+
+    monkeypatch.setenv("LAYA_MAX_BATCH_TOKENS", "")
+    assert serve_mod._resolve_max_batch_tokens() == serve_mod.DEFAULT_MAX_BATCH_TOKENS
+
+
+def test_batch_chunk_plan_floors_at_one_state(monkeypatch):
+    """A single state cannot be split, so the plan stops at one state per pass and never 0.
+
+    At that floor one pass carries `len(questions)` rows, which is exactly what one `/v1/systemone`
+    request can already ask for -- so the batch route's worst pass is the single route's worst pass.
+    """
+    import laya.serve as serve_mod
+
+    monkeypatch.delenv("LAYA_MAX_BATCH_TOKENS", raising=False)
+    plan = serve_mod._batch_chunk_size(serve_mod.MAX_BATCH_STATES, serve_mod.MAX_QUESTIONS,
+                                       serve_mod.DEFAULT_MAX_TOKEN_BUDGET)
+    assert plan == 1, plan
+    assert serve_mod._batch_chunk_size(1, serve_mod.MAX_QUESTIONS,
+                                       serve_mod.DEFAULT_MAX_TOKEN_BUDGET) == 1
+
+
+@pytest.mark.parametrize("states,questions", [(0, 4), (4, 0), (0, 0)])
+def test_batch_chunk_plan_is_none_for_a_degenerate_shape(monkeypatch, states, questions):
+    """Nothing to split, and no division by the question count."""
+    import laya.serve as serve_mod
+
+    monkeypatch.delenv("LAYA_MAX_BATCH_TOKENS", raising=False)
+    assert serve_mod._batch_chunk_size(states, questions) is None
+
+
+def test_batch_an_empty_questions_body_is_not_chunked(monkeypatch):
+    """Zero rows: no plan, no crash, and `predict_batch` short-circuits on its own."""
+    client, fake = _batch_env_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={"states": ["hi"] * 8, "questions": {}})
+    assert r.status_code == 200, r.text
+    assert "batch_size" not in fake.batch_calls[0][1]
+
+
+def test_batch_a_non_object_questions_body_keeps_its_own_400(monkeypatch):
+    """The planner must not turn a 400 into something else by calling len() on a list."""
+    client, _ = _batch_env_client(monkeypatch)
+    r = client.post("/v1/systemone/batch", json={"states": ["hi"] * 8, "questions": ["nope"] * 300})
+    assert r.status_code == 400, r.text
+    assert "'questions' must be an object" in r.json()["detail"], r.json()["detail"]
+
+
+def test_batch_too_many_questions_still_gets_its_own_413(monkeypatch):
+    """Chunking does not replace the per-question cap: 300 questions is still refused, by name."""
+    import laya.serve as serve_mod
+
+    client, _ = _batch_env_client(monkeypatch)
+    r = client.post("/v1/systemone/batch",
+                    json={"states": ["hi"], "questions": _noul_questions(serve_mod.MAX_QUESTIONS + 1)})
+    assert r.status_code == 413, r.text
+    assert "too many questions" in r.json()["detail"], r.json()["detail"]
+
+
 def test_batch_individual_oversized_state_returns_413(monkeypatch):
     client, _ = _client(monkeypatch)
     from laya.serve import MAX_STATE_CHARS
