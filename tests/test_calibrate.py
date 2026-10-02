@@ -369,21 +369,40 @@ with tempfile.TemporaryDirectory() as atomic_dir:
     rival = Agent.__new__(Agent)
     rival.temperature = [1.1, 1.2, 1.3]
     rival.temperature_by_options = {"choice:2": 1.4}
-    barrier = Barrier(2)
+    for simulate_lost_race in (False, True):
+        barrier = Barrier(2)
 
-    def _together_replace(src, dst):
-        barrier.wait(timeout=10)
-        original_replace(src, dst)
+        def _together_replace(src, dst):
+            rank = barrier.wait(timeout=10)
+            if simulate_lost_race and rank == 0:
+                error = PermissionError("injected NTFS replacement race")
+                error.winerror = 5
+                raise error
+            original_replace(src, dst)
 
-    with patch.object(_agent_module.os, "replace", _together_replace):
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            writes = [pool.submit(writer.save_calibration, atomic_path) for writer in (agent, rival)]
-            for write in writes:
-                write.result()
-    concurrent_payload = json.loads(atomic_path.read_text())
-    check_true("atomic/concurrent writers leave one complete payload",
-               concurrent_payload in (payload, calibration_payload(rival.temperature, rival.temperature_by_options)))
-    check("atomic/concurrent writers clean temps", sorted(os.listdir(atomic_dir)), ["calibration.json"])
+        succeeded = 0
+        denied = 0
+        with patch.object(_agent_module.os, "replace", _together_replace):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                writes = [pool.submit(writer.save_calibration, atomic_path) for writer in (agent, rival)]
+                for write in writes:
+                    try:
+                        write.result()
+                    except PermissionError as exc:
+                        # NTFS may deny one simultaneous replacement; other errors still fail.
+                        if getattr(exc, "winerror", None) != 5:
+                            raise
+                        denied += 1
+                    else:
+                        succeeded += 1
+        label = "injected race" if simulate_lost_race else "concurrent writers"
+        check_true("atomic/%s has a successful writer" % label, succeeded >= 1)
+        if simulate_lost_race:
+            check("atomic/injected race exercises denial", denied, 1)
+        concurrent_payload = json.loads(atomic_path.read_text())
+        check_true("atomic/%s leave one complete payload" % label,
+                   concurrent_payload in (payload, calibration_payload(rival.temperature, rival.temperature_by_options)))
+        check("atomic/%s clean temps" % label, sorted(os.listdir(atomic_dir)), ["calibration.json"])
 
 other = Agent.__new__(Agent)
 other.model_id_or_path = agent.model_id_or_path
