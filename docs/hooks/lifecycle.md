@@ -142,7 +142,7 @@ Key points:
 - Every start hook of a checkpoint's requests runs before any of their end hooks, because they
   share forward passes. A cache that fills in `on_predict_end` therefore cannot serve a duplicate
   state within the same checkpoint group; it can across calls.
-- For the same reason the requests end in reverse of the order they started, so a hook that sets
+- For the same reason the requests end in the reverse of the order they started, so a hook that sets
   something in start and resets it in end (a `contextvars` value, an OpenTelemetry
   `context.attach` / `detach`) unwinds to the value it found.
 - A start hook that replaces `ctx.states`, `ctx.questions` or the token budget changes its own

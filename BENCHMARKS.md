@@ -153,7 +153,7 @@ Each is real labelled data, 400 cases, all three checkpoints. *held out* means t
 
 ### On the public datasets where Jev numbers exist
 
-Laya columns are from the same Applications run (`research/results/app_benchmark_results.json`, N=400 per task), so AG News / DAIR Emotion differ slightly from the committed T4 English suites below (N=600: 0.947 / 0.573 for `laya`).
+Laya columns are from the same Applications run (`research/results/app_benchmark_results.json`, N=400 per task), so AG News / DAIR Emotion differ slightly from the committed T4 English suites above (N=600: 0.947 / 0.573 for `laya`).
 
 | dataset | laya | laya-multilingual | laya-typed-decisions | Jev (published) |
 |---|---|---|---|---|

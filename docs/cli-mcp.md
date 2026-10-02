@@ -158,7 +158,7 @@ Laya does not open a network port.
 | `laya_decide` | Answers a JSON-schema-shaped decision in one forward pass and returns the decided values with per-field confidence, instead of an answer map to parse. Schema properties may be enum choices, booleans, or integers with a minimum and maximum; free strings, arrays, and nested objects are rejected by path. | `state`, `schema`, optional `model` |
 
 The three batch and schema tools exist because the same operations are available on the SDK and
-`laya-serve`: reaching for many requests, or for a caller that already knows the answer shape,
+`laya-serve`: handling many requests, or serving a caller that already knows the answer shape,
 does not require dropping to Python. For the schema-driven form in more depth, see
 [Schema-driven decisions](structured.md).
 
