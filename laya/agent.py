@@ -1561,8 +1561,8 @@ class Agent(HookRegistry):
         budget, step, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
                                         head_max_len, window=window, stride=stride)
 
-        state_ids = self.tok(serialize_state(state).replace(self.tok.mask_token, " "),
-                             add_special_tokens=False)["input_ids"]
+        state_ids = encode_text(self.tok, serialize_state(state).replace(self.tok.mask_token, " "),
+                                add_special_tokens=False)["input_ids"]
         # Fits in one window: identical to a plain call, no windowing overhead. `windows` is still
         # written, so the key is total over the three paths this method can take and a caller can
         # ask "how much of the document did the model read?" without handling a KeyError on the
