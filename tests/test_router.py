@@ -1094,6 +1094,110 @@ check("threads/hot-path loads keep agents consistent", agents_len, 1)
 check("threads/hot-path order intact", order, ["english"])
 
 
+def _cold_build_does_not_hold_lifecycle_lock():
+    """A cold build must not stall `loaded` or a resident checkpoint for its whole duration.
+
+    The build runs a download plus construction, seconds to minutes. Held under `_lock`, it made
+    `GET /health` (which reads `loaded`) and every request for an already-resident checkpoint wait
+    for it, so a liveness probe timed out during a lazy load.
+    """
+    import laya.agent as _agent_mod
+    building, release = threading.Event(), threading.Event()
+    constructions = []
+
+    class _BlockingAgent:
+        def __init__(self, *args, **kwargs):
+            constructions.append(1)
+            building.set()
+            release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _BlockingAgent
+    try:
+        r = Router(max_loaded=3)
+        resident = _Stub("english")
+        r.attach("english", resident)
+        loaders = [threading.Thread(target=r.load, args=("multilingual",)) for _ in range(2)]
+        for t in loaders:
+            t.start()
+        building.wait(5)
+        timings = {}
+        for label, call in (("loaded", lambda: r.loaded),
+                            ("resident load", lambda: r.load("english"))):
+            done = threading.Event()
+            threading.Thread(target=lambda c=call, d=done: (c(), d.set()), daemon=True).start()
+            timings[label] = done.wait(1.0)
+        release.set()
+        for t in loaders:
+            t.join(5)
+        loaded_after, built = sorted(r.loaded), len(constructions)
+        # An unload issued while a build is in flight waits for it, so the build cannot land after it.
+        building.clear()
+        release.clear()
+        threading.Thread(target=r.load, args=("typed-decisions",), daemon=True).start()
+        building.wait(5)
+        unloader = threading.Thread(target=r.unload, args=("typed-decisions",))
+        unloader.start()
+        _time.sleep(0.1)
+        release.set()
+        unloader.join(5)
+        timings["unload waits for the build"] = "typed-decisions" not in r.loaded
+        return timings, built, loaded_after
+    finally:
+        release.set()
+        _agent_mod.Agent = old
+
+timings, built, resident_after = _cold_build_does_not_hold_lifecycle_lock()
+check("threads/loaded answers during a cold build", timings["loaded"], True)
+check("threads/resident checkpoint answers during a cold build", timings["resident load"], True)
+check("threads/concurrent cold loads still build once", built, 1)
+check("threads/cold build lands in the LRU", resident_after, ["english", "multilingual"])
+check("threads/unload during a cold build frees it", timings["unload waits for the build"], True)
+
+
+def _on_load_reenters_router(target, hooks_concurrent):
+    """An `on_load` hook may call `router.load()` again without deadlocking.
+
+    `_build_lock` is not re-entrant, so this holds only while `load()` dispatches `on_load`
+    after releasing it. Returns whether the outer load finished, the agent the hook got back,
+    the outer agent, and what ended up loaded.
+    """
+    import laya.agent as _agent_mod
+
+    class _FastAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    got = []
+
+    class _ReentrantHook:
+        def on_load(self, ctx):
+            if ctx.model == "multilingual" and not got:
+                got.append(ctx.router.load(target))
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _FastAgent
+    try:
+        r = Router(max_loaded=3, hooks=[_ReentrantHook()], hooks_concurrent=hooks_concurrent)
+        outer = []
+        t = threading.Thread(target=lambda: outer.append(r.load("multilingual")), daemon=True)
+        t.start()
+        t.join(5)
+        return not t.is_alive(), got[0] if got else None, outer[0] if outer else None, sorted(r.loaded)
+    finally:
+        _agent_mod.Agent = old
+
+for concurrent in (True, False):
+    tag = "concurrent" if concurrent else "serialised"
+    finished, inner, outer, loaded = _on_load_reenters_router("multilingual", concurrent)
+    check(f"threads/on_load reloading the same checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load reload returns the resident agent ({tag})",
+          inner is not None and inner is outer, True)
+    finished, inner, outer, loaded = _on_load_reenters_router("typed-decisions", concurrent)
+    check(f"threads/on_load loading another checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load can load another checkpoint ({tag})", loaded, ["multilingual", "typed-decisions"])
+
+
 
 # --------------------------------------------------------------------- unlisted scripts
 # `detect_script` counts an alphabetic character only when one of `_SCRIPT_RANGES` claims
