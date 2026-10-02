@@ -190,7 +190,16 @@ def _invoked_workflow_tests(yaml_text):
 
 
 docker_workflow = read(os.path.join(".github", "workflows", "docker.yml"))
-registered_test_files = _invoked_workflow_tests(workflow) | _invoked_workflow_tests(docker_workflow)
+release_workflow = read(os.path.join(".github", "workflows", "release.yml"))
+# The Linux `test` job and the release gate both invoke `scripts/test_suites.py` instead of naming
+# their suites inline, so that shared list is a source of suite names too. Without this the
+# "every suite is wired" check would fail for every suite the workflows no longer name.
+shared_suites = read(os.path.join("scripts", "test_suites.py"))
+registered_test_files = (
+    _invoked_workflow_tests(workflow)
+    | _invoked_workflow_tests(docker_workflow)
+    | set(re.findall(r"\btests/(test_[a-zA-Z0-9_]+\.py)\b", shared_suites))
+)
 
 EXEMPT_TEST_SUITES = {
     "test_local_e2e.py": "Requires local checkpoints under ~/laya_models (AGENTS.md)",
@@ -209,6 +218,10 @@ untested_suites = [
     if f not in EXEMPT_TEST_SUITES and f not in registered_test_files
 ]
 check("ci/wires every non-exempt test suite", untested_suites, [])
+# The point of the shared list is that CI and the publish gate run the same suites. Both invoking
+# the script is the entire mechanism, so assert neither workflow dropped back to an inline list.
+check_true("ci and the release gate share one suite list",
+           "scripts/test_suites.py" in workflow and "scripts/test_suites.py" in release_workflow, "")
 
 
 # --------------------------------------------------------------- markdown links
