@@ -1155,6 +1155,49 @@ check("threads/cold build lands in the LRU", resident_after, ["english", "multil
 check("threads/unload during a cold build frees it", timings["unload waits for the build"], True)
 
 
+def _on_load_reenters_router(target, hooks_concurrent):
+    """An `on_load` hook may call `router.load()` again without deadlocking.
+
+    `_build_lock` is not re-entrant, so this holds only while `load()` dispatches `on_load`
+    after releasing it. Returns whether the outer load finished, the agent the hook got back,
+    the outer agent, and what ended up loaded.
+    """
+    import laya.agent as _agent_mod
+
+    class _FastAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    got = []
+
+    class _ReentrantHook:
+        def on_load(self, ctx):
+            if ctx.model == "multilingual" and not got:
+                got.append(ctx.router.load(target))
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _FastAgent
+    try:
+        r = Router(max_loaded=3, hooks=[_ReentrantHook()], hooks_concurrent=hooks_concurrent)
+        outer = []
+        t = threading.Thread(target=lambda: outer.append(r.load("multilingual")), daemon=True)
+        t.start()
+        t.join(5)
+        return not t.is_alive(), got[0] if got else None, outer[0] if outer else None, sorted(r.loaded)
+    finally:
+        _agent_mod.Agent = old
+
+for concurrent in (True, False):
+    tag = "concurrent" if concurrent else "serialised"
+    finished, inner, outer, loaded = _on_load_reenters_router("multilingual", concurrent)
+    check(f"threads/on_load reloading the same checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load reload returns the resident agent ({tag})",
+          inner is not None and inner is outer, True)
+    finished, inner, outer, loaded = _on_load_reenters_router("typed-decisions", concurrent)
+    check(f"threads/on_load loading another checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load can load another checkpoint ({tag})", loaded, ["multilingual", "typed-decisions"])
+
+
 
 # --------------------------------------------------------------------- unlisted scripts
 # `detect_script` counts an alphabetic character only when one of `_SCRIPT_RANGES` claims
