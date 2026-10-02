@@ -53,7 +53,19 @@ public sealed class PredictParityTests(AllEnginesFixture fixture)
     /// </summary>
     public static IEnumerable<object[]> AllSuccessCasesSplit() => AllSuccessCases();
 
+    /// <summary>Structured score levels whose legend must retain the exact rendered JSON text.</summary>
+    public static IEnumerable<object[]> StructuredScoreCases() =>
+        AllSuccessCases().Where(values => ((GoldenCaseInfo)values[1]).Name == "criterion_shapes");
+
     // ── theory tests ──────────────────────────────────────────────────────────
+
+    [Theory]
+    [MemberData(nameof(StructuredScoreCases))]
+    public void StructuredScoreLegendsAreRenderedText(LayaCheckpoint checkpoint, GoldenCaseInfo info)
+    {
+        ReproducesTheRecordedAnswers(checkpoint, info);
+        ReproducesTheRecordedAnswersSplit(checkpoint, info);
+    }
 
     [Theory]
     [MemberData(nameof(AllSuccessCases))]
@@ -248,7 +260,7 @@ public sealed class PredictParityTests(AllEnginesFixture fixture)
         for (var i = 0; i < got.Legend.Count; i++)
         {
             var level = legend.GetProperty(i.ToString(CultureInfo.InvariantCulture));
-            Assert.Equal(PythonJson.Criterion(GoldenData.ToClr(level)), PythonJson.Criterion(got.Legend[i]));
+            Assert.Equal(level.GetString(), Assert.IsType<string>(got.Legend[i]));
         }
 
         var probabilities = want.GetProperty("probabilities");

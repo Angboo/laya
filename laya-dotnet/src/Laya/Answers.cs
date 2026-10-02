@@ -115,7 +115,7 @@ public sealed class ScoreAnswer : Answer
     /// </summary>
     public double Score { get; }
 
-    /// <summary>What each level index means, as supplied on the question.</summary>
+    /// <summary>Rendered text for each level index, including JSON text for structured criteria.</summary>
     public IReadOnlyList<object?> Legend { get; }
 
     /// <summary>Probability per level index. Rounded to 4 decimals.</summary>

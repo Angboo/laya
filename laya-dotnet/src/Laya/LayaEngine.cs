@@ -275,7 +275,8 @@ public sealed class LayaEngine : IDisposable, ILayaPredictor
                 var probabilities = new double[p.Length];
                 for (var i = 0; i < p.Length; i++) probabilities[i] = Calibration.Round4(p[i]);
                 return new ScoreAnswer(Calibration.Round4(Calibration.ExpectedScore(p)),
-                                       score.Levels, probabilities, confidence, answerConfidence, action);
+                                       score.Levels.Select(PythonJson.Criterion).Cast<object?>().ToArray(),
+                                       probabilities, confidence, answerConfidence, action);
             }
 
             default:
