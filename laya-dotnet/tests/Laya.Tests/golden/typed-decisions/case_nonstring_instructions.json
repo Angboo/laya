@@ -467,7 +467,11 @@
     },
     "usage": {
       "input_tokens": 104,
-      "output_tokens": 0
+      "output_tokens": 0,
+      "state_tokens": 14,
+      "state_tokens_dropped": 0,
+      "truncated": false,
+      "truncated_questions": []
     }
   }
 }

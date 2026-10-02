@@ -1,5 +1,560 @@
 [
   {
+    "label": "upstream/swedish_short",
+    "state": "glömt lösenord",
+    "state_text": "glömt lösenord",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "sv",
+      "english_hits": 0,
+      "diacritic_rate": 0.14285714285714285,
+      "looks_non_english": true
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "sv",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.1429,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/swedish_login",
+    "state": "kan inte logga in",
+    "state_text": "kan inte logga in",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "sv",
+      "english_hits": 1,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "sv",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/nordic_overlap",
+    "state": "hej min vän",
+    "state_text": "hej min vän",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": null,
+      "english_hits": 0,
+      "diacritic_rate": 0.09090909090909091,
+      "looks_non_english": true
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": null,
+      "is_english": false,
+      "language_undecided": true,
+      "diacritic_rate": 0.0909,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/banglish",
+    "state": "ami amar taka ferot chai",
+    "state_text": "ami amar taka ferot chai",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "bn",
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "bn",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/azerbaijani",
+    "state": "mən bu hesab üçün kömək istəyirəm",
+    "state_text": "mən bu hesab üçün kömək istəyirəm",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "az",
+      "english_hits": 0,
+      "diacritic_rate": 0.24242424242424243,
+      "looks_non_english": true
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "az",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.2424,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/german_ascii",
+    "state": "ich habe mein paket noch nicht",
+    "state_text": "ich habe mein paket noch nicht",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "de",
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "de",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/portuguese_ascii",
+    "state": "eu nao consigo entrar na minha conta",
+    "state_text": "eu nao consigo entrar na minha conta",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "pt",
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "pt",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/english_loanword",
+    "state": "Please send me the café receipt.",
+    "state_text": "Please send me the café receipt.",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 2,
+      "diacritic_rate": 0.03125,
+      "looks_non_english": true
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0312,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/repeated_collision",
+    "state": "come come come please send the receipt",
+    "state_text": "come come come please send the receipt",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 2,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/identifier_not_prose",
+    "state": "Please check my error at os.path and user@example.com",
+    "state_text": "Please check my error at os.path and user@example.com",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 3,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/fullwidth_latin",
+    "state": "ＡＢＣＤ hello",
+    "state_text": "ＡＢＣＤ hello",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": null,
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": null,
+      "is_english": true,
+      "language_undecided": true,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/ipa_latin",
+    "state": "ɐɪɲ hello",
+    "state_text": "ɐɪɲ hello",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": null,
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": null,
+      "is_english": true,
+      "language_undecided": true,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/cjk_brand",
+    "state": "iPhone 用户无法登录账户请帮助",
+    "state_text": "iPhone 用户无法登录账户请帮助",
+    "detect_script": "han",
+    "script_profile": {
+      "latin": 0.35294117647058826,
+      "han": 0.6470588235294118
+    },
+    "latin_profile": {
+      "language": null,
+      "english_hits": 0,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "han",
+      "script_profile": {
+        "latin": 0.35294117647058826,
+        "han": 0.6470588235294118
+      },
+      "language": null,
+      "is_english": false,
+      "language_undecided": true,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.6471,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/cyrillic_name",
+    "state": "Please send the receipt to Владимир Иванов today",
+    "state_text": "Please send the receipt to Владимир Иванов today",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 0.6585365853658537,
+      "cyrillic": 0.34146341463414637
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 3,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 0.6585365853658537,
+        "cyrillic": 0.34146341463414637
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.3415,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/greek_symbol",
+    "state": "Please set α to the correct value",
+    "state_text": "Please set α to the correct value",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 0.9629629629629629,
+      "greek": 0.037037037037037035
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 3,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 0.9629629629629629,
+        "greek": 0.037037037037037035
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.037,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/mixed_foreign_line",
+    "state": "Please review the error and send me the details.\nEu nao consigo entrar na minha conta.",
+    "state_text": "Please review the error and send me the details.\nEu nao consigo entrar na minha conta.",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 4,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "pt",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": "Eu nao consigo entrar na minha conta."
+    }
+  },
+  {
+    "label": "upstream/mixed_foreign_field",
+    "state": {
+      "note": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. ",
+      "body": "ich habe mein paket noch nicht"
+    },
+    "state_text": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and sen",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 327,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "de",
+      "is_english": false,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/mixed_unknown_latin_field",
+    "state": {
+      "note": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. ",
+      "body": "žluťoučký kůň úpěl ďábelské ódy"
+    },
+    "state_text": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and sen",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 327,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": null,
+      "is_english": false,
+      "language_undecided": true,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/mixed_nonlatin_field",
+    "state": {
+      "note": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. ",
+      "body": "我的账户无法登录请帮助我"
+    },
+    "state_text": "Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and send me the details. Please review the error and sen",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 327,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": null,
+      "is_english": false,
+      "language_undecided": true,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
+    "label": "upstream/mixed_code_line",
+    "state": "Please review the error and send me the details.\nos.path = nao consigo entrar na minha conta",
+    "state_text": "Please review the error and send me the details.\nos.path = nao consigo entrar na minha conta",
+    "detect_script": "latin",
+    "script_profile": {
+      "latin": 1.0
+    },
+    "latin_profile": {
+      "language": "en",
+      "english_hits": 4,
+      "diacritic_rate": 0.0,
+      "looks_non_english": false
+    },
+    "analyse": {
+      "script": "latin",
+      "script_profile": {
+        "latin": 1.0
+      },
+      "language": "en",
+      "is_english": true,
+      "language_undecided": false,
+      "diacritic_rate": 0.0,
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
+    }
+  },
+  {
     "label": "script/english",
     "state": "The customer was charged twice and wants a refund.",
     "state_text": "The customer was charged twice and wants a refund.",
@@ -22,7 +577,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -48,7 +604,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -74,7 +631,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -96,7 +654,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -122,7 +681,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0484,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -148,7 +708,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -176,7 +737,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -202,7 +764,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -228,7 +791,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -254,7 +818,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -280,7 +845,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -306,7 +872,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -332,7 +899,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -358,7 +926,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -384,7 +953,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -406,7 +976,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -428,7 +999,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -454,7 +1026,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -480,7 +1053,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -506,7 +1080,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -532,7 +1107,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -560,7 +1136,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -586,7 +1163,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -612,7 +1190,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0515,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -638,7 +1217,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0229,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -664,7 +1244,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0962,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -690,7 +1271,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0282,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -716,7 +1298,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0735,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -742,7 +1325,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.2222,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -768,7 +1352,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.1029,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -794,7 +1379,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.1333,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -820,7 +1406,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -846,7 +1433,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0926,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -872,7 +1460,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -898,7 +1487,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.1333,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -924,7 +1514,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -950,7 +1541,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0435,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -976,7 +1568,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1002,7 +1595,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1028,7 +1622,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1054,7 +1649,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1080,7 +1676,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1106,7 +1703,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1132,7 +1730,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1161,7 +1760,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1193,7 +1793,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1224,7 +1825,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1246,7 +1848,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1275,7 +1878,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1301,7 +1905,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1329,7 +1934,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.7
+      "non_latin_fraction": 0.7,
+      "mixed_segment": null
     }
   },
   {
@@ -1355,7 +1961,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1381,7 +1988,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1407,7 +2015,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1433,7 +2042,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1459,7 +2069,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1485,7 +2096,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1511,7 +2123,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1537,7 +2150,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1563,7 +2177,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1589,7 +2204,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1615,7 +2231,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0317,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1641,7 +2258,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0159,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1667,7 +2285,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0476,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1693,7 +2312,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1719,7 +2339,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1745,7 +2366,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1771,7 +2393,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1797,7 +2420,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1823,7 +2447,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1849,7 +2474,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1875,7 +2501,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0435,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1901,7 +2528,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1927,7 +2555,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1953,7 +2582,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -1979,7 +2609,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2005,7 +2636,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2031,7 +2663,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2057,7 +2690,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2083,7 +2717,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2109,7 +2744,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2135,7 +2771,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2161,7 +2798,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2187,7 +2825,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2213,7 +2852,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2239,7 +2879,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2265,7 +2906,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2291,7 +2933,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2317,7 +2960,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2343,7 +2987,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2369,7 +3014,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2395,7 +3041,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2421,7 +3068,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2447,7 +3095,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2473,7 +3122,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2499,7 +3149,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2525,7 +3176,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2553,7 +3205,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2579,7 +3232,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2605,7 +3259,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2633,7 +3288,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2661,7 +3317,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2689,7 +3346,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.5
+      "non_latin_fraction": 0.5,
+      "mixed_segment": null
     }
   },
   {
@@ -2717,7 +3375,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.5
+      "non_latin_fraction": 0.5,
+      "mixed_segment": null
     }
   },
   {
@@ -2747,7 +3406,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2767,17 +3427,18 @@
       "looks_non_english": false
     },
     "analyse": {
-      "script": "latin",
+      "script": "arabic",
       "script_profile": {
         "latin": 0.6190476190476191,
         "han": 0.09523809523809523,
         "arabic": 0.2857142857142857
       },
       "language": null,
-      "is_english": true,
+      "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.381
+      "non_latin_fraction": 0.381,
+      "mixed_segment": null
     }
   },
   {
@@ -2805,7 +3466,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.7143
+      "non_latin_fraction": 0.7143,
+      "mixed_segment": null
     }
   },
   {
@@ -2833,7 +3495,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.125
+      "non_latin_fraction": 0.125,
+      "mixed_segment": null
     }
   },
   {
@@ -2859,7 +3522,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0476,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2885,7 +3549,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2911,7 +3576,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.1071,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2937,7 +3603,8 @@
       "is_english": false,
       "language_undecided": false,
       "diacritic_rate": 0.0952,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2959,7 +3626,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -2985,15 +3653,18 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
     "label": "astral/deseret_letter_alone",
     "state": "𐐀𐐁𐐂",
     "state_text": "𐐀𐐁𐐂",
-    "detect_script": "unknown",
-    "script_profile": {},
+    "detect_script": "other",
+    "script_profile": {
+      "other": 1.0
+    },
     "latin_profile": {
       "language": null,
       "english_hits": 0,
@@ -3001,13 +3672,16 @@
       "looks_non_english": false
     },
     "analyse": {
-      "script": "unknown",
-      "script_profile": {},
+      "script": "other",
+      "script_profile": {
+        "other": 1.0
+      },
       "language": null,
-      "is_english": true,
+      "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3016,7 +3690,8 @@
     "state_text": "refund 𐐀 today",
     "detect_script": "latin",
     "script_profile": {
-      "latin": 1.0
+      "latin": 0.9166666666666666,
+      "other": 0.08333333333333333
     },
     "latin_profile": {
       "language": null,
@@ -3027,21 +3702,25 @@
     "analyse": {
       "script": "latin",
       "script_profile": {
-        "latin": 1.0
+        "latin": 0.9166666666666666,
+        "other": 0.08333333333333333
       },
       "language": null,
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0833,
+      "mixed_segment": null
     }
   },
   {
     "label": "astral/mathematical_bold_letters",
     "state": "𝐀𝐁𝐂",
     "state_text": "𝐀𝐁𝐂",
-    "detect_script": "unknown",
-    "script_profile": {},
+    "detect_script": "other",
+    "script_profile": {
+      "other": 1.0
+    },
     "latin_profile": {
       "language": null,
       "english_hits": 0,
@@ -3049,13 +3728,16 @@
       "looks_non_english": false
     },
     "analyse": {
-      "script": "unknown",
-      "script_profile": {},
+      "script": "other",
+      "script_profile": {
+        "other": 1.0
+      },
       "language": null,
-      "is_english": true,
+      "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3081,7 +3763,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3107,7 +3790,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3133,7 +3817,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3159,7 +3844,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.04,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3185,7 +3871,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.125,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3207,7 +3894,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3233,7 +3921,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3259,7 +3948,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3285,7 +3975,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3323,7 +4014,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3359,7 +4051,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3395,7 +4088,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3436,7 +4130,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3462,7 +4157,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3488,7 +4184,8 @@
       "is_english": false,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 1.0
+      "non_latin_fraction": 1.0,
+      "mixed_segment": null
     }
   },
   {
@@ -3516,7 +4213,8 @@
       "is_english": true,
       "language_undecided": true,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0025
+      "non_latin_fraction": 0.0025,
+      "mixed_segment": null
     }
   },
   {
@@ -3542,7 +4240,8 @@
       "is_english": true,
       "language_undecided": false,
       "diacritic_rate": 0.0,
-      "non_latin_fraction": 0.0
+      "non_latin_fraction": 0.0,
+      "mixed_segment": null
     }
   }
 ]

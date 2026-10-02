@@ -26,6 +26,34 @@ golden the same way the existing `Laya.Sample` is.
 # not this module's -- these three take plain text, not a full state).
 
 LANG_STATES = [
+    ("upstream/swedish_short", "glömt lösenord"),
+    ("upstream/swedish_login", "kan inte logga in"),
+    ("upstream/nordic_overlap", "hej min vän"),
+    ("upstream/banglish", "ami amar taka ferot chai"),
+    ("upstream/azerbaijani", "mən bu hesab üçün kömək istəyirəm"),
+    ("upstream/german_ascii", "ich habe mein paket noch nicht"),
+    ("upstream/portuguese_ascii", "eu nao consigo entrar na minha conta"),
+    ("upstream/english_loanword", "Please send me the café receipt."),
+    ("upstream/repeated_collision", "come come come please send the receipt"),
+    ("upstream/identifier_not_prose", "Please check my error at os.path and user@example.com"),
+    ("upstream/fullwidth_latin", "ＡＢＣＤ hello"),
+    ("upstream/ipa_latin", "ɐɪɲ hello"),
+    ("upstream/cjk_brand", "iPhone 用户无法登录账户请帮助"),
+    ("upstream/cyrillic_name", "Please send the receipt to Владимир Иванов today"),
+    ("upstream/greek_symbol", "Please set α to the correct value"),
+    ("upstream/mixed_foreign_line",
+     "Please review the error and send me the details.\nEu nao consigo entrar na minha conta."),
+    ("upstream/mixed_foreign_field",
+     {"note": "Please review the error and send me the details. " * 100,
+      "body": "ich habe mein paket noch nicht"}),
+    ("upstream/mixed_unknown_latin_field",
+     {"note": "Please review the error and send me the details. " * 100,
+      "body": "žluťoučký kůň úpěl ďábelské ódy"}),
+    ("upstream/mixed_nonlatin_field",
+     {"note": "Please review the error and send me the details. " * 100,
+      "body": "我的账户无法登录请帮助我"}),
+    ("upstream/mixed_code_line",
+     "Please review the error and send me the details.\nos.path = nao consigo entrar na minha conta"),
     # ---- straight from tests/test_router.py SCRIPTS (script detection) ----
     ("script/english", "The customer was charged twice and wants a refund."),
     ("script/armenian", "Հայերեն"),
@@ -235,6 +263,9 @@ def _td_questions(ids):
 
 
 ROUTE_CASES = [
+    ("upstream/undetermined_latin_custom_default", {"default": "multilingual"}, {"state": "Hello"}),
+    ("upstream/mixed_foreign_line", {}, {"state":
+     "Please review the error and send me the details.\nEu nao consigo entrar na minha conta."}),
     # ---- default router, precedence ladder ----
     ("english_text", {}, {"state": {"body": "I was charged twice, please refund."}, "questions": Q_GENERIC}),
     ("armenian_text", {}, {"state": {"body": "Հայերեն"}, "questions": Q_GENERIC}),
@@ -345,6 +376,27 @@ ROUTE_CASES = [
 _DISCLAIMER_TEXT = "This email is confidential and intended solely for the named addressee."
 
 EMAIL_CLEAN_CASES = [
+    ("upstream/confidential_request", "Confidential: I need a refund.", 3000),
+    ("upstream/from_prose", "Hello.\nFrom: my side the integration works, but please refund it.", 3000),
+    ("upstream/from_header", "Please refund it.\nFrom: Jane Smith\nSent: Monday\nOld request.", 3000),
+    ("upstream/thanks_prose", "Hello.\nThanks for the quick reply, but I need a refund.", 3000),
+    ("upstream/english_signoff", "Please refund it.\nWarmest regards, Łukasz", 3000),
+    ("upstream/lowercase_name_is_prose", "Please refund it.\nThanks, żaneta needs help.", 3000),
+    ("upstream/marked_name", "Please refund it.\nRegards, Jose\u0301", 3000),
+    ("upstream/astral_signoff_name", "Please refund it.\nRegards, \U00010400\U00010428", 3000),
+    ("upstream/unattached_mark", "Please refund it.\nRegards, \u0301Jose", 3000),
+    ("upstream/portuguese_quote", "Preciso de ajuda.\nEm 10/09 João escreveu:\nOld request.", 3000),
+    ("upstream/spanish_quote", "Necesito ayuda.\nEl 10/09 Juan escribió:\nOld request.", 3000),
+    ("upstream/french_quote", "Je demande un remboursement.\nLe 10/09 Jean a écrit :\nOld request.", 3000),
+    ("upstream/wrapped_attribution",
+     "Please refund it.\nOn 10/09 Jane Smith\njane@example.com> wrote:\nOld request.", 3000),
+    ("upstream/french_signoff", "Je demande un remboursement.\nCordialement,\nMarie", 3000),
+    ("upstream/portuguese_signoff", "Preciso de ajuda.\nAtenciosamente,\nMaria", 3000),
+    ("upstream/spanish_signoff", "Necesito ayuda.\nSaludos cordiales,\nJuan", 3000),
+    ("upstream/device_footer", "Please refund it.\nSent from my Samsung Galaxy.", 3000),
+    ("upstream/device_mention_prose", "Please refund it.\nSent from my iPhone yesterday to support.", 3000),
+    ("upstream/french_disclaimer",
+     "Je demande un remboursement.\n\nCe message est confidentiel et réservé au destinataire.", 3000),
     # ---- straight from tests/test_email.py ----
     ("inline_footer_no_blank_line", "My account is locked.\n%s\nPlease unlock it." % _DISCLAIMER_TEXT, 3000),
     ("inline_footer_no_terminal_punctuation", "My account is locked\n%s\nPlease unlock it." % _DISCLAIMER_TEXT, 3000),

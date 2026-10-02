@@ -662,14 +662,8 @@
         "type": "score",
         "score": 1.1978,
         "legend": {
-          "0": {
-            "label": "info",
-            "cvss": 0.0
-          },
-          "1": {
-            "label": "high",
-            "cvss": 7.5
-          },
+          "0": "{\"label\": \"info\", \"cvss\": 0.0}",
+          "1": "{\"label\": \"high\", \"cvss\": 7.5}",
           "2": "critical"
         },
         "probabilities": {
@@ -686,7 +680,11 @@
     },
     "usage": {
       "input_tokens": 144,
-      "output_tokens": 0
+      "output_tokens": 0,
+      "state_tokens": 11,
+      "state_tokens_dropped": 0,
+      "truncated": false,
+      "truncated_questions": []
     }
   }
 }

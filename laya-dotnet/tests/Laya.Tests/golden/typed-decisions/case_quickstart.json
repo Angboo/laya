@@ -1498,7 +1498,11 @@
     },
     "usage": {
       "input_tokens": 379,
-      "output_tokens": 0
+      "output_tokens": 0,
+      "state_tokens": 57,
+      "state_tokens_dropped": 0,
+      "truncated": false,
+      "truncated_questions": []
     }
   }
 }

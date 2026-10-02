@@ -1064,7 +1064,11 @@
     },
     "usage": {
       "input_tokens": 267,
-      "output_tokens": 0
+      "output_tokens": 0,
+      "state_tokens": 19,
+      "state_tokens_dropped": 0,
+      "truncated": false,
+      "truncated_questions": []
     },
     "shortlist": {
       "intent": {

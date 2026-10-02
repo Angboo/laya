@@ -6,7 +6,7 @@ All notable changes to the `Laya.Onnx` NuGet package are documented here. The fo
 
 ## [0.1.0] - unreleased
 
-First release: a port of the Laya Python SDK, tested against laya (Python) 0.3.21.
+First release: a port of the Laya Python SDK, tested against laya (Python) 0.3.24.
 
 ### Added
 
@@ -20,8 +20,23 @@ First release: a port of the Laya Python SDK, tested against laya (Python) 0.3.2
 - Opt-in model download from Hugging Face.
 - Samples: quickstart, routing and benchmark.
 
+### Fixed
+
+- Undetermined Latin text uses the router's configured default, including its route reason.
+- Language detection counts unlisted scripts, distinguishes mixed-language fields and lines
+  (`MixedSegment`), and applies current script, stopword and loanword rules.
+- Email cleaning preserves unpunctuated requests before disclaimers, distinguishes prose from
+  signatures and reply headers, and handles Portuguese, Spanish and French client markers.
+- Oversized questions report the surviving option markers and the actual sequence budget.
+- Score legends return the same rendered criterion text shown to the model, including JSON for
+  structured levels.
+- Golden fixtures regenerated from current Python for all three checkpoints and routing.
+
 ### Known gaps
 
-- Language detection and email handling follow Python 0.3.6 (`lang.py`, `email.py`).
-- Not yet ported from Python 0.3.21: abstention (`min_confidence`), `predict_long` and
-  `lang_temperatures`.
+- Python-only opt-in features are not yet ported: abstention (`min_confidence`), `predict_long`,
+  `lang_temperatures`, hooks, batching APIs, question option ordering and digest controls.
+- `LayaEmail.State` does not expose Python's `max_chars` keyword; use `CleanBody` with a custom
+  budget and pass the cleaned body with `clean: false`.
+- New Python usage diagnostics (`state_tokens`, `truncated`, `state_tokens_dropped` and
+  `truncated_questions`) are not exposed by the .NET `Usage` record.

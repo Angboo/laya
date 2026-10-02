@@ -1,6 +1,120 @@
 {
   "clean": [
     {
+      "label": "upstream/confidential_request",
+      "body": "Confidential: I need a refund.",
+      "max_chars": 3000,
+      "result": "Confidential: I need a refund."
+    },
+    {
+      "label": "upstream/from_prose",
+      "body": "Hello.\nFrom: my side the integration works, but please refund it.",
+      "max_chars": 3000,
+      "result": "Hello.\nFrom: my side the integration works, but please refund it."
+    },
+    {
+      "label": "upstream/from_header",
+      "body": "Please refund it.\nFrom: Jane Smith\nSent: Monday\nOld request.",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/thanks_prose",
+      "body": "Hello.\nThanks for the quick reply, but I need a refund.",
+      "max_chars": 3000,
+      "result": "Hello.\nThanks for the quick reply, but I need a refund."
+    },
+    {
+      "label": "upstream/english_signoff",
+      "body": "Please refund it.\nWarmest regards, Łukasz",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/lowercase_name_is_prose",
+      "body": "Please refund it.\nThanks, żaneta needs help.",
+      "max_chars": 3000,
+      "result": "Please refund it.\nThanks, żaneta needs help."
+    },
+    {
+      "label": "upstream/marked_name",
+      "body": "Please refund it.\nRegards, José",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/astral_signoff_name",
+      "body": "Please refund it.\nRegards, 𐐀𐐨",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/unattached_mark",
+      "body": "Please refund it.\nRegards, ́Jose",
+      "max_chars": 3000,
+      "result": "Please refund it.\nRegards, ́Jose"
+    },
+    {
+      "label": "upstream/portuguese_quote",
+      "body": "Preciso de ajuda.\nEm 10/09 João escreveu:\nOld request.",
+      "max_chars": 3000,
+      "result": "Preciso de ajuda."
+    },
+    {
+      "label": "upstream/spanish_quote",
+      "body": "Necesito ayuda.\nEl 10/09 Juan escribió:\nOld request.",
+      "max_chars": 3000,
+      "result": "Necesito ayuda."
+    },
+    {
+      "label": "upstream/french_quote",
+      "body": "Je demande un remboursement.\nLe 10/09 Jean a écrit :\nOld request.",
+      "max_chars": 3000,
+      "result": "Je demande un remboursement."
+    },
+    {
+      "label": "upstream/wrapped_attribution",
+      "body": "Please refund it.\nOn 10/09 Jane Smith\njane@example.com> wrote:\nOld request.",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/french_signoff",
+      "body": "Je demande un remboursement.\nCordialement,\nMarie",
+      "max_chars": 3000,
+      "result": "Je demande un remboursement."
+    },
+    {
+      "label": "upstream/portuguese_signoff",
+      "body": "Preciso de ajuda.\nAtenciosamente,\nMaria",
+      "max_chars": 3000,
+      "result": "Preciso de ajuda."
+    },
+    {
+      "label": "upstream/spanish_signoff",
+      "body": "Necesito ayuda.\nSaludos cordiales,\nJuan",
+      "max_chars": 3000,
+      "result": "Necesito ayuda."
+    },
+    {
+      "label": "upstream/device_footer",
+      "body": "Please refund it.\nSent from my Samsung Galaxy.",
+      "max_chars": 3000,
+      "result": "Please refund it."
+    },
+    {
+      "label": "upstream/device_mention_prose",
+      "body": "Please refund it.\nSent from my iPhone yesterday to support.",
+      "max_chars": 3000,
+      "result": "Please refund it.\nSent from my iPhone yesterday to support."
+    },
+    {
+      "label": "upstream/french_disclaimer",
+      "body": "Je demande un remboursement.\n\nCe message est confidentiel et réservé au destinataire.",
+      "max_chars": 3000,
+      "result": "Je demande un remboursement."
+    },
+    {
       "label": "inline_footer_no_blank_line",
       "body": "My account is locked.\nThis email is confidential and intended solely for the named addressee.\nPlease unlock it.",
       "max_chars": 3000,
@@ -10,7 +124,7 @@
       "label": "inline_footer_no_terminal_punctuation",
       "body": "My account is locked\nThis email is confidential and intended solely for the named addressee.\nPlease unlock it.",
       "max_chars": 3000,
-      "result": "Please unlock it."
+      "result": "My account is locked Please unlock it."
     },
     {
       "label": "inline_footer_body_never_emptied",

@@ -6283,7 +6283,14 @@
     },
     "usage": {
       "input_tokens": 2048,
-      "output_tokens": 0
+      "output_tokens": 0,
+      "state_tokens": 7894,
+      "state_tokens_dropped": 6901,
+      "truncated": true,
+      "truncated_questions": [
+        "frustrated",
+        "topic"
+      ]
     }
   }
 }

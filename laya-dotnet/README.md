@@ -322,7 +322,7 @@ foreach (var id in result.Ids)
             score.Score;                   // expected level: sum of i * p[i], fractional, 0..Legend.Count-1
             score.MostLikelyLevel;         // argmax level index
             score.Probabilities;           // IReadOnlyList<double>, one per level
-            score.Legend;                  // the level descriptions you supplied
+            score.Legend;                  // rendered level descriptions (structured criteria become JSON text)
             break;
 
         case NoulAnswer noul:
@@ -860,19 +860,21 @@ with `--solution` rather than as a positional argument.
 
 ## Known gaps
 
-This SDK tracks the Python SDK at **0.3.21** for everything above, but two modules are pinned to
-an older Python release and have not been ported forward yet:
-
-- **Language detection** (`LanguageDetection`) follows Python's `lang.py` at **0.3.6**.
-- **Email handling** (`LayaEmail`) follows Python's `email.py` at **0.3.6**.
-
-Bringing both up to 0.3.21 is planned as a follow-up; until then, treat their behavior as frozen
-at 0.3.6 even though the rest of the SDK (sequence building, JSON dialects, calibration and
-answers) has moved to 0.3.21.
+Default predictions and routing are verified against goldens regenerated from Python
+**0.3.24**. Language detection uses current script and mixed-language rules; `MixedSegment`
+identifies the foreign line or field that overrides a mostly-English state. Undetermined
+Latin text uses the router's configured default. Email cleaning follows current request,
+disclaimer, signature and reply-header rules, including Portuguese, Spanish and French markers.
 
 - **Opt-in features added in Python 0.3.21 are not ported yet:** abstention (`min_confidence`),
   `predict_long`, and per-language temperatures (`lang_temperatures`). They are off by default in
   Python, so default predictions are unaffected. They are planned as follow-ups.
+- **Other Python-only APIs are not ported:** hooks, batching APIs, question option ordering and
+  digest controls.
+- **Custom email-state body budgets:** `LayaEmail.State` does not expose Python's `max_chars`
+  keyword. Call `LayaEmail.CleanBody(body, maxChars)` and pass its result with `clean: false`.
+- **Usage diagnostics:** Python's `state_tokens`, `truncated`, `state_tokens_dropped` and
+  `truncated_questions` are not yet exposed by .NET's `Usage` record.
 
 ---
 
