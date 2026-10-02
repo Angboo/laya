@@ -132,6 +132,9 @@ Each metric is computed per answer where it applies and aggregated over the data
 | `score_mae` | `score` | mean absolute error |
 | `score_within_<tol>` | `score` | fraction within an absolute tolerance |
 | `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on `answer["answer_confidence"]`, the calibrated probability Laya reports on every answer type |
+| `brier` | any answer with a confidence and a known label | Brier score of confidence as P(correct), `mean((confidence - correct)**2)`; lower is better |
+| `aurc` | any answer with a confidence and a known label | area under the risk--coverage curve (mean selective risk over every coverage); lower is better, and rewards a confidence that *ranks* right from wrong rather than just being calibrated |
+| `selective_accuracy@50`, `selective_accuracy@80` | any answer with a confidence and a known label | accuracy over the most-confident 50% / 80% of answers -- what abstaining on the least-confident tail buys |
 | `mean_confidence` | any answer with a confidence | mean reported `answer["answer_confidence"]` |
 | `latency_p50_ms`, `latency_p95_ms` | per request | wall time each request waited, informational -- see [batching](#batching-and-timing) |
 | `cost_per_decision_p50_ms`, `cost_per_decision_p95_ms` | per decision | a call's wall time divided by the rows it carried, informational |
