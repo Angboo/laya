@@ -918,7 +918,11 @@ def _validate_batch_item(request: Any, i: int) -> dict:
         if key in request:
             item[key] = _validate_batch_str(request[key], "%s[%r]" % (where, key))
     if "lang_guess" in request:
-        item["lang_guess"] = request["lang_guess"]
+        # Type-check it the way the single-request path does (`validate_lang_guess`), instead of
+        # passing it through raw: a non-string (e.g. a JSON object) otherwise reached
+        # `_english_from_code(dict)`, stringified to something that matches no English subtag, and
+        # silently routed that item to the multilingual checkpoint instead of raising cleanly.
+        item["lang_guess"] = validate_lang_guess(request["lang_guess"])
     # `Router.predict_batch` reads both off the request dict and splits requests that ask for
     # different budgets into separate forward passes, so an item that names one must keep it.
     for key in ("max_len", "head_max_len"):

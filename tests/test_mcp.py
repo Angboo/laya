@@ -943,7 +943,7 @@ def test_batch_validation():
     # The message that lists the accepted keys must list the ones the validator keeps --
     # a client reads that list as the schema. Both directions, derived from the validator.
     probe = {"state": STATE, "questions": QUESTIONS, "model": "english", "task": "massive",
-             "lang": "en", "lang_guess": False, "max_len": 5, "head_max_len": 5}
+             "lang": "en", "lang_guess": "de", "max_len": 5, "head_max_len": 5}
     kept = set(validate_batch_requests([probe])[0])
     ok("batch/validation_covers_every_override",
        kept == {"state", "questions"} | set(BATCH_ITEM_OVERRIDES), repr(sorted(kept)))
@@ -976,6 +976,20 @@ def test_batch_predict():
                                                  router=router),
                       "invalid_questions")
     ok("batch/predict_not_called_on_bad_input", router.predict_batch_calls == [])
+
+    # A batch item's lang_guess is type-checked like the single-request path, not passed through
+    # raw -- a non-string otherwise reached core and silently misrouted the item.
+    router = BatchRouter()
+    expect_tool_error("batch/predict_item_lang_guess_type",
+                      lambda: laya_predict_batch([{"state": STATE, "questions": QUESTIONS,
+                                                   "lang_guess": {"not": "a string"}}], router=router),
+                      "invalid_lang_guess")
+    ok("batch/predict_bad_lang_guess_not_called", router.predict_batch_calls == [])
+    router = BatchRouter()
+    laya_predict_batch([{"state": STATE, "questions": QUESTIONS, "lang_guess": "de"}], router=router)
+    ok("batch/predict_item_lang_guess_forwarded",
+       router.predict_batch_calls[0][0][0].get("lang_guess") == "de",
+       repr(router.predict_batch_calls[0][0][0]))
 
     router = BatchRouter()
     out = laya_predict_batch(BATCH_REQUESTS, batch_size=8, router=router)
