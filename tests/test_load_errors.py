@@ -10,12 +10,16 @@ No network: the checkpoint is a tiny local one built here, the same shape
 
 Run: python tests/test_load_errors.py
 """
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import warnings
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_TORCH", "1")
@@ -218,6 +222,26 @@ err = load_error(short_temp)
 check_true("short temperature/raises ValueError", isinstance(err, ValueError), repr(err))
 check_true("short temperature/names the field", "temperature" in str(err), str(err))
 check_true("short temperature/says the shape", "list of 3" in str(err), str(err))
+
+
+# ------------------------------------------- 7. a device fallback warns instead of printing
+# Asking for a device this machine does not have falls back to CPU with a note. That note used
+# to be a bare `print`, so it landed on stdout -- where `laya --json` and `laya --batch --json`
+# write their records and where the MCP server speaks JSON-RPC. A warning goes to stderr and a
+# caller can filter it; a print breaks the stream and cannot be silenced.
+_stdout = io.StringIO()
+with warnings.catch_warnings(record=True) as caught, \
+        patch("torch.cuda.is_available", return_value=False), \
+        redirect_stdout(_stdout):
+    warnings.simplefilter("always")
+    _fallback = load(str(REPO), device="cuda")
+check("device fallback/lands on CPU", _fallback.device.type, "cpu")
+check("device fallback/writes nothing to stdout", _stdout.getvalue(), "")
+check_true("device fallback/warns instead",
+           any(issubclass(w.category, RuntimeWarning) and "CUDA requested" in str(w.message)
+               for w in caught),
+           str([str(w.message) for w in caught]))
+del _fallback
 
 
 TMP.cleanup()
