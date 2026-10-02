@@ -17,6 +17,7 @@ from `laya.common`, the same guard checkpoint load uses. There is no second pair
 bounds in this module.
 """
 import warnings
+from numbers import Integral
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -55,6 +56,35 @@ def _vec(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float32).reshape(-1)
 
 
+def _validated_pair(logits, target, k=None):
+    vectors = []
+    for name, value in (("logits", logits), ("target", target)):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        try:
+            vector = np.asarray(value)
+            if vector.ndim != 1 or vector.dtype.kind not in "iuf":
+                raise ValueError("%s must be a one-dimensional numeric vector" % name)
+            with np.errstate(over="ignore", invalid="ignore"):
+                vector = vector.astype(np.float32)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("%s must be a one-dimensional numeric vector" % name) from exc
+        if not np.isfinite(vector).all():
+            raise ValueError("%s must contain only finite values" % name)
+        vectors.append(vector)
+    logits, target = vectors
+    if len(logits) != len(target):
+        raise ValueError("logits and target must have the same length")
+    if k is None:
+        k = len(logits)
+    if isinstance(k, bool) or not isinstance(k, Integral) or k < 1 or k > len(logits):
+        raise ValueError("k must be an integer between 1 and the vector length")
+    logits, target = logits[:k], target[:k]
+    if (target < 0).any() or not np.isclose(target.sum(), 1.0, rtol=1e-5, atol=1e-6):
+        raise ValueError("target must be a nonnegative probability vector summing to 1")
+    return logits, target, int(k)
+
+
 def _pairs_to_tensors(pairs: Sequence) -> Tuple[torch.Tensor, torch.Tensor]:
     kmax = max(len(_vec(z)) for z, _ in pairs)
     z_mat = torch.full((len(pairs), kmax), -1e4)
@@ -62,7 +92,7 @@ def _pairs_to_tensors(pairs: Sequence) -> Tuple[torch.Tensor, torch.Tensor]:
     for i, (z, t) in enumerate(pairs):
         z = _vec(z)
         t = _vec(t)
-        n = min(len(z), len(t))
+        n = len(z)
         z_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(z[:n]))
         t_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(t[:n]))
     return z_mat, t_mat
@@ -80,7 +110,16 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
     """
     if min_n is None:
         min_n = MIN_BUCKET_N
-    sel = list(pairs)
+    if isinstance(min_n, bool) or not isinstance(min_n, Integral) or min_n < 1:
+        raise ValueError("min_n must be a positive integer")
+    sel = []
+    for pair in pairs:
+        try:
+            z, t = pair
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pair must be (logits, target)") from exc
+        z, t, _k = _validated_pair(z, t)
+        sel.append((z, t))
     if len(sel) < min_n:
         return 1.0
     z_mat, t_mat = _pairs_to_tensors(sel)
@@ -102,19 +141,19 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
 def _iter_records(records: Iterable) -> List[Tuple[int, np.ndarray, np.ndarray, int]]:
     out = []
     for rec in records:
+        if not isinstance(rec, (list, tuple)) or len(rec) not in (3, 4):
+            raise ValueError("record must be (qtype, logits, target[, k])")
         if len(rec) == 4:
             qtype, logits, target, k = rec
-        elif len(rec) == 3:
-            qtype, logits, target = rec
-            k = len(_vec(logits))
+            if k is None:
+                raise ValueError("k must be an integer between 1 and the vector length")
         else:
-            raise ValueError("record must be (qtype, logits, target[, k])")
-        logits = _vec(logits)
-        target = _vec(target)
-        k = int(k)
-        if k < 1:
-            raise ValueError("k must be >= 1")
-        out.append((int(qtype), logits[:k], target[:k], k))
+            qtype, logits, target = rec
+            k = None
+        if isinstance(qtype, bool) or not isinstance(qtype, Integral) or not 0 <= qtype < N_QTYPES:
+            raise ValueError("qtype must be an integer between 0 and %d" % (N_QTYPES - 1))
+        logits, target, k = _validated_pair(logits, target, k)
+        out.append((int(qtype), logits, target, k))
     return out
 
 

@@ -1824,9 +1824,27 @@ class Agent(HookRegistry):
             subfolder=getattr(self, "subfolder", None),
             config=getattr(self, "cfg", None),
         )
-        with open(path, "w") as f:
-            json.dump(payload, f, indent=2)
-            f.write("\n")
+        destination = os.path.realpath(path)
+        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(destination), prefix=".calibration.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                mode = os.stat(destination).st_mode & 0o777
+            except FileNotFoundError:
+                pass
+            else:
+                os.chmod(temporary, mode)
+            os.replace(temporary, destination)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
     def load_calibration(self, path: str) -> None:
         """Read a JSON map written by `save_calibration` onto this agent.
