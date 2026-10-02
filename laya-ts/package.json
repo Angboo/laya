@@ -9,12 +9,12 @@
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('../LICENSE', 'LICENSE')\"",
     "test": "vitest",
     "test:package": "node --test tests/package-e2e.mjs",
     "prepack": "npm run build"
   },
-  "files": ["dist", "scripts"],
+  "files": ["dist", "scripts/export_onnx.py"],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NandhaKishorM/laya.git",
