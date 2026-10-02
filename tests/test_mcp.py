@@ -1046,6 +1046,21 @@ def test_batch_predict():
     ok("batch/defaults_not_in_kwargs", "hooks_timeout" not in kwargs and 
        "min_confidence" not in kwargs and "sort_by_length" not in kwargs, repr(kwargs))
     
+    # Call-level controls are validated up front like every sibling tool: a bad value is a clean
+    # ToolError, not an internal_error that escaped the TypeError-only handler, and not a silent
+    # 1-second hook deadline from core's float(True) == 1.0.
+    expect_tool_error("batch/min_confidence_out_of_range",
+                      lambda: laya_predict_batch(BATCH_REQUESTS, min_confidence=1.5, router=BatchRouter()),
+                      "invalid_min_confidence")
+    expect_tool_error("batch/hooks_timeout_bool_rejected",
+                      lambda: laya_predict_batch(BATCH_REQUESTS, hooks_timeout=True, router=BatchRouter()),
+                      "invalid_hooks_timeout")
+    # min_confidence=0.0 is a real gate (abstain over nothing) and must still be forwarded.
+    router = BatchRouter()
+    laya_predict_batch(BATCH_REQUESTS, min_confidence=0.0, router=router)
+    _, kwargs = router.predict_batch_calls[0][1], router.predict_batch_calls[0][2]
+    ok("batch/min_confidence_zero_forwarded", kwargs.get("min_confidence") == 0.0, repr(kwargs))
+
     expect_tool_error("batch/predict_count_mismatch",
                       lambda: laya_predict_batch(BATCH_REQUESTS, router=ShortRouter()),
                       "internal_error")
