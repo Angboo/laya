@@ -21,17 +21,21 @@ from laya.calibrate import (  # noqa: E402
     ECE_HOLDOUT_FRAC,
     MIN_BUCKET_N,
     MIN_TYPE_N,
+    MIN_BINNING_BUCKET_N,
     _ece_report,
     _ece_split,
     _iter_records,
+    _softmax,
+    apply_binning_map,
     apply_calibration_payload,
+    fit_binning_map,
     calibration_payload,
     fit_one_temperature,
     fit_temperature_map,
     fit_temperatures,
     records_from_labeled,
 )
-from laya.common import QTYPES, TEMP_MAX, TEMP_MIN, temp_bucket  # noqa: E402
+from laya.common import QTYPES, TEMP_MAX, TEMP_MIN, ece_score, temp_bucket  # noqa: E402
 import laya.calibrate as _calibrate  # noqa: E402
 
 PASS, FAIL = [], []
@@ -487,6 +491,43 @@ for name in ("fit_temperatures", "fit_one_temperature", "fit_temperature_map"):
         _laya._LAZY_ATTRS.get(name),
         (".calibrate", name),
     )
+
+
+# --------------------------------------------------------------- histogram-binning recalibration
+check("binning/floor", MIN_BINNING_BUCKET_N, 200)
+bmap = fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"], bins=10)
+check_true("binning/keyed by temp_bucket", {"choice:2", "noul:2", "choice:11+", "choice:3-5"} <= set(bmap), set(bmap))
+check_true("binning/omits sub-floor bucket (score:3-5, n=5)", "score:3-5" not in bmap, set(bmap))
+_entry = bmap["choice:2"]
+check("binning/records bins", _entry["bins"], 10)
+check("binning/one value per bin", len(_entry["values"]), 10)
+check_true("binning/values are probabilities", all(0.0 <= v <= 1.0 for v in _entry["values"]), _entry["values"])
+
+# apply: a bucket with no map returns the confidence unchanged; edges clamp into range.
+check("binning/apply unknown bucket is identity", apply_binning_map(0.73, "choice:6-10", bmap), 0.73)
+check_true("binning/apply in range for conf=1.0", 0.0 <= apply_binning_map(1.0, "choice:2", bmap) <= 1.0)
+check_true("binning/apply in range for conf=0.0", 0.0 <= apply_binning_map(0.0, "choice:2", bmap) <= 1.0)
+
+# Binning reduces ECE where temperature alone cannot: recalibrate the temperature-scaled
+# confidences of a bucket and compare ECE on the same data.
+_qt = QTYPES["choice"]
+_tscale = fitted["temperature_by_options"].get("choice:2", fitted["temperature"][_qt])
+_cal_conf, _corr = [], []
+for qt, z, t, k in _iter_records(choice_k2):
+    p = _softmax(z[:k], _tscale)
+    _cal_conf.append(float(p.max()))
+    _corr.append(bool(int(p.argmax()) == int(np.argmax(t[:k]))))
+_binned = [apply_binning_map(c, "choice:2", bmap) for c in _cal_conf]
+_ece_temp = ece_score(np.asarray(_cal_conf), np.asarray(_corr))
+_ece_binned = ece_score(np.asarray(_binned), np.asarray(_corr))
+check_true("binning/lowers ECE vs temperature on the bucket",
+           _ece_binned < _ece_temp, "temp=%.4f binned=%.4f" % (_ece_temp, _ece_binned))
+
+try:
+    fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"], bins=0)
+    check_true("binning/bins must be >= 1", False, "no ValueError")
+except ValueError:
+    check_true("binning/bins must be >= 1", True)
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))

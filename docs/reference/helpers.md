@@ -62,6 +62,10 @@
 
 ::: laya.calibrate.fit_temperature_map
 
+::: laya.calibrate.fit_binning_map
+
+::: laya.calibrate.apply_binning_map
+
 ::: laya.common.render_options
 
 ::: laya.common.proper_reward

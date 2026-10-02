@@ -258,6 +258,71 @@ def fit_temperature_map(records: Iterable, compute_ece: bool = False, seed: int 
 fit_temperatures = fit_temperature_map
 
 
+# Per-bucket floor for histogram-binning recalibration. Higher than the abstention floor because a
+# binning map splits each bucket's examples across `bins`, so each bin needs its own sample; lower
+# than the temperature floor because binning is a count per bin, not an optimisation.
+MIN_BINNING_BUCKET_N = 200
+
+
+def fit_binning_map(records: Iterable, temperature: Sequence[float],
+                    temperature_by_options: Dict[str, float], *, bins: int = 15,
+                    min_bucket_n: int = MIN_BINNING_BUCKET_N) -> Dict[str, Dict[str, Any]]:
+    """Fit a per-`temp_bucket` histogram-binning recalibration map for `answer_confidence`.
+
+    Temperature scaling applies one scalar per bucket; it cannot fix a bucket whose reliability
+    curve is not a simple sharpening/softening (the pathological `choice:11+` the shipped English
+    checkpoint carries is one). Histogram binning is the non-parametric alternative: split the
+    calibrated confidences of a bucket into `bins` equal-width bins over [0, 1], and map every
+    confidence that lands in a bin to that bin's empirical accuracy. It needs no monotonicity
+    assumption and no extra dependency (NumPy only; isotonic regression would pull in scikit-learn).
+
+    `records` are the same `(qtype, logits, target[, k])` tuples `fit_temperature_map` consumes;
+    confidence is the calibrated `max(p)` (logits scaled by the fitted `temperature` /
+    `temperature_by_options` first), so a binning map composes on top of a temperature map rather
+    than replacing it. Returns `{bucket: {"bins": N, "values": [recalibrated confidence per bin]}}`;
+    buckets below `min_bucket_n` are omitted. Apply it with :func:`apply_binning_map`. An empty bin
+    (a confidence range the calibration set never produced) maps to its own midpoint, i.e. leaves
+    that region unchanged, so an unseen value is never recalibrated to a fabricated 0.
+    """
+    if bins < 1:
+        raise ValueError("bins must be >= 1, got %r" % (bins,))
+    recs = _iter_records(records)
+    by_bucket: Dict[str, List[Tuple[float, int]]] = {}
+    for qt, z, t, k in recs:
+        y = int(np.argmax(t[:k]))
+        t_scale = temperature_by_options.get(temp_bucket(qt, k), temperature[qt])
+        p = _softmax(z[:k], t_scale)
+        by_bucket.setdefault(temp_bucket(qt, k), []).append((float(p.max()), int(int(p.argmax()) == y)))
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, pairs in by_bucket.items():
+        if len(pairs) < min_bucket_n:
+            continue
+        conf = np.asarray([c for c, _ in pairs], dtype=float)
+        corr = np.asarray([c for _, c in pairs], dtype=float)
+        idx = np.clip((conf * bins).astype(int), 0, bins - 1)
+        values = []
+        for b in range(bins):
+            mask = idx == b
+            values.append(float(corr[mask].mean()) if mask.any() else (b + 0.5) / bins)
+        out[key] = {"bins": bins, "values": values}
+    return out
+
+
+def apply_binning_map(confidence: float, bucket: str,
+                      binning_map: Dict[str, Dict[str, Any]]) -> float:
+    """Recalibrate one `answer_confidence` for its option-count `bucket` (`common.temp_bucket`).
+
+    Returns the confidence unchanged when the map has no entry for the bucket, so a bucket the map
+    was not fit for passes through rather than being forced to a wrong value.
+    """
+    entry = binning_map.get(bucket)
+    if not entry:
+        return float(confidence)
+    bins = int(entry["bins"])
+    b = min(bins - 1, max(0, int(float(confidence) * bins)))
+    return float(entry["values"][b])
+
+
 def records_from_labeled(agent, pairs: Sequence) -> List[Record]:
     """Collect CPU records from `(state, questions, targets)`.
 
