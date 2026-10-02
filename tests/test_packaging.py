@@ -263,6 +263,19 @@ for _path in _md:
 
 check("md/no link to a file that does not exist", _broken_files, [])
 check("md/no anchor that matches no heading", _broken_anchors, [])
+
+# ------------------------------------------------- published READMEs link absolutely
+# `pyproject.toml` uses README.md as the PyPI long description, and PyPI renders it standalone, so a
+# repo-relative target 404s there; the same is true of the npm-published `sdk/typescript` and
+# `laya-ts` READMEs. The check above only proves the target exists in-repo, which is exactly why
+# this went unnoticed -- a relative link is a local success and a published failure.
+for _pub in ("README.md", "sdk/typescript/README.md", "laya-ts/README.md"):
+    if not os.path.exists(os.path.join(ROOT, _pub)):
+        continue
+    _rel = [u for _, u in re.findall(r"\[([^\]]*)\]\(([^)\s]+?)(?:\s+\"[^\"]*\")?\)", read(_pub))
+            if not u.startswith(("http://", "https://", "mailto:", "data:", "#"))]
+    check("published/%s links absolutely" % _pub, _rel, [])
+
 # ---------------------------------------------------------------- Compose layout
 # `compose.http.yaml` is an override, so it is merged onto `compose.yaml` rather than
 # read on its own. These checks are textual because the suite takes no third-party

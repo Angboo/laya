@@ -41,7 +41,7 @@ Set `LAYA_PRELOAD=0` to defer loading until the first prediction. Initial loads
 download weights and need sufficient memory and disk space. The client timeout
 defaults to 120 seconds; the example allows 10 minutes for a cold load. Server
 configuration uses environment variables, not command-line flags. See the
-[server guide](../../README.md#self-hosting-http-server-jev-compatible).
+[server guide](https://github.com/NandhaKishorM/laya/blob/main/README.md#self-hosting-http-server-jev-compatible).
 
 ## Install in another JavaScript project
 
@@ -159,7 +159,7 @@ await laya.predict(state, questions, { model: 'multilingual' });
 ```
 
 Laya accepts its local checkpoint aliases. The HTTP endpoint forwards the
-per-request controls documented in the [HTTP API](../../docs/http-api.md)
+per-request controls documented in the [HTTP API](https://github.com/NandhaKishorM/laya/blob/main/docs/http-api.md)
 reference, and this client exposes them as options on `predict()`:
 
 | option | wire field | meaning |

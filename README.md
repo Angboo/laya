@@ -31,7 +31,7 @@ With [uv](https://docs.astral.sh/uv/), run `uv add laya` in a uv project or `uv 
 
 Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[llamaindex]` (LlamaIndex selectors), `laya[crewai]` (CrewAI routing), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
 
-For TypeScript / Node.js / browser, see [`laya-ts/`](laya-ts/). npm releases (`npm install laya-ts`) are published from this repository's `laya-ts-v*` release tags.
+For TypeScript / Node.js / browser, see [`laya-ts/`](https://github.com/NandhaKishorM/laya/tree/main/laya-ts/). npm releases (`npm install laya-ts`) are published from this repository's `laya-ts-v*` release tags.
 
 **Long documents.** `laya-multilingual` reads up to 8,192 tokens with `max_len=8192`. Measured accuracy and time by document length, reproducible with [`research/scripts/bench_long_context.py`](https://github.com/NandhaKishorM/laya/blob/main/research/scripts/bench_long_context.py):
 
@@ -88,7 +88,7 @@ From the command line, `laya "My payment failed twice" --preset triage` answers 
 
 The shipped checkpoints work zero-shot, but fine-tuning on decisions from your own domain is where accuracy jumps. On the typed-decisions benchmark (2,000 decisions across four workflows), the fine-tuned `laya-typed-decisions` checkpoint scores **0.766** accuracy, against **0.362** for the base English checkpoint on the same decisions.
 
-**[Fine-tuning notebook](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)** (Kaggle 2xT4) and **[Apple Silicon script](notebooks/laya_finetune_typed_decisions_mps.py)** (MPS / CPU): run the whole loop (build dataset, train with RLCD, calibrate temperatures, evaluate, export). Details in [Fine-Tuning](#fine-tuning).
+**[Fine-tuning notebook](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)** (Kaggle 2xT4) and **[Apple Silicon script](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_mps.py)** (MPS / CPU): run the whole loop (build dataset, train with RLCD, calibrate temperatures, evaluate, export). Details in [Fine-Tuning](#fine-tuning).
 
 ## Documentation
 
@@ -330,7 +330,7 @@ Both `/predict` and `/predict/batch` also accept the four per-call controls `lay
 forwards on `/v1/systemone`: `lang_guess` (a soft ISO hint that participates in routing, where
 `lang` skips detection entirely), `max_len` and `head_max_len` (per-call token-budget overrides,
 capped by `LAYA_MAX_TOKEN_BUDGET`), and `min_confidence` (core's abstention threshold; the answer
-comes back with a `gate` field naming whether it fired). An absent key means "inherit what the
+comes back with `abstention` and `abstention_threshold` fields naming whether it fired). An absent key means "inherit what the
 Router was built with", so a caller never has to send them back as `null`; a body that names
 `hooks`, `hooks_raise`, `hooks_timeout`, `on_predict_start`, or `on_predict_end` is refused with
 422 rather than silently dropped, matching what `laya-serve` does for the same fields. On
@@ -350,7 +350,7 @@ Measured on the running server: 64 real reviews of 91–2,293 characters, one ch
 
 ### JavaScript / TypeScript
 
-[`laya-client`](sdk/typescript/README.md) supports JavaScript and TypeScript
+[`laya-client`](https://github.com/NandhaKishorM/laya/blob/main/sdk/typescript/README.md) supports JavaScript and TypeScript
 applications over HTTP to a self-hosted `laya-serve` `/v1/systemone` server. It
 includes inferred answer types, all five question presets, ESM/CommonJS exports,
 and cancellation.
@@ -371,15 +371,15 @@ The npm package is named `laya-client`. Use it when a JavaScript or TypeScript
 application talks over HTTP to self-hosted Python `laya-serve`. Use `laya-ts`
 when inference must run directly inside JavaScript through its local ONNX
 runtime, without a Python server.
-See [installation, examples, and publishing](sdk/typescript/README.md) and the
-[repository analysis](docs/typescript-sdk.md) for architecture and scope.
+See [installation, examples, and publishing](https://github.com/NandhaKishorM/laya/blob/main/sdk/typescript/README.md) and the
+[repository analysis](https://github.com/NandhaKishorM/laya/blob/main/docs/typescript-sdk.md) for architecture and scope.
 
 ---
 
 ## Quickstart: Route Mode (Recommended)
 
 To try the Python SDK in a CPU container, see the
-[Docker Compose quickstart](docs/docker.md). It runs a sample request and keeps
+[Docker Compose quickstart](https://github.com/NandhaKishorM/laya/blob/main/docs/docker.md). It runs a sample request and keeps
 downloaded models between runs.
 
 Laya ships three checkpoints. The built-in **`Router`** is the recommended entry point: it evaluates any state in any language, automatically detects scripts and languages in sub-milliseconds, and dispatches to the optimal checkpoint in a single forward pass.
@@ -490,7 +490,7 @@ router.route({"body": "Please refund the duplicate charge"}).model  # -> english
 
 Running one of the shipped servers rather than your own `Router`, the same setting is
 `LAYA_DEFAULT_MODEL=multilingual` — in the environment of `laya-serve`, the MCP server or the
-`laya-serve` container ([docs/docker.md](docs/docker.md)). It is the routing fallback only: text
+`laya-serve` container ([docs/docker.md](https://github.com/NandhaKishorM/laya/blob/main/docs/docker.md)). It is the routing fallback only: text
 the detector can place is routed on what it detects, whatever this is set to.
 
 ### Heterogeneous routed batches
@@ -513,7 +513,7 @@ Each item can independently set `model`, `task`, `lang`, `lang_guess`, or the to
 
 Requests are validated before model loading. Different requests may use different question schemas; requests sharing a checkpoint, question schema and token budget are passed together to `Agent.predict_batch()`.
 
-[Prediction hooks](#prediction-hooks) installed on the `Router` run once per request, as they do for `predict()`, so a redaction hook rewrites every state before the model sees it. Requests that share a checkpoint run all their start hooks before their shared forward pass; see [`docs/hooks/lifecycle.md`](docs/hooks/lifecycle.md#routerpredict_batch).
+[Prediction hooks](#prediction-hooks) installed on the `Router` run once per request, as they do for `predict()`, so a redaction hook rewrites every state before the model sees it. Requests that share a checkpoint run all their start hooks before their shared forward pass; see [`docs/hooks/lifecycle.md`](https://github.com/NandhaKishorM/laya/blob/main/docs/hooks/lifecycle.md#routerpredict_batch).
 
 You can also bound the Agent-level forward-pass batch size, and forward the length grouping knob
 to every group (see [Batch Mode](#batch-mode-score-many-states-in-one-forward-pass)):
@@ -756,7 +756,7 @@ your workload, particularly with mixed precision. Batching is a **GPU
 throughput win** — on an RTX 5060 Ti, per-decision latency drops from ~10 ms one-by-one to ~1 ms
 batched (measured ~9–10×). On CPU, increasing batch size alone may not speed up inference;
 length grouping can help by reducing the padded work in a mixed-length workload. See the
-[CPU measurements and reproduction commands](research/README.md#length-batching).
+[CPU measurements and reproduction commands](https://github.com/NandhaKishorM/laya/blob/main/research/README.md#length-batching).
 
 `ONNXAgent.predict_batch(states, questions, batch_size=..., sort_by_length=...)` has the same
 contract, backed by one ONNX Runtime session run per chunk, so an ONNX deployment gets the same
@@ -840,9 +840,9 @@ agent.predict(state, questions)                            # same API, same answ
 
 Numerics: on a fixed set of 60 states the fast path stays within 0.046 of an fp32 forward and within 0.076 of the stock
 bf16 path (max |Δp| ≤ 0.05 vs fp32 on both checkpoints, argmax agreement ≥ 47/48 per question type; every per-option
-probability is in `benchmarks/results/parity_*.json`) — see `benchmarks/parity_fast.py` and [BENCHMARKS.md](BENCHMARKS.md#gpu-fast-path).
+probability is in `benchmarks/results/parity_*.json`) — see `benchmarks/parity_fast.py` and [BENCHMARKS.md](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#gpu-fast-path).
 The fast path runs in the agent's autocast dtype at the time `accelerate()` is called: bf16 by default, fp16 if
-`agent.dtype` is `torch.float16`, where it stays within 0.009 of fp32 on the same set ([BENCHMARKS.md](BENCHMARKS.md#fp16)).
+`agent.dtype` is `torch.float16`, where it stays within 0.009 of fp32 on the same set ([BENCHMARKS.md](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#fp16)).
 Falls back to the stock forward on CPU/MPS or when `tilelang` is not installed; `agent.deaccelerate()`
 restores it. Kernels compile once per shape bucket on first use (a few seconds, cached on disk).
 
@@ -884,7 +884,7 @@ else:
     escalate_to_human_agent(dept, reason=f"Low confidence ({conf:.2f})")
 ```
 
-A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) below, and the [fine-tuning notebook](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
+A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) below, and the [fine-tuning notebook](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
 
 A threshold also depends on the autocast dtype. On CUDA at compute capability 8 or above the runtime uses the checkpoint's `amp_dtype`, which is bf16 for all three shipped checkpoints. On the fixed set from `benchmarks/parity_fast.py` (60 states, 288 questions per checkpoint, RTX 2000 Ada) bf16 moves a probability by up to 0.073 against the fp32 forward and flips 3 of 864 argmaxes across the three checkpoints; fp16 stays within 0.019 and flips none, at the same latency. `LAYA_CUDA_AMP=fp16` selects fp16 and `LAYA_CUDA_AMP=bf16` selects bf16 (`LAYA_CPU_AMP=bf16` is the CPU counterpart). MPS autocasts in fp16 too, but the overhead dominates on a single small row, so there it engages only once a call reaches `mps_amp_min_rows` rows -- 5 by default, `LAYA_MPS_AMP_MIN_ROWS` to move it; a value that does not parse falls back to 5 and anything below 1 is clamped to 1. On MPS, `agent.dtype` is the autocast target, so it says float16 even when every call stays below the gate and runs in fp32; `agent.dtype_for(rows)` returns the precision a call with that many rows runs in. Fit and measure a threshold in the dtype you serve with.
 
@@ -902,7 +902,7 @@ else:
     route_automatically(ans["choice"])
 ```
 
-The threshold reads `answer_confidence` (`max(p)`) — the calibrated quantity, invariant to the number of options — never the entropy `confidence`. With `decide(..., min_confidence=...)` a low-confidence field comes back as `None` in the schema output, while `return_details=True` keeps the answer and its confidence. [LangChain `LayaRouter`](docs/langchain.md)'s `confidence_threshold` reads the same value: `answer_confidence` when the answer carries it, `confidence` otherwise. Left unset, `min_confidence` changes nothing.
+The threshold reads `answer_confidence` (`max(p)`) — the calibrated quantity, invariant to the number of options — never the entropy `confidence`. With `decide(..., min_confidence=...)` a low-confidence field comes back as `None` in the schema output, while `return_details=True` keeps the answer and its confidence. [LangChain `LayaRouter`](https://github.com/NandhaKishorM/laya/blob/main/docs/langchain.md)'s `confidence_threshold` reads the same value: `answer_confidence` when the answer carries it, `confidence` otherwise. Left unset, `min_confidence` changes nothing.
 
 A gate is a policy, and a policy whose application you cannot observe is not one. `low_confidence` is written only when the gate fires, so its absence cannot tell you "a gate ran and this answer cleared it" apart from "no gate ran at all" — you could neither compute an abstention rate nor prove the gate was in effect. **When you pass `min_confidence`,** every answer therefore also reports `abstention`:
 
@@ -955,7 +955,7 @@ agent.system_one("I was charged twice.", {"urgent": {"type": "noul", "instructio
 A hook is a plain callable, or an object implementing any of `on_predict_start`,
 `on_predict_end`, `on_route`, `on_load`, `on_evict`, `on_error`. A start hook can rewrite the
 state/questions or `ctx.skip(...)` a cached answer; an end hook can rewrite the result. See
-[**`docs/hooks/`**](docs/hooks/index.md) and [`examples/hooks/`](examples/hooks/).
+[**`docs/hooks/`**](https://github.com/NandhaKishorM/laya/blob/main/docs/hooks/index.md) and [`examples/hooks/`](https://github.com/NandhaKishorM/laya/tree/main/examples/hooks/).
 
 ---
 
@@ -984,7 +984,7 @@ agent.decide("I was charged twice, refund me.", schema=schema)
 
 `decide` also works on a `Router`, accepts a pydantic model (install `laya[structured]`), and can
 return per-field confidence with `return_details=True`. In an LCEL chain or LangGraph node the
-same call is `LayaDecision`. See [`docs/structured.md`](docs/structured.md).
+same call is `LayaDecision`. See [`docs/structured.md`](https://github.com/NandhaKishorM/laya/blob/main/docs/structured.md).
 
 For throughput, `decide_batch` answers a list of states against the *same* schema through
 `predict_batch` (see [Batch Mode](#batch-mode-score-many-states-in-one-forward-pass)), so the schema
@@ -1071,7 +1071,7 @@ routing batch, **2.2x** across 24 mixed-language tickets through a `Router`, **1
 preset, with every route label and guardrail flag unchanged. On CPU the same workloads are
 2.2-2.4x over the one-by-one loop and 1.1-1.5x over the thread pool.
 
-See [**`docs/langchain.md`**](docs/langchain.md) for the full guide, support ticket triage nodes, and remote HTTP server configuration.
+See [**`docs/langchain.md`**](https://github.com/NandhaKishorM/laya/blob/main/docs/langchain.md) for the full guide, support ticket triage nodes, and remote HTTP server configuration.
 
 ---
 
@@ -1184,7 +1184,7 @@ Example MCP client configuration (stdio transport):
 ```
 
 The environment variables follow the contract documented at the top of
-[`laya/serve.py`](laya/serve.py), so the same variable has one meaning across the
+[`laya/serve.py`](https://github.com/NandhaKishorM/laya/blob/main/laya/serve.py), so the same variable has one meaning across the
 package:
 
 | Variable | Default | Meaning |
@@ -1239,15 +1239,15 @@ laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0
 `ece`, `mean_confidence`, latency) and exits non-zero on a threshold or baseline failure, so it
 drops into CI unchanged. A weight-free job runs the metric and API tests on every PR, and a
 scheduled workflow evaluates the English checkpoint against the committed baseline. See
-[**`docs/evals.md`**](docs/evals.md) for the dataset format and the gate.
+[**`docs/evals.md`**](https://github.com/NandhaKishorM/laya/blob/main/docs/evals.md) for the dataset format and the gate.
 
 ---
 
 ## Benchmarks
 
-Community diagnostics: [Chinese workplace decisions (Feishu-style)](research/benchmarks/feishu_zh/README.md) · [中文说明](research/benchmarks/feishu_zh/README.zh-CN.md). Includes frozen synthetic cases, archived paired Laya/Jev responses, and an offline audit; separate from the benchmark suites below. Also [Chinese short-command routing](research/benchmarks/zh_short_commands/README.md) · [中文说明](research/benchmarks/zh_short_commands/README.zh-CN.md): 18 frozen commands and a seven-rung ablation of the documented prompt guidance, which locates the accuracy loss on the four-question path rather than the six-option one.
+Community diagnostics: [Chinese workplace decisions (Feishu-style)](https://github.com/NandhaKishorM/laya/blob/main/research/benchmarks/feishu_zh/README.md) · [中文说明](https://github.com/NandhaKishorM/laya/blob/main/research/benchmarks/feishu_zh/README.zh-CN.md). Includes frozen synthetic cases, archived paired Laya/Jev responses, and an offline audit; separate from the benchmark suites below. Also [Chinese short-command routing](https://github.com/NandhaKishorM/laya/blob/main/research/benchmarks/zh_short_commands/README.md) · [中文说明](https://github.com/NandhaKishorM/laya/blob/main/research/benchmarks/zh_short_commands/README.zh-CN.md): 18 frozen commands and a seven-rung ablation of the documented prompt guidance, which locates the accuracy loss on the four-question path rather than the six-option one.
 
-**Full report: [`BENCHMARKS.md`](BENCHMARKS.md)** — every run consolidated, languages and themes, with per-language detail for all 51 languages.
+**Full report: [`BENCHMARKS.md`](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md)** — every run consolidated, languages and themes, with per-language detail for all 51 languages.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/laya_benchmark.png" alt="Per-language accuracy for both checkpoints across 51 languages" width="100%" />
@@ -1255,7 +1255,7 @@ Community diagnostics: [Chinese workplace decisions (Feishu-style)](research/ben
 
 All Laya numbers below are measured. Every model answered byte-identical questions
 (fixed seed) in the same run. Reproduce with
-[`research/scripts/laya_benchmark_colab.ipynb`](research/scripts/laya_benchmark_colab.ipynb) on a T4.
+[`research/scripts/laya_benchmark_colab.ipynb`](https://github.com/NandhaKishorM/laya/blob/main/research/scripts/laya_benchmark_colab.ipynb) on a T4.
 
 ### Speed (Tesla T4, measured)
 
@@ -1300,7 +1300,7 @@ failure for anything branching on confidence.
 * **Soft distribution matching:** On typed-decisions, while Laya achieves higher argmax accuracy (0.766 vs 0.727), Jev achieves higher soft accuracy (0.580 vs 0.471) against the teacher's full probability distributions.
 * **Out-of-the-box raw calibration:** Before temperature scaling, the base checkpoint has higher raw ECE (0.213 vs 0.144). Laya achieves its 0.081 ECE after domain temperature fitting.
 
-Full detail, including every workflow and all 51 languages: **[`BENCHMARKS.md`](BENCHMARKS.md)**.
+Full detail, including every workflow and all 51 languages: **[`BENCHMARKS.md`](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md)**.
 
 ### typed-decisions, measured on all three checkpoints
 
@@ -1340,7 +1340,7 @@ All of the capability on this benchmark comes from fine-tuning. Base rows match 
 Across all 51 languages the English checkpoint macro-averages **0.227** with macro ECE
 **0.733** *(0.571 as served, after the temperature clamp)*, and only 23 of 51 languages clear
 3x random. `laya-multilingual` reaches **0.401** on the same 5,100 cases, clearing 3x random in
-48 of 51 — see [BENCHMARKS.md](BENCHMARKS.md) for why those multilingual numbers are a re-run
+48 of 51 — see [BENCHMARKS.md](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md) for why those multilingual numbers are a re-run
 rather than the committed file. Khmer scores **0.000 at 95.2% confidence** raw, **70.5%** as
 served, on the English checkpoint. This is why
 [`Router`](#quickstart-route-mode-recommended) exists: the model's own
@@ -1403,7 +1403,7 @@ failure; it does not establish calibrated confidence.
     The crossover is at `k ≈ head_max_len / 4` and the gap widens from there; `MAX_CHOICE_OPTIONS = 100` in `laya/serve.py` puts the overstating regime within reach over HTTP.
 
   At default settings, a 77-option question like Banking77 allocates only `(256 - 16) // 77` ≈ 3–4 tokens per label, which causes accuracy to fall off sharply (0.425 vs Jev's 0.870). If evaluating 50+ options in a single question:
-  1. Raise `agent.cfg["head_max_len"] = 512` and `agent.cfg["max_len"] = 1024` (or up to 2048 / 4096 / 8192) so every option has enough tokens to remain distinct. Both are also per-request: `predict(state, questions, head_max_len=512, max_len=1024)` widens one question without changing the agent for everyone else, and every LangChain node takes the same two arguments ([LangChain guide](docs/langchain.md)). `laya --questions` takes the same two budgets as `--max-len` / `--head-max-len`.
+  1. Raise `agent.cfg["head_max_len"] = 512` and `agent.cfg["max_len"] = 1024` (or up to 2048 / 4096 / 8192) so every option has enough tokens to remain distinct. Both are also per-request: `predict(state, questions, head_max_len=512, max_len=1024)` widens one question without changing the agent for everyone else, and every LangChain node takes the same two arguments ([LangChain guide](https://github.com/NandhaKishorM/laya/blob/main/docs/langchain.md)). `laya --questions` takes the same two budgets as `--max-len` / `--head-max-len`.
   2. Or shortlist with embeddings and run one forward pass on the top `k` labels (`predict_shortlist`, example below). `predict` and `system_one` still score every criterion they are given.
   3. Or split the label set yourself into a coarse question and a fine question.
 
@@ -1494,8 +1494,8 @@ Shortlisting the same option set on every request re-embeds option texts that do
 
 Fine-tune Laya on your own domain data. Two training options are provided:
 
-* **[`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)**: runs on Kaggle's free 2xT4 GPUs (DDP) and does the whole loop: build the dataset, train with RLCD (proper-scoring-rule rewards, GRPO-style policy gradient), fit calibration temperatures, evaluate, and push the result to the Hub.
-* **[`notebooks/laya_finetune_typed_decisions_mps.py`](notebooks/laya_finetune_typed_decisions_mps.py)**: standalone training script for Apple Silicon MacBooks (PyTorch MPS with CPU fallback). Replaces DDP with single-process training and configurable micro-batches and gradient accumulation.
+* **[`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)**: runs on Kaggle's free 2xT4 GPUs (DDP) and does the whole loop: build the dataset, train with RLCD (proper-scoring-rule rewards, GRPO-style policy gradient), fit calibration temperatures, evaluate, and push the result to the Hub.
+* **[`notebooks/laya_finetune_typed_decisions_mps.py`](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_mps.py)**: standalone training script for Apple Silicon MacBooks (PyTorch MPS with CPU fallback). Replaces DDP with single-process training and configurable micro-batches and gradient accumulation.
 
 For Apple Silicon (e.g. 16 GB MacBook), fine-tuning runs locally with unified memory:
 
@@ -1534,7 +1534,7 @@ Runtime on 2xT4 is roughly 4-5 hours for 4 epochs over ~30k questions.
 
 ### Worked example: a browser-agent decision head
 
-[`docs/finetune_browser_agent.md`](docs/finetune_browser_agent.md) records a complete specialisation
+[`docs/finetune_browser_agent.md`](https://github.com/NandhaKishorM/laya/blob/main/docs/finetune_browser_agent.md) records a complete specialisation
 on a single 16 GB GPU with no paid API: Laya as the operation/target decider for
 [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (same request format as
 TypeSafe Jev). Element top-1 among ~45 candidates goes from 0.10 zero-shot to 0.66, real-task
