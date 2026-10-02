@@ -25,15 +25,16 @@ class ShortlistCosineTests(unittest.TestCase):
         self.assertEqual(len(sims), 0)
 
 
-# A query of [1, 0] against six option vectors, so the whole signed range is in play:
+# A query of [1, 0] against seven option vectors, so the whole signed range is in play:
 # pos is cosine 1, orth scores 0 by being perpendicular, zero by having no signal, nan
-# by being non-finite, n2 is -0.707 and n1 is -1.
+# and inf by being non-finite, n2 is -0.707 and n1 is -1.
 VECTORS = {
     "q": [1.0, 0.0],
     "pos": [1.0, 0.0],
     "orth": [0.0, 1.0],
     "zero": [0.0, 0.0],
     "nan": [float("nan"), float("nan")],
+    "inf": [float("inf"), 0.0],
     "n2": [-1.0, 1.0],
     "n1": [-1.0, 0.0],
 }
@@ -102,6 +103,12 @@ class ShortlistOrderingTests(unittest.TestCase):
     def test_a_non_finite_vector_scores_zero_not_last(self):
         self.assertEqual(ranked(["nan", "orth", "n1"], 2), ["nan", "orth"])
 
+    def test_an_infinite_vector_is_zeroed_before_ranking(self):
+        # A NaN row already reaches 0 through _cosine's own guard on a non-positive
+        # denominator, so only an infinite row can arrive at the ranker as a NaN
+        # similarity -- and a NaN sorts last, which would drop the label silently.
+        self.assertEqual(ranked(["inf", "orth", "n1"], 2), ["inf", "orth"])
+
     def test_ties_come_back_in_criteria_order_not_in_argsort_order(self):
         # The docstrings' whole tie-break promise is that equal scores fall back to the
         # declared order. Ten labels tie at 1.0 and ten at 0.0, so the kept twelve are the
@@ -158,7 +165,9 @@ class ShortlistOrderingDocTests(unittest.TestCase):
 
     DOES_NOT_OUTRANK = re.compile(r"does not outrank", re.I)
     NAMES_NEGATIVE_SIDE = re.compile(r"negative|below 0|points away", re.I)
-    NAMES_THE_TIE_RULE = re.compile(r"ties keep|earlier label", re.I)
+    # "earlier label" alone would not do: the counter-case clause says it too, so the
+    # rule asks for the tie itself to be named.
+    NAMES_THE_TIE_RULE = re.compile(r"\bties\b|equal scores|same score", re.I)
     RANK_ORDER = re.compile(r"rank(?:ing)? order", re.I)
     UNRANKED_PATH = re.compile(r"criteria order|declared order|input order", re.I)
     SIGNED_SCORES = re.compile(r"signed (?:cosine|similarity|score)", re.I)
