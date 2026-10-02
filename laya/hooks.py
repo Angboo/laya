@@ -284,12 +284,16 @@ def run_coroutine_sync(coro: Awaitable[Any], loop: Optional[asyncio.AbstractEven
     """
     if loop is not None:
         if not loop.is_running():
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise ValueError("run_coroutine_sync: the loop passed is not running")
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
             running = None
         if loop is running:
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise ValueError(
                 "run_coroutine_sync: the loop passed is running in the calling thread; "
                 "blocking on it would deadlock"

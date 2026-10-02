@@ -7,6 +7,7 @@ with `_encode_state` / `_forward` / `_decode_answers` stubbed). The Router path 
 Run: python tests/test_hooks.py
 """
 import contextvars
+import inspect
 import os
 import sys
 import threading
@@ -1487,22 +1488,26 @@ check_raises("timeout/zero per call is rejected", ValueError,
 
 not_running = asyncio.new_event_loop()
 try:
+    c = _seven()
     check_raises("async/a non-running loop is rejected", ValueError,
-                 lambda: run_coroutine_sync(_seven(), loop=not_running))
+                 lambda: run_coroutine_sync(c, loop=not_running))
+    check_true("async/a non-running loop closes the coroutine",
+               inspect.getcoroutinestate(c) == "CORO_CLOSED")
 finally:
     not_running.close()
 
 
 async def _own_loop():
     own = asyncio.get_running_loop()
+    c = _seven()
     try:
-        run_coroutine_sync(_seven(), loop=own)
+        run_coroutine_sync(c, loop=own)
     except ValueError:
-        return "raised"
+        return "closed" if inspect.getcoroutinestate(c) == "CORO_CLOSED" else "raised"
     return "no"
 
 
-check("async/the calling thread's own loop is rejected", asyncio.run(_own_loop()), "raised")
+check("async/the calling thread's own loop is rejected", asyncio.run(_own_loop()), "closed")
 check_raises("async/AsyncHook rejects an object with no events", TypeError,
              lambda: AsyncHook(object()))
 
