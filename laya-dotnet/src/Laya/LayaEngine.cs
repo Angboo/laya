@@ -220,7 +220,9 @@ public sealed class LayaEngine : IDisposable, ILayaPredictor
                 // at all, so its logit would score whatever token happens to sit at position 0.
                 if (markers.Length != SequenceBuilder.RenderOptions(question).Count)
                     throw new ArgumentException(
-                        $"question '{id}' options exceed head_max_len={Config.HeadMaxLen}", nameof(questions));
+                        $"question '{id}': only {markers.Length} of its {SequenceBuilder.RenderOptions(question).Count} "
+                        + $"option markers fit in max_len={Config.MaxLen} with head_max_len={Config.HeadMaxLen} "
+                        + "spent on the question; lower head_max_len, raise max_len, or use fewer options", nameof(questions));
 
                 items.Add(new SequenceItem(seq, markers, question.Type));
             }
