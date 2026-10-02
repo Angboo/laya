@@ -1494,12 +1494,19 @@ from laya.hooks import validate_timeout  # noqa: E402
 
 check_raises("timeout/zero is rejected", ValueError, lambda: validate_timeout(0))
 check_raises("timeout/negative is rejected", ValueError, lambda: validate_timeout(-0.5))
+check_raises("timeout/NaN is rejected", ValueError, lambda: validate_timeout(float("nan")))
+check_raises("timeout/infinity is rejected", ValueError, lambda: validate_timeout(float("inf")))
+check_raises("timeout/-infinity is rejected", ValueError, lambda: validate_timeout(float("-inf")))
 check("timeout/positive passes through", validate_timeout(1.5), 1.5)
 check("timeout/None means no limit", validate_timeout(None), None)
 
 f = make_fake()
 check_raises("timeout/zero per call is rejected", ValueError,
              lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=0))
+check_raises("timeout/NaN per call is rejected", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("nan")))
+check_raises("timeout/infinity per call is rejected", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("inf")))
 
 not_running = asyncio.new_event_loop()
 try:
