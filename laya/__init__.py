@@ -121,4 +121,12 @@ __all__ = [
     "DecisionResult",
     "PINNED_REVISIONS",
     "__version__",
+    # Submodules for direct import paths
+    "confidence",
+    "email",
+    "hooks",
+    "lang",
+    "presets",
+    "router",
+    "structured",
 ]
