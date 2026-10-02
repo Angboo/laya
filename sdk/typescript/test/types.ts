@@ -1,4 +1,5 @@
-import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer, type Usage } from 'laya-client';
+import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer,
+  type Usage, type LanguageDetection } from 'laya-client';
 
 const client = new Laya();
 const questions = defineQuestions({
@@ -21,6 +22,7 @@ const stateTokensDropped: number = result.usage.state_tokens_dropped;
 const truncated: boolean = result.usage.truncated;
 const truncatedQuestions: string[] = result.usage.truncated_questions;
 const collapsedSpans: number | null | undefined = result.usage.options?.refund?.tokens_per_option;
+const mixedSegment: string | null | undefined = result.routing?.detection?.mixed_segment;
 // @ts-expect-error Routing metadata is optional.
 result.routing.model;
 // @ts-expect-error Action metadata is optional.
@@ -31,6 +33,11 @@ const answeredUsage: Usage = { input_tokens: 43, output_tokens: 0, state_tokens:
   state_tokens_dropped: 0, truncated: false, truncated_questions: [] };
 // @ts-expect-error `windows` is Agent.predict_long's own key; /v1/systemone never answers with it.
 const windowedUsage: Usage = { ...answeredUsage, windows: 1 };
+// @ts-expect-error The mixed segment names the text that was read, not a score.
+const mixedAsNumber: number = result.routing?.detection?.mixed_segment;
+// @ts-expect-error Every branch of analyse() reports the key, so the type does not make it optional.
+const undetermined: LanguageDetection = { script: 'latin', script_profile: { latin: 1.0 }, language: 'de',
+  is_english: false, language_undecided: false, diacritic_rate: 0.0083, non_latin_fraction: 0.0 };
 // @ts-expect-error /v1/systemone does not expose standalone routing.
 client.route('hello');
 // @ts-expect-error task must be a string.
@@ -71,4 +78,4 @@ if (answer?.type === 'choice') {
 }
 void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel,
   actionProbability, noulConfidence, stateTokens, stateTokensDropped, truncated, truncatedQuestions,
-  collapsedSpans, answeredUsage];
+  collapsedSpans, answeredUsage, mixedSegment, undetermined];

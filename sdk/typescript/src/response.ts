@@ -22,6 +22,14 @@ export function validateRoute(value: unknown): void {
   expect(detection.language === null || typeof detection.language === 'string', 'detected language');
   expect(typeof detection.is_english === 'boolean' && typeof detection.language_undecided === 'boolean', 'language flags');
   expect(probability(detection.diacritic_rate) && probability(detection.non_latin_fraction), 'language fractions');
+  // Checked when the server sends it, like the optional fields of `health` and of `usage`: one
+  // field the route report added (#384) must not fail every prediction on a deployment that
+  // predates it. When it is there it is `null` or the segment text, as every branch of
+  // `laya.lang.analyse()` reports it.
+  if (detection.mixed_segment !== undefined) {
+    expect(detection.mixed_segment === null || typeof detection.mixed_segment === 'string',
+      'detection mixed segment');
+  }
 }
 
 export function validateHealth(value: unknown): void {
