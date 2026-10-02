@@ -10,6 +10,10 @@ import os
 import sys
 import tempfile
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+from unittest.mock import patch
 
 import numpy as np
 
@@ -33,6 +37,7 @@ from laya.calibrate import (  # noqa: E402
 )
 from laya.common import QTYPES, TEMP_MAX, TEMP_MIN, temp_bucket  # noqa: E402
 import laya.calibrate as _calibrate  # noqa: E402
+import laya.agent as _agent_module  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -211,6 +216,59 @@ check("ece/fit deterministic", again_fit_map["report"], fitted["report"])
 
 
 # --------------------------------------------------------------- live Agent map + JSON round-trip
+
+def _refuses_records(name, records, fragment):
+    try:
+        fit_temperature_map(records)
+    except ValueError as exc:
+        check_true("records/" + name, fragment in str(exc), str(exc))
+    except Exception as exc:
+        FAIL.append("records/%s: raised %r, want ValueError" % (name, exc))
+    else:
+        FAIL.append("records/%s: invalid input was accepted" % name)
+
+
+for name, record, field in (
+    ("scalar record", 3, "record"),
+    ("wrong record length", (0, [1, 2]), "record"),
+    ("bool type", (True, [1, 2], [1, 0]), "qtype"),
+    ("fractional type", (0.9, [1, 2], [1, 0]), "qtype"),
+    ("unknown type", (3, [1, 2], [1, 0]), "qtype"),
+    ("negative type", (-1, [1, 2], [1, 0]), "qtype"),
+    ("bool width", (0, [1, 2], [1, 0], True), "k"),
+    ("null width", (0, [1, 2], [1, 0], None), "k"),
+    ("fractional width", (0, [1, 2], [1, 0], 1.9), "k"),
+    ("zero width", (0, [1, 2], [1, 0], 0), "k"),
+    ("oversized width", (0, [1, 2], [1, 0], 3), "k"),
+    ("empty vectors", (0, [], []), "k"),
+    ("matrix logits", (0, [[1, 2]], [1, 0]), "logits"),
+    ("matrix target", (0, [1, 2], [[1, 0]]), "target"),
+    ("text logits", (0, ["1", "2"], [1, 0]), "logits"),
+    ("nan logits", (0, [np.nan, 2], [1, 0]), "logits"),
+    ("infinite target", (0, [1, 2], [np.inf, 0]), "target"),
+    ("unequal vectors", (0, [1, 2], [1]), "same length"),
+    ("negative target", (0, [1, 2], [-0.1, 1.1]), "probability"),
+    ("unnormalized target", (0, [1, 2], [1, 1]), "probability"),
+):
+    _refuses_records(name, [record], field)
+
+soft_record = _iter_records([(np.int64(0), [1, 2, 0], [0.3, 0.7, 0], np.int64(2))])[0]
+check("records/numpy integer and explicit padding", soft_record[3], 2)
+check_true("records/soft target kept", np.allclose(soft_record[2], [0.3, 0.7]))
+check_true("records/soft target fits", np.isfinite(fit_one_temperature([(soft_record[1], soft_record[2])], min_n=1)))
+check("records/empty dataset still neutral", fit_temperature_map([])["temperature"], [1.0] * 3)
+for name, pairs, min_n in (
+    ("mismatched lengths", [([1, 2], [1])], None),
+    ("invalid below sample floor", [([np.nan, 2], [1, 0])], None),
+    ("invalid min_n", [], 0),
+):
+    try:
+        fit_one_temperature(pairs, min_n=min_n)
+    except ValueError:
+        PASS.append("pairs/" + name)
+    else:
+        FAIL.append("pairs/%s: invalid input was accepted" % name)
+
 _CFG = {
     "encoder": "answerdotai/ModernBERT-large",
     "head_layers": 2,
@@ -255,6 +313,96 @@ check_true(
     "temperature_by_options" not in payload["config"],
 )
 check_true("save/no weights key", "model.safetensors" not in json.dumps(payload))
+
+
+# --------------------------------------------------------------- failed saves preserve the old map
+with tempfile.TemporaryDirectory() as atomic_dir:
+    atomic_path = Path(atomic_dir) / "calibration.json"
+    agent.save_calibration(atomic_path)
+    original_bytes = atomic_path.read_bytes()
+    original_replace = os.replace
+
+    def _partial_dump(body, stream, **kwargs):
+        stream.write('{"temperature": [')
+        raise OSError("injected write failure")
+
+    for failure, context in (
+        ("write", patch.object(_agent_module.json, "dump", _partial_dump)),
+        ("sync", patch.object(_agent_module.os, "fsync", side_effect=OSError("injected sync failure"))),
+        ("replace", patch.object(_agent_module.os, "replace", side_effect=OSError("injected replace failure"))),
+    ):
+        with context:
+            try:
+                agent.save_calibration(atomic_path)
+            except OSError as exc:
+                check_true("atomic/%s error propagates" % failure, "injected" in str(exc))
+            else:
+                FAIL.append("atomic/%s error did not propagate" % failure)
+        check("atomic/%s keeps prior bytes" % failure, atomic_path.read_bytes(), original_bytes)
+        check("atomic/%s cleans temp" % failure, sorted(os.listdir(atomic_dir)), ["calibration.json"])
+
+    missing_path = Path(atomic_dir) / "new.json"
+    with patch.object(_agent_module.json, "dump", _partial_dump):
+        try:
+            agent.save_calibration(missing_path)
+        except OSError:
+            pass
+        else:
+            FAIL.append("atomic/first-save error did not propagate")
+    check_true("atomic/failed first save leaves no destination", not missing_path.exists())
+    check("atomic/failed first save cleans temp", sorted(os.listdir(atomic_dir)), ["calibration.json"])
+
+    # Successful updates keep the bytes/format and the existing readers' permissions.
+    agent.save_calibration(atomic_path)
+    check("atomic/success preserves JSON format", atomic_path.read_bytes(), original_bytes)
+    if os.name != "nt":
+        os.chmod(atomic_path, 0o640)
+        agent.save_calibration(atomic_path)
+        check("atomic/preserves mode", atomic_path.stat().st_mode & 0o777, 0o640)
+        link_path = Path(atomic_dir) / "linked.json"
+        link_path.symlink_to(atomic_path.name)
+        agent.save_calibration(link_path)
+        check_true("atomic/keeps symlink", link_path.is_symlink())
+        check("atomic/writes symlink target", atomic_path.read_bytes(), original_bytes)
+        link_path.unlink()
+
+    rival = Agent.__new__(Agent)
+    rival.temperature = [1.1, 1.2, 1.3]
+    rival.temperature_by_options = {"choice:2": 1.4}
+    for simulate_lost_race in (False, True):
+        barrier = Barrier(2)
+
+        def _together_replace(src, dst):
+            rank = barrier.wait(timeout=10)
+            if simulate_lost_race and rank == 0:
+                error = PermissionError("injected NTFS replacement race")
+                error.winerror = 5
+                raise error
+            original_replace(src, dst)
+
+        succeeded = 0
+        denied = 0
+        with patch.object(_agent_module.os, "replace", _together_replace):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                writes = [pool.submit(writer.save_calibration, atomic_path) for writer in (agent, rival)]
+                for write in writes:
+                    try:
+                        write.result()
+                    except PermissionError as exc:
+                        # NTFS may deny one simultaneous replacement; other errors still fail.
+                        if getattr(exc, "winerror", None) != 5:
+                            raise
+                        denied += 1
+                    else:
+                        succeeded += 1
+        label = "injected race" if simulate_lost_race else "concurrent writers"
+        check_true("atomic/%s has a successful writer" % label, succeeded >= 1)
+        if simulate_lost_race:
+            check("atomic/injected race exercises denial", denied, 1)
+        concurrent_payload = json.loads(atomic_path.read_text())
+        check_true("atomic/%s leave one complete payload" % label,
+                   concurrent_payload in (payload, calibration_payload(rival.temperature, rival.temperature_by_options)))
+        check("atomic/%s clean temps" % label, sorted(os.listdir(atomic_dir)), ["calibration.json"])
 
 other = Agent.__new__(Agent)
 other.model_id_or_path = agent.model_id_or_path
