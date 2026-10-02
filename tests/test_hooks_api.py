@@ -222,6 +222,21 @@ for label, cls in (("Agent", Agent), ("Router", Router), ("ONNXAgent", ONNXAgent
     for method in ("add_hook", "remove_hook", "hooks_installed"):
         check_true("%s/%s exists" % (label, method), callable(getattr(cls, method, None)))
 
+
+class _ApiProbeHook(BaseHook):
+    pass
+
+
+for label, cls in (("Agent", Agent), ("Router", Router), ("ONNXAgent", ONNXAgent)):
+    reg = cls.__new__(cls)
+    reg.hooks = ()
+    h1, h2 = _ApiProbeHook(), _ApiProbeHook()
+    with reg.hooks_installed([h1, h2]):
+        check("%s/hooks_installed accepts a list" % label, tuple(reg.hooks), (h1, h2))
+    check("%s/hooks_installed restores hooks after list block" % label, tuple(reg.hooks), ())
+    with reg.hooks_installed((h1,), h2):
+        check("%s/hooks_installed accepts mixed sequence and vararg" % label, tuple(reg.hooks), (h1, h2))
+
 # The LangChain runnables batch: laya.integrations.langchain's own suite checks what
 # batch() returns, so these lines pin only the caller-visible shape. A rename, or losing
 # the keyword-only return_exceptions, would break LCEL and LangGraph map-reduce silently.
