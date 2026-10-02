@@ -575,6 +575,11 @@ class Router(HookRegistry):
         # helpers without deadlocking. Inference (`Agent.system_one`) is deliberately left
         # outside the lock so concurrent predictions share a checkpoint without serialising.
         self._lock = threading.RLock()
+        # Serialises checkpoint builds -- one at a time, as before, so peak memory is unchanged --
+        # without holding `_lock` across one. A cold build takes seconds to minutes (download plus
+        # construction), and under `_lock` it stalled `loaded`, `/health` and every request for a
+        # checkpoint that was already resident.
+        self._build_lock = threading.Lock()
         if preload:
             self.preload()
 
@@ -589,7 +594,31 @@ class Router(HookRegistry):
             if key in self._agents:
                 self._touch(key)
                 return self._agents[key]
-            from .agent import Agent
+        with self._build_lock:
+            with self._lock:
+                # Built (or attached) while this caller waited for the build lock.
+                if key in self._agents:
+                    self._touch(key)
+                    return self._agents[key]
+            agent = self._build(key)
+            with self._lock:
+                if key in self._agents:      # attached while it was building: keep that one
+                    self._touch(key)
+                    return self._agents[key]
+                self._agents[key] = agent
+                self._order.append(key)
+                evicted = self._evict_locked()
+        # Lifecycle hooks fire after the lock is released, so a hook can safely call the Router.
+        self._dispatch_lifecycle("on_evict", evicted)
+        dispatch(compose_hooks(self.hooks), "on_load",
+                 PredictContext(states=[], questions={}, model=key, agent=agent, router=self),
+                 raise_errors=self.hooks_raise, lock=self._hooks_lock, timeout=self.hooks_timeout)
+        return agent
+
+    def _build(self, key: str):
+        """Construct the Agent for `key`: config is read under `_lock`, the build runs outside it."""
+        from .agent import Agent
+        with self._lock:
             repo, sub = _split(self.models[key])
             kwargs = {"device": self.device, "token": self.token, "subfolder": sub}
             # A None or blank entry in `revisions` is "no pin of its own", so the checkpoint
@@ -607,16 +636,7 @@ class Router(HookRegistry):
                                                _digest_entry(self.sha256_digests, key))
             if expected is not None:
                 kwargs["expected_sha256"] = expected
-            agent = Agent(repo, **kwargs)
-            self._agents[key] = agent
-            self._order.append(key)
-            evicted = self._evict_locked()
-        # Lifecycle hooks fire after the lock is released, so a hook can safely call the Router.
-        self._dispatch_lifecycle("on_evict", evicted)
-        dispatch(compose_hooks(self.hooks), "on_load",
-                 PredictContext(states=[], questions={}, model=key, agent=agent, router=self),
-                 raise_errors=self.hooks_raise, lock=self._hooks_lock, timeout=self.hooks_timeout)
-        return agent
+        return Agent(repo, **kwargs)
 
     def _touch(self, key: str):
         with self._lock:
@@ -695,7 +715,9 @@ class Router(HookRegistry):
 
     def unload(self, name: Optional[str] = None):
         """Free one model, or all of them."""
-        with self._lock:
+        # Wait for an in-flight build first, as before, so a checkpoint being built cannot land
+        # after the unload that was meant to free it.
+        with self._build_lock, self._lock:
             if name is None:
                 freed = list(self._order)
                 self._agents.clear()

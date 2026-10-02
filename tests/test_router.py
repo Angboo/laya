@@ -1094,6 +1094,67 @@ check("threads/hot-path loads keep agents consistent", agents_len, 1)
 check("threads/hot-path order intact", order, ["english"])
 
 
+def _cold_build_does_not_hold_lifecycle_lock():
+    """A cold build must not stall `loaded` or a resident checkpoint for its whole duration.
+
+    The build runs a download plus construction, seconds to minutes. Held under `_lock`, it made
+    `GET /health` (which reads `loaded`) and every request for an already-resident checkpoint wait
+    for it, so a liveness probe timed out during a lazy load.
+    """
+    import laya.agent as _agent_mod
+    building, release = threading.Event(), threading.Event()
+    constructions = []
+
+    class _BlockingAgent:
+        def __init__(self, *args, **kwargs):
+            constructions.append(1)
+            building.set()
+            release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _BlockingAgent
+    try:
+        r = Router(max_loaded=3)
+        resident = _Stub("english")
+        r.attach("english", resident)
+        loaders = [threading.Thread(target=r.load, args=("multilingual",)) for _ in range(2)]
+        for t in loaders:
+            t.start()
+        building.wait(5)
+        timings = {}
+        for label, call in (("loaded", lambda: r.loaded),
+                            ("resident load", lambda: r.load("english"))):
+            done = threading.Event()
+            threading.Thread(target=lambda c=call, d=done: (c(), d.set()), daemon=True).start()
+            timings[label] = done.wait(1.0)
+        release.set()
+        for t in loaders:
+            t.join(5)
+        loaded_after, built = sorted(r.loaded), len(constructions)
+        # An unload issued while a build is in flight waits for it, so the build cannot land after it.
+        building.clear()
+        release.clear()
+        threading.Thread(target=r.load, args=("typed-decisions",), daemon=True).start()
+        building.wait(5)
+        unloader = threading.Thread(target=r.unload, args=("typed-decisions",))
+        unloader.start()
+        _time.sleep(0.1)
+        release.set()
+        unloader.join(5)
+        timings["unload waits for the build"] = "typed-decisions" not in r.loaded
+        return timings, built, loaded_after
+    finally:
+        release.set()
+        _agent_mod.Agent = old
+
+timings, built, resident_after = _cold_build_does_not_hold_lifecycle_lock()
+check("threads/loaded answers during a cold build", timings["loaded"], True)
+check("threads/resident checkpoint answers during a cold build", timings["resident load"], True)
+check("threads/concurrent cold loads still build once", built, 1)
+check("threads/cold build lands in the LRU", resident_after, ["english", "multilingual"])
+check("threads/unload during a cold build frees it", timings["unload waits for the build"], True)
+
+
 
 # --------------------------------------------------------------------- unlisted scripts
 # `detect_script` counts an alphabetic character only when one of `_SCRIPT_RANGES` claims
