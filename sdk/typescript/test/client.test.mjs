@@ -308,6 +308,80 @@ test('routing detection reports the segment that pulled a mostly-English state o
   }
 });
 
+// Captured from `tests/sdk_server_fixture.py` over HTTP with `min_confidence: 0.35`, so the three
+// answer types each carry their real gate report. The counts are what that fixture's random weights
+// give; `abstention: 'unevaluated'` is not reachable there -- every answer it builds carries a
+// usable confidence -- so only the two states the gate really reported here are asserted verbatim.
+const gateQuestions = {
+  team: { type: 'choice', instructions: 'Team?', criteria: ['billing', 'technical'] },
+  urgency: { type: 'score', instructions: 'Urgency?', criteria: ['low', 'medium', 'high'] },
+  refund: questions.refund,
+};
+const gateReport = {
+  model: 'laya-rl-agent', usage: { input_tokens: 10, output_tokens: 0 },
+  answers: {
+    team: { type: 'choice', choice: 'technical', probabilities: { billing: 0.4965, technical: 0.5035 },
+      confidence: 0.0, answer_confidence: 0.5035, action: { act_probability: 0.5017 },
+      abstention: 'passed', abstention_threshold: 0.35 },
+    urgency: { type: 'score', score: 1.0105, probabilities: { '0': 0.3338, '1': 0.3218, '2': 0.3444 },
+      legend: { '0': 'low', '1': 'medium', '2': 'high' }, confidence: 0.0003, answer_confidence: 0.3444,
+      action: { act_probability: 0.5238 }, low_confidence: true, abstention: 'abstained',
+      abstention_threshold: 0.35 },
+    refund: { type: 'noul', noul: 0.499, confidence: 0.501, answer_confidence: 0.501,
+      action: { act_probability: 0.3968 }, abstention: 'passed', abstention_threshold: 0.35 },
+  },
+};
+
+test('the confidence an answer was gated on and the gate report reach the caller', async () => {
+  const client = new Laya({ fetch: async () => json(gateReport) });
+  const result = await client.predict('hello', gateQuestions);
+  assert.deepEqual(result.answers, gateReport.answers);
+  assert.equal(result.answers.urgency.low_confidence, true);
+  assert.equal(result.answers.urgency.abstention, 'abstained');
+  assert.equal(result.answers.team.abstention, 'passed');
+  assert.equal(result.answers.team.abstention_threshold, 0.35);
+
+  // 'unevaluated' is the third state core reports (laya/confidence.py); accepted like the others.
+  const unevaluated = structuredClone(gateReport);
+  unevaluated.answers.refund.abstention = 'unevaluated';
+  assert.equal((await new Laya({ fetch: async () => json(unevaluated) })
+    .predict('hello', gateQuestions)).answers.refund.abstention, 'unevaluated');
+
+  // An ungated call answers exactly the payload it answered before the gate existed: no abstention,
+  // no threshold, no flag. Absence is the report, so it must not read as a failure.
+  const ungated = structuredClone(gateReport);
+  for (const answer of Object.values(ungated.answers)) {
+    delete answer.low_confidence;
+    delete answer.abstention;
+    delete answer.abstention_threshold;
+  }
+  const bare = await new Laya({ fetch: async () => json(ungated) }).predict('hello', gateQuestions);
+  assert.equal(bare.answers.urgency.abstention, undefined);
+  assert.equal(bare.answers.urgency.low_confidence, undefined);
+
+  // A deployment predating `answer_confidence` (#126) still answers, exactly as it did before.
+  const older = structuredClone(ungated);
+  for (const answer of Object.values(older.answers)) delete answer.answer_confidence;
+  assert.equal((await new Laya({ fetch: async () => json(older) })
+    .predict('hello', gateQuestions)).answers.team.choice, 'technical');
+
+  for (const mutate of [
+    answer => { answer.abstention = 'skipped'; },
+    answer => { delete answer.abstention_threshold; },
+    answer => { answer.abstention_threshold = 1.5; },
+    answer => { answer.abstention_threshold = '0.35'; },
+    answer => { answer.low_confidence = false; },
+    answer => { delete answer.abstention; },
+    answer => { answer.answer_confidence = 'high'; },
+    answer => { answer.answer_confidence = 2; },
+  ]) {
+    const payload = structuredClone(gateReport);
+    mutate(payload.answers.urgency);
+    await assert.rejects(new Laya({ fetch: async () => json(payload) })
+      .predict('hello', gateQuestions), LayaResponseError);
+  }
+});
+
 test('network errors preserve the cause', async () => {
   const cause = new TypeError('fetch failed');
   await assert.rejects(new Laya({ fetch: async () => { throw cause; } }).health(), error =>

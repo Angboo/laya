@@ -117,6 +117,9 @@ result.answers.urgency.score;      // number: expected rubric index, from 0 to 2
 result.answers.refund.noul;        // number: P(true), from 0 to 1
 result.answers.department.probabilities.billing;
 result.answers.department.confidence;
+result.answers.department.answer_confidence; // number: max(p), the same quantity on every type
+result.answers.urgency.abstention;           // 'passed' | 'abstained' | 'unevaluated', with minConfidence
+result.answers.urgency.low_confidence;       // true only on an answer that fell below it
 result.answers.department.action?.act_probability; // Laya-only metadata
 result.usage.input_tokens;
 result.usage.truncated;              // boolean: the state did not fit the room left for it
@@ -181,7 +184,12 @@ automatic workflow routing.
 
 Laya returns `model`, `answers`, and `usage`, with optional `routing`, answer
 `action`, and Noul `confidence` metadata. Those fields are validated when
-present. Choice and Score confidence remains required. `health()` is never
+present. Choice and Score confidence remains required. Every answer also carries
+`answer_confidence` (`max(p)`), the one confidence that means the same thing on all
+three question types; when you pass `minConfidence`, each answer of that call additionally
+reports `abstention` and `abstention_threshold`, and the ones below the threshold carry
+`low_confidence: true`. With `minConfidence` unset none of those three keys appear — absence is
+how a caller tells an ungated run from a cleared gate. `health()` is never
 called by `predict()`.
 
 ## Which JavaScript client?
