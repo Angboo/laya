@@ -34,6 +34,7 @@ from ._controls import budget_kwargs as _budget_kwargs, hook_kwargs as _hook_kwa
 from ._controls import decision_kwargs as _decision_kwargs
 from ._controls import predict_kwargs as _predict_kwargs
 from ._controls import reject_remote_hooks as _reject_remote_hooks
+from ._guard import score_violation_probability as _score_violation_probability
 
 
 class LayaGuardrailError(ValueError):
@@ -654,16 +655,9 @@ class LayaGuardrail(_BatchedRunnable, RunnableSerializable):
                 }
             elif t == "score":
                 # `score` is the expected level (0..k-1), not a probability: gate on the
-                # probability that the level is at or above the middle of the scale. Without
-                # a distribution, the normalised expected level stands in for it.
-                probs = ans.get("probabilities") or {}
-                k = len(probs) or len(self._questions().get(qid, {}).get("criteria") or [])
-                if k < 2:
-                    p_violation = 0.0
-                elif probs:
-                    p_violation = sum(float(probs.get(str(i), 0.0)) for i in range(k // 2, k))
-                else:
-                    p_violation = ans.get("score", 0.0) / (k - 1)
+                # probability that the level is at or above the middle of the scale.
+                levels = len(self._questions().get(qid, {}).get("criteria") or [])
+                p_violation = _score_violation_probability(ans, levels)
                 if p_violation >= self.threshold:
                     violations[qid] = {
                         "score": ans.get("score", 0.0),
