@@ -346,6 +346,64 @@ def ece(confidences: Sequence[float], corrects: Sequence[bool], bins: int = 15) 
                            np.asarray(corrects, dtype=bool), bins=bins))
 
 
+# Selective-classification metrics. The abstention gate (#361/#456) and the per-bucket thresholds
+# (#394) decide *what to answer*; these say *how well the confidence ranks right from wrong* and
+# *what a coverage/risk trade buys*, which ECE (a calibration number) does not. All read the same
+# `(confidence, correct)` pairs ECE does, and are pure NumPy / torch-free.
+def brier(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[float]:
+    """Brier score of confidence as P(correct): mean((confidence - correct)**2). Lower is better."""
+    if not confidences:
+        return None
+    c = np.asarray(confidences, dtype=float)
+    y = np.asarray(corrects, dtype=float)
+    return float(np.mean((c - y) ** 2))
+
+
+def _risk_coverage(confidences: Sequence[float], corrects: Sequence[bool]):
+    """(coverage, risk) over the most-confident-first ordering; coverage k/n, risk = error@top-k."""
+    order = np.argsort(-np.asarray(confidences, dtype=float), kind="mergesort")  # desc, stable
+    y = np.asarray(corrects, dtype=bool)[order].astype(float)
+    n = len(y)
+    k = np.arange(1, n + 1)
+    risk = 1.0 - np.cumsum(y) / k
+    return k / n, risk
+
+
+def aurc(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[float]:
+    """Area Under the Risk-Coverage curve (mean selective risk over every coverage). Lower is better.
+
+    A classifier whose confidence perfectly ranks right from wrong drives AURC toward the overall
+    error rate's area under the ideal curve; a confidence no better than random leaves it at the
+    base error rate. It rewards a confidence that *orders* answers, which calibration (ECE) does not.
+    """
+    if not confidences:
+        return None
+    _coverage, risk = _risk_coverage(confidences, corrects)
+    return float(np.mean(risk))
+
+
+def selective_accuracy(confidences: Sequence[float], corrects: Sequence[bool],
+                       coverage: float) -> Optional[float]:
+    """Accuracy over the most-confident `coverage` fraction of answers (0 < coverage <= 1)."""
+    if not confidences or not 0.0 < coverage <= 1.0:
+        return None
+    import math as _math
+    order = np.argsort(-np.asarray(confidences, dtype=float), kind="mergesort")
+    y = np.asarray(corrects, dtype=bool)[order].astype(float)
+    k = max(1, int(_math.ceil(coverage * len(y))))
+    return float(np.mean(y[:k]))
+
+
+#: Coverage points reported as `selective_accuracy@NN`.
+SELECTIVE_COVERAGES = (0.5, 0.8)
+
+
+def is_confidence_metric(name: str) -> bool:
+    """True for a dataset-level metric computed from `(confidence, correct)` pairs, not per-answer
+    `scores` -- ECE and the selective-classification metrics. Policy counting treats these alike."""
+    return name in ("ece", "brier", "aurc") or name.startswith("selective_accuracy@")
+
+
 def _answered_model(result: Any) -> Optional[Any]:
     """Which checkpoint produced `result`, read the way each runner records it.
 
@@ -490,9 +548,14 @@ def _aggregate(cases: Sequence[Dict[str, Any]], evaluators: Sequence[Evaluator])
     paired = [(c["confidence"], c["correct"]) for c in cases
               if c.get("confidence") is not None and c.get("correct") is not None]
     if paired:
-        value = ece([p[0] for p in paired], [p[1] for p in paired])
-        if value is not None and not np.isnan(value):
-            out["ece"] = value
+        confs = [p[0] for p in paired]
+        corrs = [p[1] for p in paired]
+        computed = {"ece": ece(confs, corrs), "brier": brier(confs, corrs), "aurc": aurc(confs, corrs)}
+        for cov in SELECTIVE_COVERAGES:
+            computed["selective_accuracy@%d" % round(cov * 100)] = selective_accuracy(confs, corrs, cov)
+        for name, value in computed.items():
+            if value is not None and not np.isnan(value):
+                out[name] = float(value)
     return out
 
 

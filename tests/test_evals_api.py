@@ -43,7 +43,8 @@ check_true("ScoreWithin names its tolerance", evals.ScoreWithin(0.25).name == "s
 
 # --------------------------------------------------------------- exports / callables
 for name in ("Dataset", "Example", "EvalError", "EvalReport", "evaluate", "ece", "assert_regression",
-             "REPORT_SCHEMA", "questions_fingerprint", "file_fingerprint"):
+             "REPORT_SCHEMA", "questions_fingerprint", "file_fingerprint",
+             "brier", "aurc", "selective_accuracy", "is_confidence_metric"):
     check_true("laya.evals.%s exists" % name, hasattr(evals, name))
 
 check("REPORT_SCHEMA", evals.REPORT_SCHEMA, "laya-evals-report/1")

@@ -80,7 +80,7 @@ def _count(report: evals.EvalReport, dimension: str, value: str, metric: str) ->
             values = [case.get(dimension)]
         if value not in [str(item) for item in values if item is not None]:
             continue
-        if metric == "ece":
+        if evals.is_confidence_metric(metric):
             confidence, correct = case.get("confidence"), case.get("correct")
             valid = _finite_number(confidence) and isinstance(correct, bool)
         else:
