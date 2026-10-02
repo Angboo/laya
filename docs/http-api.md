@@ -32,6 +32,7 @@ Everything is environment variables, so one image serves a laptop dev run and a 
 | `LAYA_API_KEY` | if set, require `Authorization: Bearer <key>` | none |
 | `LAYA_LOG_LEVEL` | uvicorn log level | `info` |
 | `LAYA_MAX_CONCURRENT` | requests admitted past auth at once; excess gets `503` | `16` |
+| `LAYA_JEV_STRICT` | serve the strict Jev wire contract: no root `routing`, no per-answer `action` / `answer_confidence`, no `confidence` on noul answers, and `usage` reduced to `input_tokens` + `output_tokens`. For clients that validate the response against the Jev contract with no extra fields | `0` |
 
 For a deployment published under a prefix such as `/laya`, set `LAYA_ROOT_PATH=/laya`.
 FastAPI uses it when generating OpenAPI and Swagger UI URLs. Configure the reverse proxy to
@@ -209,6 +210,31 @@ before the question ids are read.
 Never compare the two against one threshold. Also note the difference when porting from Jev:
 TypeSafe defines confidence as `(n*p_max - 1)/(n - 1)`, so a threshold carried over from a Jev
 deployment gates differently on Laya's entropy value.
+
+### Strict Jev contract: `LAYA_JEV_STRICT`
+
+The payload above is the full Laya payload. The Jev contract a client may hold it to defines
+less: three top-level fields (`model`, `answers`, `usage`), the contracted keys on each answer
+and nothing else, and a `usage` of the two token counts. A client that validates the response
+against that contract with no extra fields -- OpenClaw's TypeSafe provider plugin is one --
+rejects the full payload, so `LAYA_JEV_STRICT=1` projects the response onto the contract before
+answering, on both `/v1/systemone` and `/v1/systemone/batch`:
+
+- the root keeps `model`, `answers` and `usage` only; `routing` is not sent;
+- a `choice` answer keeps `choice`, `probabilities` and `confidence`;
+- a `score` answer keeps `score`, `probabilities`, `confidence` and `legend`;
+- a `noul` answer keeps `noul` only;
+- `usage` keeps `input_tokens` and `output_tokens`; the truncation facts and the collapsed-
+  options ceiling are not sent.
+
+The projection keeps only the contracted keys and recomputes nothing: every value is the one the
+result already carries, so the probabilities and scores a strict client reads are identical to
+the ones the full payload reports. The default stays the full payload, and a deployment that
+turns the flag on loses the truncation visibility `usage` provides -- a cut state is then
+visible in the logs, not in the response. Score `criteria` should stay plain strings under the
+strict contract: a strict client compares the returned `legend` against the criteria it sent,
+and Laya renders a structured criterion with Python's JSON, which a JavaScript caller that
+stringifies its own criteria may not match byte for byte.
 
 Successful responses also carry `Server-Timing: inference;dur=<ms>` and `X-Inference-Time-Ms`.
 

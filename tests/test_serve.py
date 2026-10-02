@@ -135,6 +135,123 @@ def test_predict_passthrough_shape(monkeypatch):
     assert fake.calls[0]["model"] is None
 
 
+# A router that answers with the full Laya payload: every answer type, the per-answer
+# additions and the extended usage report -- what a strict client must be projected off.
+FULL_ANSWERS = {
+    "queue": {"type": "choice", "choice": "billing",
+              "probabilities": {"billing": 0.9519, "tech": 0.0327, "other": 0.0154},
+              "confidence": 0.797, "answer_confidence": 0.9519,
+              "action": {"act_probability": 1.0}},
+    "urgency": {"type": "score", "score": 1.6994,
+                "legend": {"0": "calm", "1": "firm", "2": "angry"},
+                "probabilities": {"0": 0.0249, "1": 0.65, "2": 0.3251},
+                "confidence": 0.1925, "answer_confidence": 0.65,
+                "action": {"act_probability": 0.5}},
+    "threat": {"type": "noul", "noul": 0.9148, "confidence": 0.9148,
+               "answer_confidence": 0.9148, "action": {"act_probability": 1.0}},
+}
+FULL_USAGE = {"input_tokens": 83, "output_tokens": 0, "state_tokens": 12,
+              "state_tokens_dropped": 0, "truncated": False, "truncated_questions": []}
+
+
+class StrictFullRouter:
+    """Returns the full payload, additions and all, whatever the request."""
+
+    loaded = ["english"]
+
+    def __init__(self):
+        self.calls = []
+
+    def predict(self, state, questions, model=None):
+        self.calls.append({"state": state, "questions": questions, "model": model})
+        return {"model": "laya-rl-agent", "answers": FULL_ANSWERS, "usage": dict(FULL_USAGE),
+                "routing": {"model": "english", "reason": "English Latin text"}}
+
+    def predict_batch(self, requests, **kwargs):
+        return [self.predict(item["state"], item["questions"], model=item.get("model"))
+                for item in requests]
+
+
+def _strict_client(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("LAYA_JEV_STRICT", raising=False)
+    else:
+        monkeypatch.setenv("LAYA_JEV_STRICT", value)
+    fake = StrictFullRouter()
+    return TestClient(create_app(router=fake)), fake
+
+
+def test_jev_strict_projects_the_full_payload(monkeypatch):
+    client, _ = _strict_client(monkeypatch, "1")
+    r = client.post("/v1/systemone", json=REQ)
+    assert r.status_code == 200
+    body = r.json()
+    # the strict contract: exactly three top-level fields, the contracted answer keys
+    assert set(body) == {"model", "answers", "usage"}
+    assert body["model"] == "laya-rl-agent"
+    assert body["answers"]["queue"] == {"type": "choice", "choice": "billing",
+                                        "confidence": 0.797,
+                                        "probabilities": {"billing": 0.9519, "tech": 0.0327,
+                                                          "other": 0.0154}}
+    assert body["answers"]["urgency"] == {"type": "score", "score": 1.6994,
+                                          "confidence": 0.1925,
+                                          "probabilities": {"0": 0.0249, "1": 0.65, "2": 0.3251},
+                                          "legend": {"0": "calm", "1": "firm", "2": "angry"}}
+    assert body["answers"]["threat"] == {"type": "noul", "noul": 0.9148}
+    # usage reduced to the two contracted counts, with the values the result carried
+    assert body["usage"] == {"input_tokens": 83, "output_tokens": 0}
+
+
+def test_jev_strict_is_off_by_default(monkeypatch):
+    """No flag: the full payload, additions and all, byte for byte."""
+    client, _ = _strict_client(monkeypatch, None)
+    body = client.post("/v1/systemone", json=REQ).json()
+    assert set(body) == {"model", "answers", "usage", "routing"}
+    assert "action" in body["answers"]["queue"]
+    assert "confidence" in body["answers"]["threat"]
+    assert body["usage"] == FULL_USAGE
+
+
+def test_jev_strict_rejects_falsy_spellings(monkeypatch):
+    client, _ = _strict_client(monkeypatch, "0")
+    body = client.post("/v1/systemone", json=REQ).json()
+    assert "routing" in body
+
+
+def test_jev_strict_batch_projects_every_item(monkeypatch):
+    client, fake = _strict_client(monkeypatch, "1")
+    r = client.post("/v1/systemone/batch", json={"states": ["one", "two"],
+                                                 "questions": REQ["questions"]})
+    assert r.status_code == 200
+    data = r.json()
+    assert [set(item) for item in data["results"]] == [
+        {"model", "answers", "usage"}, {"model", "answers", "usage"}]
+    assert all("routing" not in item for item in data["results"])
+    assert all(item["usage"] == {"input_tokens": 83, "output_tokens": 0}
+               for item in data["results"])
+    # total_usage is the batch envelope's own, untouched by the projection
+    assert data["total_usage"] == {"input_tokens": 166, "output_tokens": 0}
+
+
+def test_jev_strict_leaves_an_unknown_answer_shape_unchanged(monkeypatch):
+    """A shape the contract does not name is passed through: the caller still sees it."""
+    monkeypatch.setenv("LAYA_JEV_STRICT", "1")
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+
+    class OddRouter:
+        loaded = ["english"]
+
+        def predict(self, state, questions, model=None):
+            return {"model": "laya-rl-agent",
+                    "answers": {"odd": {"type": "weird", "payload": 1}},
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}
+
+    client = TestClient(create_app(router=OddRouter()))
+    body = client.post("/v1/systemone", json=REQ).json()
+    assert body["answers"]["odd"] == {"type": "weird", "payload": 1}
+    assert "routing" not in body
+
+
 def test_known_model_is_honoured(monkeypatch):
     client, fake = _client(monkeypatch)
     client.post("/v1/systemone", json={**REQ, "model": "multilingual"})

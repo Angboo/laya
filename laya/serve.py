@@ -34,6 +34,11 @@ env var                    meaning                                        defaul
 ``LAYA_MAX_CONCURRENT``    cap on requests past auth at once; excess      16
                            gets 503 (see below)
 ``LAYA_MAX_TOKEN_BUDGET``  cap on per-request max_len / head_max_len       8192
+``LAYA_JEV_STRICT``        if set, serve the strict Jev wire contract: no   0
+                           root `routing`, no per-answer `action` /
+                           `answer_confidence`, no `confidence` on noul
+                           answers, and `usage` reduced to
+                           `input_tokens` + `output_tokens`
 =========================  ============================================  =========
 
 ``LAYA_DEVICE`` is a preference, not a guarantee: an ``Agent`` that asks for a
@@ -118,6 +123,44 @@ def _env_bool(name: str, default: bool) -> bool:
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _project_jev_strict(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a result onto the strict Jev wire contract (`LAYA_JEV_STRICT`).
+
+    The Jev `/v1/systemone` response defines exactly three top-level fields
+    (`model`, `answers`, `usage`), and each answer carries only its type's fields:
+    choice = `choice` + `probabilities` + `confidence`, score = `score` +
+    `probabilities` + `confidence` + `legend`, noul = `noul` only, and `usage` the
+    two token counts. Laya's full payload adds more: a root `routing` report, a
+    per-answer `action` head plus the calibrated `answer_confidence`, a
+    `confidence` on noul answers, and a usage report extended with the truncation
+    facts and the collapsed-options ceiling. Those additions are what a client
+    validating the response against the contract with no extra fields may reject,
+    so this keeps only the contracted keys. Nothing is recomputed: every value is
+    the one the result already carries, and an answer of an unknown shape passes
+    through unchanged so a caller still sees what it would have seen before.
+    """
+    answers: Dict[str, Any] = {}
+    for qid, answer in (result.get("answers") or {}).items():
+        kind = answer.get("type") if isinstance(answer, dict) else None
+        if kind == "choice":
+            answers[qid] = {"type": "choice", "choice": answer["choice"],
+                            "confidence": answer["confidence"],
+                            "probabilities": answer["probabilities"]}
+        elif kind == "score":
+            answers[qid] = {"type": "score", "score": answer["score"],
+                            "confidence": answer["confidence"],
+                            "probabilities": answer["probabilities"],
+                            "legend": answer["legend"]}
+        elif kind == "noul":
+            answers[qid] = {"type": "noul", "noul": answer["noul"]}
+        else:
+            answers[qid] = answer
+    usage = result.get("usage") or {}
+    return {"model": result["model"], "answers": answers,
+            "usage": {"input_tokens": usage.get("input_tokens", 0),
+                      "output_tokens": usage.get("output_tokens", 0)}}
 
 
 def _published_model_ids() -> Dict[str, str]:
@@ -877,6 +920,8 @@ def create_app(router: Optional[Any] = None):
                     result = await loop.run_in_executor(
                         pool, lambda: router.predict(state, questions, model=model))
                 infer_ms = (time.perf_counter() - t0) * 1000.0
+                if _env_bool("LAYA_JEV_STRICT", False):
+                    result = _project_jev_strict(result)
                 from fastapi.responses import JSONResponse
                 return JSONResponse(
                     content=result,
@@ -1002,6 +1047,8 @@ def create_app(router: Optional[Any] = None):
                 t0 = time.perf_counter()
                 batch_res = await loop.run_in_executor(pool, _do_batch)
                 infer_ms = (time.perf_counter() - t0) * 1000.0
+                if _env_bool("LAYA_JEV_STRICT", False):
+                    batch_res["results"] = [_project_jev_strict(item) for item in batch_res["results"]]
                 from fastapi.responses import JSONResponse
                 return JSONResponse(
                     content=batch_res,
