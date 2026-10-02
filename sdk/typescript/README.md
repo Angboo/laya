@@ -119,6 +119,8 @@ result.answers.department.probabilities.billing;
 result.answers.department.confidence;
 result.answers.department.action?.act_probability; // Laya-only metadata
 result.usage.input_tokens;
+result.usage.truncated;              // boolean: the state did not fit the room left for it
+result.usage.truncated_questions;    // string[]: the questions whose own window was cut
 ```
 
 Choice criteria also accept an array of unique labels, serialized as an option-to-null
@@ -131,6 +133,15 @@ changing during serialization. Empty questions or criteria are rejected.
 Response fields retain Python's spelling (`input_tokens`, `act_probability`,
 etc.). Scores use zero-based rubric levels. Confidence and accuracy have the
 same calibration limits as the Python model; see the root README.
+
+`usage` is the whole record `/v1/systemone` reports: `input_tokens`,
+`output_tokens` (always 0), `state_tokens`, `state_tokens_dropped`,
+`truncated` and `truncated_questions`. How much of a state the model reads is a
+token budget that moves with `max_len`, `head_max_len` and each question's own
+option prompt, so these are the only fields that show a cut: the answer itself
+is unchanged when evidence is dropped. `options` is added only when some
+question's options no longer have a token span each. See the `usage` table in
+`docs/http-api.md` for what each key measures.
 
 ## Local model selection
 

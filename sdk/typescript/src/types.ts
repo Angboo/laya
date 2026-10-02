@@ -97,10 +97,43 @@ export interface RouteDecision {
   detection: LanguageDetection | null;
   workflow: string | null;
 }
+/** One question whose options no longer have a token span each after the head budget (#538). */
+export interface OptionCollapse {
+  /** Options the question defines, not the option markers that reached the sequence. */
+  total: number;
+  /** Of those, the ones still carrying a span of their own. */
+  distinct: number;
+  /** Tokens the budget allowed each option, or null when none was capped. */
+  tokens_per_option: number | null;
+}
+/** What the forward pass was built from, as `/v1/systemone` reports it.
+ *
+ *  How much of a state the model reads is a token budget, not a character count, and the budget
+ *  moves with `max_len`, `head_max_len` and each question's own option prompt (#174). A truncated
+ *  answer is still an answer, so these keys are the only place the cut is visible: nothing in
+ *  `answers` changes when evidence is dropped.
+ */
+export interface Usage {
+  /** Non-pad tokens of the state's rows, one row per question, so it grows with the questions. */
+  input_tokens: number;
+  /** Always 0: the head answers in one pass and generates nothing. */
+  output_tokens: number;
+  /** Tokens the whole serialized state needs. */
+  state_tokens: number;
+  /** Tokens of it at least one question did not get: the worst case over the questions, since
+   *  each leaves the state a different room. */
+  state_tokens_dropped: number;
+  /** Whether that worst case dropped anything. */
+  truncated: boolean;
+  /** The ids whose own window was cut, empty when none was. */
+  truncated_questions: string[];
+  /** Present only when some question's options were collapsed, keyed by question id. */
+  options?: Record<string, OptionCollapse>;
+}
 export interface Prediction<Q extends Questions = Questions> {
   model: string;
   answers: Answers<Q>;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: Usage;
   /** Optional routing metadata returned by Laya. */
   routing?: RouteDecision;
 }

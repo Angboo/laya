@@ -1,4 +1,4 @@
-import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer } from 'laya-client';
+import { Laya, defineQuestions, emailQuestions, triageQuestions, type Questions, type Answer, type Usage } from 'laya-client';
 
 const client = new Laya();
 const questions = defineQuestions({
@@ -16,10 +16,21 @@ const noul: number = result.answers.refund.noul;
 const routingModel: string | undefined = result.routing?.model;
 const actionProbability: number | undefined = result.answers.team.action?.act_probability;
 const noulConfidence: number | undefined = result.answers.refund.confidence;
+const stateTokens: number = result.usage.state_tokens;
+const stateTokensDropped: number = result.usage.state_tokens_dropped;
+const truncated: boolean = result.usage.truncated;
+const truncatedQuestions: string[] = result.usage.truncated_questions;
+const collapsedSpans: number | null | undefined = result.usage.options?.refund?.tokens_per_option;
 // @ts-expect-error Routing metadata is optional.
 result.routing.model;
 // @ts-expect-error Action metadata is optional.
 result.answers.team.action.act_probability;
+// @ts-expect-error The truncation report is a boolean flag, not a count or a string.
+const truncatedText: string = result.usage.truncated;
+const answeredUsage: Usage = { input_tokens: 43, output_tokens: 0, state_tokens: 12,
+  state_tokens_dropped: 0, truncated: false, truncated_questions: [] };
+// @ts-expect-error `windows` is Agent.predict_long's own key; /v1/systemone never answers with it.
+const windowedUsage: Usage = { ...answeredUsage, windows: 1 };
 // @ts-expect-error /v1/systemone does not expose standalone routing.
 client.route('hello');
 // @ts-expect-error task must be a string.
@@ -58,4 +69,6 @@ if (answer?.type === 'choice') {
   const dynamicProbability: number | undefined = answer.probabilities.anyLabel;
   void [dynamicLabel, dynamicProbability];
 }
-void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel, actionProbability, noulConfidence];
+void [label, arrayLabel, probability, score, noul, inlineLabel, intent, category, routingModel,
+  actionProbability, noulConfidence, stateTokens, stateTokensDropped, truncated, truncatedQuestions,
+  collapsedSpans, answeredUsage];
