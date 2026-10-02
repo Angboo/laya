@@ -350,6 +350,211 @@ check("export/GATE_STATES is the vocabulary a caller iterates", list(GATE_STATES
       [_confidence.GATE_PASSED, _confidence.GATE_ABSTAINED, _confidence.GATE_UNEVALUATED])
 check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GATE_STATES)
 
+# ------------------------------------------------- a preset page's conclusions follow their numbers
+# `examples/28_presets_moderation.py` prints a summary over `laya.moderation_questions()` answers,
+# and the version this section replaces hardcoded three of its conclusions:
+#   * `benign -> every flag 0.000, severity 0.24 / 3` printed `toxic` alone, while the same page's
+#     table showed the benign post reading 0.066 on `spam`;
+#   * ``severity orders the set correctly (1.34 > 1.05 > 0.99 > 0.24)`` put the `>` signs in the
+#     format string, so the sentence stayed "correct" whatever the scores came back as;
+#   * `the questions that separate them are harassment and threat` named two of four flags, while
+#     the gaps measured on that same run were harassment 0.518, spam 0.193, threat 0.054 -- threat
+#     was third, and spam was never mentioned.
+# The page now builds those sentences from pure functions over its answers. No weights are loaded:
+# the functions are extracted from the example's own AST and exec'd here on fabricated answers, so
+# the gate drives the code the page actually runs rather than re-reading its prose.
+import ast  # noqa: E402
+import builtins  # noqa: E402
+import re  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXAMPLE_28 = os.path.join(ROOT, "examples", "28_presets_moderation.py")
+HELPERS_28 = ("noul_flags", "score_ceiling", "flag_line", "past_half", "gaps", "rank_by_severity")
+
+# The page as it ships on main: the banner's universality claim and the three conclusions, as
+# literal source lines. Every ban below is witnessed against this text, and every positive rule
+# below is witnessed by showing this text does not satisfy it.
+OLD_PAGE = '''
+    lights up harassment, a generic one only toxic, spam only spam, and a normal post
+    nothing at all.
+        label, a["toxic"]["noul"], a["harassment"]["noul"], a["threat"]["noul"],
+print("   benign          -> every flag %.3f, severity %.2f / 3"
+      % (ben["toxic"]["noul"], ben["severity"]["score"]))
+print("   `severity` orders the set correctly (%.2f > %.2f > %.2f > %.2f) but is a coarse 0-3"
+print("   posts differ by only %.3f on `toxic`: the questions that separate them are")
+print("   `harassment` and `threat`, not `toxic` on its own.")
+'''
+
+UNIVERSAL_ONE_FLOAT = re.compile(r"every (?:flag|score|level)[^.]{0,12}%\.\d+f", re.I)
+ASSERTED_CHAIN = re.compile(r"%\.2f\s*>\s*%\.2f")
+NAMED_SEPARATORS = re.compile(r"separat\w+[^.]{0,60}`(?:toxic|harassment|threat|spam)`"
+                              r"[^.]{0,30}`(?:toxic|harassment|threat|spam)`", re.I)
+HARDCODED_FLAG_READ = re.compile(r"\[[\"'](?:toxic|harassment|threat|spam)[\"']\]\[[\"']noul[\"']\]")
+NOTHING_QUALIFIED = re.compile(r"nothing past 0\.5[^,]{0,10}, not zero", re.I)
+DERIVED_FLAGS = re.compile(r"q\[.type.\]\s*==\s*[\"']noul[\"']")
+DERIVED_CEILING = re.compile(r"len\(q\[.criteria.\]\)\s*-\s*1")
+
+
+def _src28():
+    with open(EXAMPLE_28, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _helpers28():
+    """Exec only the example's top-level helper functions -- its `load()` call needs weights."""
+    tree = ast.parse(_src28())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS_28]
+    ns = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), EXAMPLE_28, "exec"), ns)  # noqa: S102
+    return ns
+
+
+def _called28():
+    """Names the example's top-level *statements* use, so a helper cannot pass by being dead."""
+    tree = ast.parse(_src28())
+    top = [n for n in tree.body if not isinstance(
+        n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))]
+    return {node.id for stmt in top for node in ast.walk(stmt)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+
+
+def _a(toxic, harassment, threat, spam, severity):
+    return {"toxic": {"noul": toxic}, "harassment": {"noul": harassment},
+            "threat": {"noul": threat}, "spam": {"noul": spam},
+            "severity": {"score": severity}}
+
+
+def test_preset_is_four_flags_and_one_rubric():
+    """The docstring and the example's banner both claim this shape; nothing asserted it."""
+    mq = laya.moderation_questions()
+    assert list(mq) == ["toxic", "harassment", "threat", "spam", "severity"], list(mq)
+    assert {k: q["type"] for k, q in mq.items()} == {
+        "toxic": "noul", "harassment": "noul", "threat": "noul", "spam": "noul",
+        "severity": "score"}
+    assert len(mq["severity"]["criteria"]) == 4, len(mq["severity"]["criteria"])
+
+
+def _free_names(node):
+    """Names a function reads that it neither binds locally nor takes as an argument."""
+    bound = {a.arg for fn in [node] + [k for k in ast.walk(node) if isinstance(k, ast.Lambda)]
+             for a in fn.args.args}
+    bound |= {n.id for n in ast.walk(node)
+              if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    return {n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound}
+
+
+def test_helpers_are_live_and_pure():
+    """Each helper is called by the page, takes its whole world as arguments, and returns."""
+    ns = _helpers28()
+    got = sorted(k for k in ns if not k.startswith("__"))
+    assert got == sorted(HELPERS_28), "example 28 lost a helper: %s" % got
+    unused = set(HELPERS_28) - _called28()
+    assert not unused, "defined but never called at module level: %s" % sorted(unused)
+    for name in HELPERS_28:
+        node = _fn_node(name)
+        outside = sorted(n for n in _free_names(node) if not hasattr(builtins, n))
+        assert not outside, "%s reads %s from the page, so this gate cannot drive it" % (name, outside)
+        prints = [c for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "print"]
+        assert not prints, "%s prints instead of returning, so the summary is not checkable" % name
+
+
+def _fn_node(name):
+    for n in ast.parse(_src28()).body:
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    raise KeyError(name)
+
+
+def test_flag_line_prints_every_flag():
+    ns = _helpers28()
+    flags = ns["noul_flags"](laya.moderation_questions())
+    assert flags == ["toxic", "harassment", "threat", "spam"], flags
+    line = ns["flag_line"](_a(0.0, 0.0, 0.0, 0.066, 0.24), flags)
+    assert "0.066" in line, "the non-zero flag vanished: %r" % line
+    assert re.findall(r"`([a-z]+)`", line) == flags, line
+    assert len(re.findall(r"\d\.\d{3}", line)) == 4, "one number per flag: %r" % line
+
+
+def test_past_half_uses_describes_cut():
+    """`_common.describe` labels a noul true at `> 0.5`; the page must agree with it exactly."""
+    ns = _helpers28()
+    flags = ns["noul_flags"](laya.moderation_questions())
+    assert ns["past_half"](_a(0.0, 0.0, 0.0, 0.066, 0.24), flags) == []
+    assert ns["past_half"](_a(0.587, 0.662, 0.142, 0.049, 1.34), flags) == ["toxic", "harassment"]
+    assert ns["past_half"](_a(0.5, 0.5, 0.5, 0.5, 1.0), flags) == [], "0.5 reads false, not true"
+
+
+def test_gaps_names_the_widest_separators():
+    """The old page said harassment and threat; on these numbers it is harassment and spam."""
+    ns = _helpers28()
+    flags = ns["noul_flags"](laya.moderation_questions())
+    tgt, gen = _a(0.587, 0.662, 0.142, 0.049, 1.34), _a(0.584, 0.144, 0.088, 0.242, 1.05)
+    g = ns["gaps"](tgt, gen, flags)
+    assert [k for k, _ in g] == ["harassment", "spam", "threat", "toxic"], g
+    assert abs(dict(g)["harassment"] - 0.518) < 1e-9 and dict(g)["spam"] < 0, g
+    # and the name follows the data: move `threat` to the top and it is the separator.
+    assert ns["gaps"](_a(0.1, 0.1, 0.9, 0.1, 1), _a(0.1, 0.1, 0.1, 0.1, 1), flags)[0][0] == "threat"
+
+
+def test_rank_cannot_assert_its_own_order():
+    ns = _helpers28()
+    labels = ["a", "b", "c", "d"]
+    scores = {"a": 1.34, "b": 1.05, "c": 0.99, "d": 0.24}
+    results = {k: _a(0, 0, 0, 0, v) for k, v in scores.items()}
+    chain, in_order = ns["rank_by_severity"](results, labels)
+    assert in_order is True, chain
+    assert [float(x) for x in re.findall(r"\d+\.\d{2}", chain)] == [1.34, 1.05, 0.99, 0.24], chain
+
+    shuffled = {k: _a(0, 0, 0, 0, scores[j]) for k, j in
+                zip(labels, ["d", "a", "c", "b"])}
+    chain2, in_order2 = ns["rank_by_severity"](shuffled, labels)
+    assert in_order2 is False, "the verdict must flip when the ranking does: %s" % chain2
+    assert [float(x) for x in re.findall(r"\d+\.\d{2}", chain2)] == [1.34, 1.05, 0.99, 0.24], (
+        "the printed chain must descend, whatever the order it lists: %s" % chain2)
+    assert chain2.index("b") < chain2.index("a"), chain2
+
+
+def test_page_drops_the_hardcoded_conclusions():
+    """Each ban fires on main's page and not on this one -- a ban with no witness is a guess."""
+    src = _src28()
+    for name, rule in (("every flag %.3f", UNIVERSAL_ONE_FLOAT),
+                       ("%.2f > %.2f in a format string", ASSERTED_CHAIN),
+                       ("separate them are `harassment` and `threat`", NAMED_SEPARATORS),
+                       ('a["toxic"]["noul"] in the summary', HARDCODED_FLAG_READ)):
+        assert rule.search(OLD_PAGE), "%s does not fire on the wording it bans" % name
+        assert not rule.search(src), "%s is still in example 28" % name
+
+
+def test_page_qualifies_the_banner_and_derives_its_numbers():
+    """The positive half: the page must read its flag list and rubric size from the preset."""
+    src = _src28()
+    assert NOTHING_QUALIFIED.search(src), "the banner must say that `nothing` is not zero"
+    assert not re.search(r"nothing at all", src, re.I), "the unqualified claim is back"
+    assert DERIVED_FLAGS.search(src), "flags must be read off the preset, not typed"
+    assert DERIVED_CEILING.search(src), "the rubric ceiling must be read off the criteria"
+    assert not re.search(r"/ 3\b", src), "a hardcoded severity divisor is back"
+    # and main's page satisfies none of that, so these rules could not have passed before.
+    assert not NOTHING_QUALIFIED.search(OLD_PAGE)
+    assert re.search(r"nothing at all", OLD_PAGE, re.I)
+    assert not DERIVED_FLAGS.search(OLD_PAGE) and not DERIVED_CEILING.search(OLD_PAGE)
+
+
+for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_pure,
+            test_flag_line_prints_every_flag, test_past_half_uses_describes_cut,
+            test_gaps_names_the_widest_separators, test_rank_cannot_assert_its_own_order,
+            test_page_drops_the_hardcoded_conclusions,
+            test_page_qualifies_the_banner_and_derives_its_numbers):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-28/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("page-28/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-28/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
