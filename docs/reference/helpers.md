@@ -67,6 +67,9 @@
 ::: laya.calibrate.fit_temperature_map
 
 ::: laya.calibrate.fit_abstention_thresholds
+::: laya.calibrate.fit_binning_map
+
+::: laya.calibrate.apply_binning_map
 
 ::: laya.common.render_options
 
