@@ -184,10 +184,12 @@ for label, fn in (("Router.route", Router.route),
 
 # Positional compatibility: hook parameters are keyword-only to protect positional callers
 check("Router.route_batch/positional prefix",
-      [p.name for p in sig(Router.route_batch).values() if p.kind != inspect.Parameter.KEYWORD_ONLY],
+      [p.name for p in sig(Router.route_batch).values()
+       if p.kind != inspect.Parameter.KEYWORD_ONLY and p.name != "self"],
       ["requests", "hooks_timeout"])
 check("Router.predict_batch/positional prefix",
-      [p.name for p in sig(Router.predict_batch).values() if p.kind != inspect.Parameter.KEYWORD_ONLY],
+      [p.name for p in sig(Router.predict_batch).values()
+       if p.kind != inspect.Parameter.KEYWORD_ONLY and p.name != "self"],
       ["requests", "batch_size", "min_confidence", "sort_by_length"])
 for param in ("hooks", "hooks_raise"):
     check("Router.route_batch/%s is keyword-only" % param,
