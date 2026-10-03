@@ -16,7 +16,7 @@ import {
   softmax,
   tempBucket,
 } from "./common.js";
-import type { OptionStats, SequenceStats } from "./common.js";
+import type { MinConfidence, OptionStats, SequenceStats } from "./common.js";
 import type { Batch, SessionProvider } from "./providers.js";
 import { encodeWithData, parseTokenizerJson, type TokenizerLike } from "./tokenizer.js";
 import { decide, type DecideOptions, type DecisionResult } from "./structured.js";
@@ -150,10 +150,10 @@ export interface PredictOptions {
   headMaxLen?: number | null;
   /** predictBatch: cap on states per shared forward pass; null sends them all in one pass. */
   batchSize?: number | null;
-  /** Minimum confidence threshold in [0.0, 1.0]. Low confidence answers get `low_confidence: true`. */
-  minConfidence?: number | null;
+  /** Minimum confidence threshold in [0.0, 1.0] or per-bucket map. Low confidence answers get `low_confidence: true`. */
+  minConfidence?: MinConfidence | null;
   /** Python parity alias for minConfidence. */
-  min_confidence?: number | null;
+  min_confidence?: MinConfidence | null;
 }
 
 function qidStr(qid: string): string {

@@ -60,14 +60,27 @@ export {
   confidenceFromProbs,
   answerConfidence,
   checkMinConfidence,
+  checkMinConfidenceMap,
   flagLowConfidence,
+  optionBucket,
+  resolveMinConfidence,
   clampTemperature,
   tempBucket,
   collateItems,
   TEMP_MIN,
   TEMP_MAX,
 } from "./common.js";
-export type { QType, InternalQ, CollateItem, CollatedBatch, QuestionPrefix, SequenceStats, OptionStats } from "./common.js";
+export type {
+  QType,
+  InternalQ,
+  CollateItem,
+  CollatedBatch,
+  QuestionPrefix,
+  SequenceStats,
+  OptionStats,
+  MinConfidence,
+  MinConfidenceMap,
+} from "./common.js";
 export { q, best, topK, isConfident } from "./dx.js";
 export { bpeEncode, metaspaceEncode, encodeWithData, parseTokenizerJson, loadTokenizerJson, CHECKPOINT_IDS, SPECIAL_ALIASES, METASPACE_REPLACEMENT } from "./tokenizer.js";
 export type { TokenizerLike, TokenizerData, TokenizerIds, PreTokenizerKind } from "./tokenizer.js";
