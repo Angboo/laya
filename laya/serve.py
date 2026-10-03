@@ -72,6 +72,37 @@ MAX_QUESTIONS = 64
 MAX_STATE_CHARS = 50000
 MAX_BATCH_STATES = 64
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# `/v1/systemone/batch` collates `states x questions` rows into ONE tensor, and each of the caps
+# above bounds only one factor: 64 states of 64 questions is 4096 rows from a 4.1 KB body, with every
+# documented limit satisfied, and `batch_size` defaults to `None`, which `predict_batch` documents as
+# "sends them all in one pass". Measured on the english checkpoint, CPU: ~127-142 ms per row at its
+# `max_len` of 512, roughly flat to 128 rows, so 4096 rows is minutes inside one forward pass while
+# the single inference gate is held.
+#
+# What a row COSTS is its width, and `max_len` is a request field capped only by
+# `DEFAULT_MAX_TOKEN_BUDGET` (8192) -- 16x the english checkpoint's own 512. 256 rows at 8192 is the
+# same 2 097 152 tokens as 4096 rows at 512 and collates the same tensor, so a bound on rows is the
+# wrong bound. The budget below is therefore in tokens.
+#
+# It CHUNKS rather than refuses. A refusal would need this number to be right about hardware serve
+# cannot see: measured here, peak RSS did not move at all between 32, 64 and 128 rows (flat at
+# 1151 MB), so the memory ceiling this would have been protecting was never reached at any size that
+# could be measured, and a 4096-row batch may be entirely reasonable on a larger machine. Splitting
+# the work bounds what one forward pass collates without refusing any request, which is the part that
+# can be justified. What it does NOT bound is how long one request holds the inference gate -- that is
+# `LAYA_MAX_CONCURRENT` and the single-worker pool's business, and is already true of a single
+# `/v1/systemone` request over a 50 000-character state.
+#
+# 131072 is 256 rows at `_BATCH_ROW_TOKENS_ASSUMED`. Chosen so every shape that fits it goes through
+# in ONE pass exactly as before -- byte-identical, since `batch_size` is then not passed at all -- and
+# only larger shapes are split. That makes the number low-stakes: too low over-chunks, too high
+# under-chunks, and neither refuses anything.
+DEFAULT_MAX_BATCH_TOKENS = 131072
+# The row width assumed when a request does not set `max_len`. serve cannot know the routed
+# checkpoint's own `max_len` without loading it, so this is the shipped english value; multilingual
+# is 1024, which this under-counts by 2x, meaning a multilingual batch chunks half as aggressively as
+# the budget intends.
+_BATCH_ROW_TOKENS_ASSUMED = 512
 # HTTP-only amplification guard; the library keeps its head_max_len-aware budget.
 MAX_CHOICE_OPTIONS = 100
 MAX_SCORE_LEVELS = 32
@@ -223,6 +254,28 @@ def _resolve_max_token_budget() -> int:
     if n <= 0:
         _log.warning("LAYA_MAX_TOKEN_BUDGET must be positive (got %d); falling back to %d", n, DEFAULT_MAX_TOKEN_BUDGET)
         return DEFAULT_MAX_TOKEN_BUDGET
+    return n
+
+
+def _resolve_max_batch_tokens() -> int:
+    """Tokens one batch FORWARD PASS may collate, from LAYA_MAX_BATCH_TOKENS.
+
+    Sizes the chunk, it does not refuse: see the constant's own comment for why a refusal would need
+    this number to be right about hardware this process cannot see.
+    """
+    raw = os.environ.get("LAYA_MAX_BATCH_TOKENS")
+    if not raw:
+        return DEFAULT_MAX_BATCH_TOKENS
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log.warning("invalid LAYA_MAX_BATCH_TOKENS %r; falling back to %d", raw,
+                     DEFAULT_MAX_BATCH_TOKENS)
+        return DEFAULT_MAX_BATCH_TOKENS
+    if n <= 0:
+        _log.warning("LAYA_MAX_BATCH_TOKENS must be positive (got %d); falling back to %d", n,
+                     DEFAULT_MAX_BATCH_TOKENS)
+        return DEFAULT_MAX_BATCH_TOKENS
     return n
 
 
@@ -592,6 +645,28 @@ def _check_request_limits(state: Any, questions: Any) -> None:
     if state_len > MAX_STATE_CHARS:
         raise HTTPException(status_code=413,
                             detail="state too large (%d > %d chars)" % (state_len, MAX_STATE_CHARS))
+
+
+def _batch_chunk_size(n_states: int, n_questions: int, max_len: Any = None) -> Optional[int]:
+    """States per forward pass so one pass stays inside the token budget, or None to change nothing.
+
+    `None` means "send them all in one pass", which is `predict_batch`'s own default, so a request
+    whose rows already fit is passed no `batch_size` at all and behaves byte-identically -- important
+    because `predict_batch` warns that changing batch shapes can move floating-point results, and a
+    request that works today must not start answering differently.
+
+    A single state cannot be split further, so a batch chunks down to one state per pass and no
+    lower: at that point one pass carries `n_questions` rows, which is exactly what one
+    `/v1/systemone` request can already ask for.
+    """
+    if n_states <= 0 or n_questions <= 0:
+        return None
+    width = (max_len if isinstance(max_len, int) and not isinstance(max_len, bool) and max_len > 0
+             else _BATCH_ROW_TOKENS_ASSUMED)
+    if n_states * n_questions * width <= _resolve_max_batch_tokens():
+        return None
+    rows_per_pass = max(1, _resolve_max_batch_tokens() // width)
+    return max(1, min(n_states, rows_per_pass // n_questions))
 
 
 def _check_batch_limits(states: Any, questions: Any) -> None:
@@ -1020,6 +1095,15 @@ def create_app(router: Optional[Any] = None):
         batch_size = _validate_batch_size_param(body)
         if batch_size is not None:
             call_kwargs["batch_size"] = batch_size
+        else:
+            # The caller's own `batch_size` always wins -- they asked for a shape. Otherwise split the
+            # batch so one forward pass stays inside the token budget. `None` when it already fits, so
+            # nothing is passed and the call is the one it has always been.
+            planned = _batch_chunk_size(
+                len(states), len(questions) if isinstance(questions, dict) else 0,
+                body.get("max_len"))
+            if planned is not None:
+                call_kwargs["batch_size"] = planned
         sort_by_length = _validate_sort_by_length_param(body)
         if sort_by_length:
             # Only `True` is forwarded: `predict_batch`'s own default is `False`, and an attached

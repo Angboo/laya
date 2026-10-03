@@ -638,7 +638,7 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 }'
 ```
 
-To evaluate multiple states in a single call, send a `states` array to `POST /v1/systemone/batch` (capped at 64 states):
+To evaluate multiple states in a single call, send a `states` array to `POST /v1/systemone/batch` (capped at 64 states; a batch larger than `LAYA_MAX_BATCH_TOKENS` is split across several forward passes rather than refused):
 
 ```bash
 curl -s localhost:8000/v1/systemone/batch -H 'content-type: application/json' -d '{
