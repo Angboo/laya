@@ -94,6 +94,23 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
+## What's new in 0.3.25
+
+* **Memory on demand.** `LAYA_IDLE_UNLOAD_SECONDS` lets `laya-serve` give its checkpoints back after an idle window, and `LAYA_BASE_URL` lets `laya-mcp-server` answer from a running server over HTTP instead of loading its own copy, so several editor sessions share one resident model (#888). Both default to off.
+* **Backends.** `Agent(backend=...)` and `agent.set_backend(...)` select `auto` / `eager` / `compile` / `tilelang` / `onnx` through one class layer, with ONNX routed to the existing `ONNXAgent` rather than a second copy of that path.
+* **Compile defaults.** `compile=True` warms during load instead of paying 50 s on the first request, with `compile_warmup=False` to restore the lazy shape. `compile_cache` gives Inductor a Laya-specific directory and `compile_mode` reaches `reduce-overhead`.
+* **AOTInductor packaging works.** `DecisionModel.forward` cast to fp32 before the action head while the encoder ran under AMP, which packaged a graph that died with `mat1 and mat2 must have the same dtype`. The cast now matches the head's weight dtype outside autocast only, so eager and AMP numerics are untouched.
+* **Oversized batches split instead of collating whole.** `/v1/systemone/batch` chooses a state chunk size when the token product would exceed the cap, rather than building one 4,096-row forward pass. No request that worked before is refused and none changes its answer.
+* **Calibration.** Histogram binning is wired into answers and the calibration payload, so a fitted `binning_map` ships and loads like the temperatures.
+* **TileLang.** All five kernels now lower for the CPU target as an explicit fp32 specialization, and GEGLU uses two pipeline stages.
+* **Stricter device handling.** A CUDA ordinal past `device_count`, and `auto` in any casing, are resolved at load with the same warn-and-CPU shape as the existing fallbacks instead of dying later in `.to()`.
+* **Encoding.** `laya` writes redirected stdout as utf-8, the output half of the stdin fix in #799.
+* **TypeScript.** Both clients accept the per-bucket `minConfidence` map, and `laya-ts` ports it to the on-device engine.
+
+13 pull requests from 9 contributors.
+
+---
+
 ## What's new in 0.3.24
 
 * **Concurrency.** `Router.load` builds a checkpoint outside the lifecycle lock, so a cold build no longer blocks calls for a checkpoint that is already resident, and `unload` is synchronized per checkpoint rather than globally (#848). `predict_long` holds the tokenizer lock like every other encode, so scanning a document next to ordinary predictions no longer raises `Already borrowed` (#825).
