@@ -100,6 +100,13 @@ except ValueError as exc:
 # load() forwards Agent's own construction options, so none of them is reachable only
 # through the class; tests/test_download.py asserts that against both signatures.
 check_param("load", load, "compile", False)
+check_param("load", load, "backend", None)
+check_param("load", load, "onnx_path", None)
+check_param("Agent.__init__", Agent.__init__, "backend", None)
+check_param("Agent.set_backend", Agent.set_backend, "name", "auto")
+check_param("Agent.set_backend", Agent.set_backend, "strict", False)
+check_true("Agent.backend is a property", isinstance(Agent.backend, property))
+check_true("Agent.backend_object is a property", isinstance(Agent.backend_object, property))
 
 # ONNXAgent downloads the same Hub artifacts as Agent, so it authenticates the same way
 check_param("ONNXAgent.__init__", ONNXAgent.__init__, "token", None)

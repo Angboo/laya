@@ -59,6 +59,7 @@ SCRIPT_SUITES = [
     "tests/test_question_token_reuse.py",
     "tests/test_lazy_import.py",
     "tests/test_runtime_fixes.py",
+    "tests/test_backends.py",
     "tests/test_fast_head_partition.py",
     "tests/test_agent_gate.py",
     "tests/test_option_collapse.py",
