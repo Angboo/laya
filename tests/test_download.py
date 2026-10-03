@@ -327,10 +327,12 @@ class DownloadTests(unittest.TestCase):
         # copied across rather than silently diverging again.
         #   fast/compile -- the TileLang path and torch.compile, neither of which exists
         #                    inside onnxruntime.
+        #   compile_warmup/compile_cache/compile_mode -- configure torch.compile, which
+        #                    does not exist inside onnxruntime either.
         #   device       -- ONNXAgent picks an execution provider from what onnxruntime
         #                    reports and takes no override; a different asymmetry, with its
         #                    own fix.
-        not_for_onnxruntime = {"fast", "compile", "device"}
+        not_for_onnxruntime = {"fast", "compile", "device", "compile_warmup", "compile_cache", "compile_mode"}
         agent_side = (set(inspect.signature(Agent.__init__).parameters)
                       - {"self", "model_id_or_path"} - not_for_onnxruntime)
         onnx_side = set(inspect.signature(ONNXAgent.__init__).parameters) - {"self"}
