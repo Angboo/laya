@@ -206,6 +206,7 @@ EXEMPT_TEST_SUITES = {
     "test_mcp_local_e2e.py": "Requires local checkpoints under ~/laya_models (AGENTS.md)",
     "test_onnx.py": "Requires onnx extra; skip-guarded on lane without it (AGENTS.md)",
     "test_fast.py": "Requires CUDA and tilelang extra (AGENTS.md)",
+    "test_compile_cuda.py": "Requires CUDA; CI installs CPU-only torch",
     "test_server_example.py": "Requires cached or downloaded weights for examples/server.py",
 }
 
