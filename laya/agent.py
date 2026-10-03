@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 
-from ._compile import compile_model, independent_dims
+from ._compile import compile_model, independent_dims, configure_cache
 from .calibrate import (
     _install_temperatures,
     apply_calibration_payload,
@@ -493,6 +493,7 @@ class Agent(HookRegistry):
         hooks_timeout: Optional[float] = None,
         calibration: Optional[str] = None,
         compile_warmup: bool = True,
+        compile_cache: bool = False,
     ):
         """Load a Laya checkpoint.
 
@@ -513,6 +514,8 @@ class Agent(HookRegistry):
         TileLang path replaces the forward that would be compiled.
         Compiled agents run `warmup()` before returning; `compile_warmup=False` defers that
         work to requests or a manual `warmup()` call. Eager and fast agents are unchanged.
+        `compile_cache=True` opts into a persistent Laya Inductor directory (process-wide),
+        respecting any existing `TORCHINDUCTOR_CACHE_DIR`; see the compile engineering notes.
 
         `subfolder` selects one checkpoint from a repo that bundles several, e.g.
         `Agent("convaiinnovations/laya", subfolder="multilingual")`. Only that subfolder is
@@ -527,6 +530,9 @@ class Agent(HookRegistry):
         `hooks_concurrent=False` serialises hooks that are not safe to run in parallel, and
         `hooks_timeout` bounds each hook call in seconds (None means no limit).
         """
+        # Model loading can import Dynamo, which populates Inductor's default directory.
+        if compile and not fast and compile_cache:
+            configure_cache()
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
@@ -1913,7 +1919,8 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          hooks=None, on_predict_start=None, on_predict_end=None,
          hooks_raise: bool = True, hooks_concurrent: bool = True,
          hooks_timeout: Optional[float] = None,
-         calibration: Optional[str] = None, compile_warmup: bool = True) -> Agent:
+         calibration: Optional[str] = None, compile_warmup: bool = True,
+         compile_cache: bool = False) -> Agent:
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:
@@ -1949,7 +1956,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         if spec is not None:
             model_id_or_path, subfolder = spec
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
-                 compile=compile, compile_warmup=compile_warmup,
+                 compile=compile, compile_warmup=compile_warmup, compile_cache=compile_cache,
                  revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,

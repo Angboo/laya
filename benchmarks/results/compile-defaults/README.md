@@ -51,3 +51,33 @@ Output: `Using Python 3.12.13 environment at: /home/ckl/projects/S/laya/.venv`;
 Baseline-cold ran before code edits; use `--no-warmup` to reproduce its lazy behavior on this tree.
 Warm-up shifts cost into load; it does not eliminate compilation or all possible guard specializations.
 The two warm-up runs were contended. Cross-process reuse yielded two FX hits and zero misses.
+
+## Item 2: opt-in persistent Laya cache
+
+`compile_cache=True` selects `$XDG_CACHE_HOME/laya/torchinductor` or
+`~/.cache/laya/torchinductor` only if `TORCHINDUCTOR_CACHE_DIR` is absent.
+The default is false, existing settings win, and non-compiled/TileLang loads do nothing.
+The choice is explicitly process-wide; PyTorch owns cache compatibility/invalidation.
+
+The `cache-verified-*` experiments unset `TORCHINDUCTOR_CACHE_DIR`, set an isolated persistent
+XDG root, assert the selected path, and test reuse in separate processes (see `.command` files).
+The earlier `cache-cold`, `cache-restart`, and `cache-quiet-*` logs are diagnostic attempts,
+NOT measurements of the Laya cache: an early Dynamo counters import populated the default
+Inductor environment variable before the opt-in ran. This was caught by auditing the actual
+printed path. The benchmark now imports counters after load, asserts the path, and the agent
+configures the cache before model construction can import Dynamo. A regression pins that order. Full GPU state is attached to each run, not inferred from
+allocator counters. Tests cover opt-in behavior, XDG/fallback paths, explicit overrides,
+repeated setup, and constructor forwarding. `cache-verified-validation.log` records every gate and core suite after the correction.
+The final ordering assertion is rerun with `python tests/test_compile.py`
+(`cache-order-tests.log`, exit 0).
+
+| Run | Load s | Request 1 ms | Request 8 ms | Peak alloc/reserved MiB | FX hits/misses |
+|---|---:|---:|---:|---:|---:|
+| cache-verified-cold | 111.643 | 22.86 | 8.69 | 1685.6 / 1820.0 | 0 / 2 |
+| cache-verified-restart | 51.292 | 24.43 | 10.84 | 1671.0 / 1796.0 | 2 / 0 |
+
+Both verified processes selected `/home/ckl/.cache/laya-compile-defaults-verified-20261003/laya/torchinductor`.
+The second process hit both FX graphs, reducing load from 111.64 s to 51.29 s.
+The cache location adds no meaningful GPU memory requirement; both peaks match the earlier
+warm-up experiments. These final runs had no other compute jobs in their GPU snapshots.
+Reboot/container persistence was not exercised; that depends on retaining the directory.

@@ -31,6 +31,14 @@ by sequence length, so it has no such buffer.
   container restart. Set it to a persistent directory, or a volume in a container, and a second
   process loads the graphs instead of compiling them. In #472's measurement that took warm-up from
   about 120 s to about 50 s.
+- **Laya cache opt-in.** `laya.load(..., compile=True, compile_cache=True)` sets the process-wide
+  `TORCHINDUCTOR_CACHE_DIR` only when absent, to `$XDG_CACHE_HOME/laya/torchinductor` or
+  `~/.cache/laya/torchinductor` when XDG is unset or not absolute. An existing setting, including
+  one set by an earlier PyTorch compile, wins. The directory is created at load; filesystem
+  errors propagate. `compile_cache=False` (default), eager, and TileLang loads leave the
+  environment alone. This does not move or delete old caches. Containers still need a persistent
+  home/volume. Cache compatibility and invalidation are managed by PyTorch; a GPU, torch,
+  compiler, model, or input guard change can require compilation again.
 
 ## AOTInductor: not yet
 

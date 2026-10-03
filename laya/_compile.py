@@ -26,6 +26,7 @@ Mode and device are unchanged from what `compile=True` has always done: the defa
 on whatever device the agent runs on, CPU included.
 """
 import threading
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -39,6 +40,16 @@ _saved = None
 def compile_model(model, **kwargs):
     """`torch.compile(model, dynamic=True)`; `kwargs` go to `torch.compile` (tests pass `backend=`)."""
     return torch.compile(model, dynamic=True, **kwargs)
+
+
+def configure_cache():
+    """Respect an existing Inductor directory; otherwise use the user's Laya cache."""
+    root = os.environ.get("XDG_CACHE_HOME", "")
+    if not os.path.isabs(root):
+        root = os.path.expanduser("~/.cache")
+    directory = os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(root, "laya", "torchinductor"))
+    os.makedirs(directory, exist_ok=True)
+    return directory
 
 
 def _fx_config():

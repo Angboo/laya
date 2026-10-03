@@ -182,14 +182,16 @@ def test_constructor_warms_only_the_active_compiled_path():
     from laya import load
 
     model = tiny_model()
+    events = []
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / "rl_agent_config.json").write_text(json.dumps({"encoder": "unused", "head_layers": 1}))
         (root / "model.safetensors").touch()
-        with patch.object(module, "build_model", return_value=model), \
+        with patch.object(module, "build_model", side_effect=lambda *a, **kw: events.append("model") or model), \
              patch.object(module, "_load_tokenizer", return_value=SimpleNamespace(cls_token_id=1)), \
              patch("safetensors.torch.load_file", return_value=model.state_dict()), \
-             patch.object(module, "compile_model", side_effect=lambda m: m) as compile_spy, \
+             patch.object(module, "compile_model", side_effect=lambda m, **kw: m) as compile_spy, \
+             patch.object(module, "configure_cache", side_effect=lambda: events.append("cache")) as cache_spy, \
              patch.object(Agent, "accelerate"), \
              patch.object(Agent, "warmup", autospec=True) as warm:
             agent = load(directory, device="cpu", compile=True)
@@ -203,6 +205,46 @@ def test_constructor_warms_only_the_active_compiled_path():
             assert compile_spy.call_count == 2
             agent.warmup()
             warm.assert_called_once_with(agent)
+            cache_spy.assert_not_called()
+            events.clear()
+            load(directory, device="cpu", compile=True, compile_cache=True, compile_warmup=False)
+            assert events == ["cache", "model"]
+            cache_spy.assert_called_once_with()
+            cache_spy.reset_mock()
+            compile_spy.reset_mock()
+            load(directory, device="cpu", compile=False, compile_cache=True)
+            load(directory, device="cpu", compile=True, fast=True, compile_cache=True)
+            compile_spy.assert_not_called()
+            cache_spy.assert_not_called()
+
+
+def test_persistent_cache_is_opt_in_and_respects_the_environment():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+    from laya._compile import configure_cache
+
+    with tempfile.TemporaryDirectory() as directory:
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": directory + "/xdg"}, clear=True), \
+             patch("os.path.expanduser", return_value=directory + "/.cache"), \
+             patch("torch.compile") as compiler:
+            compile_model(object())
+            assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+            configure_cache()
+            expected = str(Path(directory) / "xdg/laya/torchinductor")
+            assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == expected
+            assert Path(expected).is_dir()
+            assert compiler.call_args.kwargs == {"dynamic": True}
+            # A caller-selected directory always wins, including after repeated loads.
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = directory + "/explicit"
+            assert configure_cache() == directory + "/explicit"
+            assert configure_cache() == directory + "/explicit"
+            del os.environ["TORCHINDUCTOR_CACHE_DIR"]
+            os.environ["XDG_CACHE_HOME"] = "relative-is-invalid"
+            assert configure_cache() == directory + "/.cache/laya/torchinductor"
+            del os.environ["TORCHINDUCTOR_CACHE_DIR"]
+            del os.environ["XDG_CACHE_HOME"]
+            assert configure_cache() == directory + "/.cache/laya/torchinductor"
 
 
 if __name__ == "__main__":

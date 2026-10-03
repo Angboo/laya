@@ -22,7 +22,6 @@ def main():
     parser.add_argument("--mode", default=None)
     args = parser.parse_args()
     import torch
-    from torch._dynamo.utils import counters
     from laya import Agent
 
     def smi():
@@ -37,10 +36,19 @@ def main():
         kw["compile_cache"] = True
     if args.mode:
         kw["compile_mode"] = args.mode
+    initial_cache = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
     t = time.perf_counter()
     agent = Agent(args.model, device="cuda", compile=True, **kw)
     torch.cuda.synchronize()
     load_s = time.perf_counter() - t
+    from torch._dynamo.utils import counters
+    if args.cache:
+        root = os.environ.get("XDG_CACHE_HOME", "")
+        if not os.path.isabs(root):
+            root = os.path.expanduser("~/.cache")
+        expected = initial_cache or os.path.join(root, "laya", "torchinductor")
+        assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == expected
+        assert os.path.isdir(expected)
     print("load_s", load_s, "cache", os.environ.get("TORCHINDUCTOR_CACHE_DIR"), flush=True)
     times = []
     # Repeat the sequence to expose CUDA graph recording/replay and retained-output issues.

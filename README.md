@@ -879,7 +879,10 @@ On CUDA, compiled inference pads the masked end of each sequence to a multiple o
 avoids extra SDPA graph specialisations on PyTorch versions that distinguish lengths modulo eight;
 reported token usage still counts the original, unpadded sequence.
 Inductor caches compiled graphs under `TORCHINDUCTOR_CACHE_DIR` (by default in `/tmp`); point it at a
-persistent directory to keep them across restarts.
+persistent directory to keep them across restarts. Alternatively, load with
+`compile=True, compile_cache=True` to use `$XDG_CACHE_HOME/laya/torchinductor` (or
+`~/.cache/laya/torchinductor`). This opt-in sets the process-wide environment variable only if
+absent; an existing value always wins. It does nothing on eager or TileLang loads.
 
 ---
 
