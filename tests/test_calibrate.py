@@ -454,6 +454,33 @@ apply_calibration_payload(stub, calibration_payload([1.2, 1.1, 1.3], {"choice:2"
 check("stub/temperature", stub.temperature, [1.2, 1.1, 1.3])
 check("stub/by_options", stub.temperature_by_options, {"choice:2": 1.4})
 
+# Optional histogram-binning map round-trips through the payload and lands on the agent.
+bm = {"choice:2": {"bins": 2, "values": [0.9, 0.2]}}
+with_bm = calibration_payload([1.2, 1.1, 1.3], {"choice:2": 1.4}, binning_map=bm)
+check("payload/no-binning omission", "binning_map" not in calibration_payload([1.2, 1.1, 1.3], {}), True)
+check_true("payload/binning key present", "binning_map" in with_bm, with_bm.keys())
+apply_calibration_payload(stub, with_bm)
+check("stub/binning_map", stub.binning_map, bm)
+stub_no_bm = type("Stub", (), {})()
+apply_calibration_payload(stub_no_bm, {"temperature": [1.0, 1.0, 1.0]})
+check("stub/binning_map cleared when absent", stub_no_bm.binning_map, None)
+
+# The same `_decode_answers` stub test_batch uses proves the map is selectable: no map,
+# the temperature-scaled confidence; a map on this bucket, the remapped one.
+bin_decoder = Agent.__new__(Agent)
+bin_decoder.temperature = [1.0, 1.0, 1.0]
+bin_decoder.temperature_by_options = {}
+bin_ids = ["pick"]
+bin_internal = {"pick": {"t": "choice", "crit": {"left": "left", "right": "right"}}}
+bin_items = [{"markers": [0, 1]}]
+bin_logits = np.log([[0.5, 0.5]]) * 1.0
+bin_act = np.array([[0.2, 0.8]])
+plain = bin_decoder._decode_answers(bin_logits, bin_act, bin_items, bin_ids, bin_internal, 0)
+check("decode/no binning keeps scaled confidence", plain["pick"]["answer_confidence"], 0.5)
+bin_decoder.binning_map = bm
+remapped = bin_decoder._decode_answers(bin_logits, bin_act, bin_items, bin_ids, bin_internal, 0)
+check("decode/binning remaps confidence", remapped["pick"]["answer_confidence"], 0.2)
+
 # A payload with no version is the original schema and must still load, even onto an
 # agent that has its own identity. No warning: there is no recorded checkpoint to disagree with.
 legacy = {"temperature": [1.4, 1.2, 1.1], "temperature_by_options": {"noul:2": 1.5}}
@@ -526,6 +553,9 @@ def _refuses(name, payload, fragment=None):
 
 
 _refuses("shape/non-object payload", ["temperature", [1.0, 1.0, 1.0]], "must be an object")
+_refuses("shape/binning not object", {"temperature": [1.0, 1.0, 1.0], "binning_map": [1, 2]}, "binning_map")
+_refuses("shape/binning wrong entry", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": 1}}, "bins")
+_refuses("shape/binning values length", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 2, "values": [0.5]}}}, "values")
 _refuses("shape/scalar temperature", {"temperature": 5}, "[3 floats]")
 _refuses("shape/string temperature", {"temperature": "abc"}, "[3 floats]")
 _refuses("shape/dict temperature", {"temperature": {"a": 1, "b": 2, "c": 3}}, "[3 floats]")
