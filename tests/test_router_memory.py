@@ -12,6 +12,8 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 # The page under test lives in this checkout, so the library it is compared against has to come
 # from here too: an installed `laya` would let the page and a stale default agree.
@@ -112,6 +114,31 @@ def derived_default(tree):
 
 
 class RouterMemoryTests(unittest.TestCase):
+    def test_mps_cache_is_released_after_unload_and_eviction(self):
+        for operation in ("one", "all", "evict"):
+            for available in (False, True):
+                with self.subTest(operation=operation, available=available):
+                    empty_cache = Mock()
+                    torch = SimpleNamespace(
+                        cuda=SimpleNamespace(is_available=lambda: False),
+                        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: available)),
+                        mps=SimpleNamespace(empty_cache=empty_cache),
+                    )
+                    r = Router(max_loaded=1)
+                    r._agents["english"] = MockAgent("en")
+                    r._order.append("english")
+                    with patch.dict(sys.modules, {"torch": torch}):
+                        if operation == "one":
+                            r.unload("english")
+                        elif operation == "all":
+                            r.unload()
+                        else:
+                            r._agents["multilingual"] = MockAgent("multi")
+                            r._order.append("multilingual")
+                            r._evict()
+                    self.assertNotIn("english", r.loaded)
+                    self.assertEqual(empty_cache.call_count, int(available))
+
     def test_evict_and_unload_memory_release(self):
         r = Router(max_loaded=1)
         r.attach("english", MockAgent("en"))

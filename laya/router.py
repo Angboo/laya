@@ -715,6 +715,8 @@ class Router(HookRegistry):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
             except Exception:
                 pass
         return evicted
@@ -786,6 +788,8 @@ class Router(HookRegistry):
                                 torch.cuda.empty_cache()
                             if hasattr(torch, "xpu") and torch.xpu.is_available():
                                 torch.xpu.empty_cache()
+                            if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                                torch.mps.empty_cache()
                         except Exception:
                             pass
                         break
@@ -805,6 +809,8 @@ class Router(HookRegistry):
                                 torch.cuda.empty_cache()
                             if hasattr(torch, "xpu") and torch.xpu.is_available():
                                 torch.xpu.empty_cache()
+                            if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                                torch.mps.empty_cache()
                         except Exception:
                             pass
                         break
