@@ -157,6 +157,18 @@ in
       description = "Build the checkpoints at startup rather than lazily on first request.";
     };
 
+    idleUnloadSeconds = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      example = 300;
+      description = ''
+        Unload resident checkpoints after this many idle seconds (sets
+        `LAYA_IDLE_UNLOAD_SECONDS`). The next request pays a cold load.
+        Zero disables unloading; null leaves the server's default, also off.
+        Device caches are released, but the process allocator may retain RAM pages.
+      '';
+    };
+
     threads = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -319,6 +331,8 @@ in
       } // lib.optionalAttrs (cfg.threads != null) {
         LAYA_THREADS = toString cfg.threads;
         OMP_NUM_THREADS = toString cfg.threads;
+      } // lib.optionalAttrs (cfg.idleUnloadSeconds != null) {
+        LAYA_IDLE_UNLOAD_SECONDS = toString cfg.idleUnloadSeconds;
       } // lib.optionalAttrs (cfg.rootPath != null) {
         LAYA_ROOT_PATH = cfg.rootPath;
       } // lib.optionalAttrs (cfg.logLevel != null) {
