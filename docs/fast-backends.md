@@ -121,8 +121,9 @@ Before/after runs used the original module extracted with
 The original was loaded as `laya.tl_kernels` via `importlib` for baseline runs;
 all other Laya code and the Python environment stayed the same.
 
-- `python -m pytest tests/test_fast.py -q`, with `LAYA_TEST_MODEL` set:
-  **13 passed before; 13 passed after**. Initially without that variable it was
+- `python -m pytest tests/test_fast.py -q`, with the full-forward tests configured
+  to load the cached English checkpoint identified below:
+  **13 passed before; 13 passed after**. Initially without a checkpoint it was
   11 passed / 2 skipped. Both full runs emitted the checkpoint's existing
   temperature-clamping warning (`choice:11+=0.10058280825614929 -> 0.5`).
 - Seeded capture of the existing kernel tests: **24 output tensors bit-identical**,
