@@ -865,25 +865,36 @@ restores it. Kernels compile once per shape bucket on first use (a few seconds, 
 
 ### Warm-up before serving: `agent.warmup()`
 
-`compile=True` compiles on the first request that needs a graph, and the first single-question request
-needs a second one (torch specialises a batch of 1). Both stall a live request. `agent.warmup()` runs the
-forward on a few synthetic shapes now and returns the seconds it took, so the compiles happen before
-traffic arrives:
+`compile=True` now runs `agent.warmup()` before returning from load. This moves the batch and
+single-row graph compiles into startup; startup can take tens of seconds. To defer the work:
 
 ```python
-agent = laya.load("convaiinnovations/laya", compile=True)
-agent.warmup()                   # ~46 s on an RTX 4070 Ti SUPER; every later request ~10-30 ms
+agent = laya.load("convaiinnovations/laya", compile=True, compile_warmup=False)
+seconds = agent.warmup()         # manual entry point, also accepts shapes=[(rows, tokens, markers)]
 ```
 
-Measured with `benchmarks/bench_compile.py --device cuda [--warmup]` (English checkpoint, torch 2.11, ten
-requests of changing shape): without it the first request took 51 s and the first single-question request,
-the eighth, took another 41 s; after `warmup()` no request took more than 30 ms. It works the same with
-`fast=True` (kernels and CUDA graphs for those buckets) and costs a few forward passes on the stock path.
+If automatic warm-up fails, load emits a `RuntimeWarning` naming the underlying error and returns
+with the `torch.compile` wrapper and compile settings intact. Later requests still use the compiled
+model and propagate compilation failures; there is no automatic eager fallback. Explicit
+`agent.warmup()` calls also propagate failures, even after automatic warm-up has failed.
+
+Warm-up uses synthetic inputs without prediction hooks or prediction caches. It covers common batch
+and single-row shapes, not every possible guard or CUDA graph shape. `compile=False` and `fast=True`
+do not warm automatically. Manual warm-up still works on both paths.
 On CUDA, compiled inference pads the masked end of each sequence to a multiple of eight tokens. This
 avoids extra SDPA graph specialisations on PyTorch versions that distinguish lengths modulo eight;
 reported token usage still counts the original, unpadded sequence.
 Inductor caches compiled graphs under `TORCHINDUCTOR_CACHE_DIR` (by default in `/tmp`); point it at a
-persistent directory to keep them across restarts.
+persistent directory to keep them across restarts. Alternatively, load with
+`compile=True, compile_cache=True` to use `$XDG_CACHE_HOME/laya/torchinductor` (or
+`~/.cache/laya/torchinductor`). This opt-in sets the process-wide environment variable only if
+absent; an existing value always wins. It does nothing on eager or TileLang loads.
+
+`compile_mode="reduce-overhead"` is a separate opt-in for CUDA graphs. With `compile=True`, it
+can reduce launch overhead on repeated shapes, but each new shape needs recording and GPU memory
+can grow. Laya copies outputs out of reusable graph buffers and serializes these CUDA forwards.
+The default mode remains unchanged. See [the engineering notes](https://github.com/NandhaKishorM/laya/blob/main/docs/compile-and-fast-path.md)
+for measurements and limitations.
 
 ---
 

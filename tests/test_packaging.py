@@ -207,6 +207,7 @@ EXEMPT_TEST_SUITES = {
     "test_onnx.py": "Requires onnx extra; skip-guarded on lane without it (AGENTS.md)",
     "test_fast.py": "Requires CUDA and tilelang extra (AGENTS.md)",
     "test_fast_cpu.py": "Requires tilelang extra and a C++ compiler; optional CUDA parity",
+    "test_compile_cuda.py": "Requires CUDA; CI installs CPU-only torch",
     "test_server_example.py": "Requires cached or downloaded weights for examples/server.py",
 }
 
