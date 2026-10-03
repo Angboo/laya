@@ -28,6 +28,8 @@ env var                    meaning                                        defaul
                            language evidence; aliases like ml work
 ``LAYA_MAX_LOADED``        checkpoints kept resident at once. Below what  2
                            routing can choose, one reloads per switch.
+``LAYA_IDLE_UNLOAD_SECONDS`` unload checkpoints after this many idle     0 (off)
+                           seconds; the next request loads them again.
 ``LAYA_API_KEY``           if set, require ``Authorization: Bearer <it>``  (none)
 ``LAYA_ROOT_PATH``         public URL prefix behind a reverse proxy        (none)
 ``LAYA_LOG_LEVEL``         uvicorn log level                              info
@@ -53,6 +55,7 @@ and touches no GPU -- which is what keeps the Nix ``pythonImportsCheck`` honest.
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -239,6 +242,21 @@ def _resolve_max_concurrent() -> int:
     except ValueError:
         return DEFAULT_MAX_CONCURRENT
     return n if n > 0 else DEFAULT_MAX_CONCURRENT
+
+
+def _resolve_idle_unload_seconds() -> float:
+    """Idle window from LAYA_IDLE_UNLOAD_SECONDS; zero disables unloading."""
+    raw = os.environ.get("LAYA_IDLE_UNLOAD_SECONDS", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    if not math.isfinite(seconds):
+        _log.warning("invalid LAYA_IDLE_UNLOAD_SECONDS %r; idle unload disabled", raw)
+        return 0.0
+    return seconds if seconds > 0 else 0.0
 
 
 def _resolve_max_token_budget() -> int:
@@ -814,6 +832,7 @@ def create_app(router: Optional[Any] = None):
     is built from the environment (and preloaded) at app-creation time."""
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
 
     from fastapi import FastAPI, Header, HTTPException, Request
 
@@ -843,11 +862,53 @@ def create_app(router: Optional[Any] = None):
     max_concurrent = _resolve_max_concurrent()
     admission: Optional[asyncio.Semaphore] = None
 
+    idle_unload_seconds = _resolve_idle_unload_seconds()
+    last_request = time.monotonic()
+
+    def _mark_request():
+        nonlocal last_request
+        last_request = time.monotonic()
+
+    def _run_inference(fn):
+        try:
+            return fn()
+        finally:
+            # On the worker, including failures and cancelled HTTP requests whose forward
+            # pass continues after the event loop releases the gate.
+            _mark_request()
+
+    def _unload_if_idle():
+        # Recheck on the inference worker: a queued unload must see any forward pass that
+        # finished after the reaper checked the gate. Unload and inference never overlap.
+        idle_for = time.monotonic() - last_request
+        if idle_for >= idle_unload_seconds and router.loaded:
+            router.unload()
+            _log.info("idle for %.1fs: unloaded resident checkpoints", idle_for)
+
+    async def _idle_reaper():
+        interval = max(0.05, min(idle_unload_seconds / 4.0, 5.0))
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(interval)
+            if gate is not None and gate.locked():
+                continue
+            try:
+                await loop.run_in_executor(pool, _unload_if_idle)
+            except Exception:  # noqa: BLE001 -- a failed unload must not stop future attempts
+                _log.exception("idle unload failed")
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        reaper = asyncio.create_task(_idle_reaper()) if idle_unload_seconds else None
         try:
             yield
         finally:
+            if reaper is not None:
+                reaper.cancel()
+                try:
+                    await reaper
+                except asyncio.CancelledError:
+                    pass
             # TestClient, embedded ASGI apps, and process supervisors all need
             # the executor to drain when the app stops.
             pool.shutdown(wait=True, cancel_futures=True)
@@ -914,6 +975,8 @@ def create_app(router: Optional[Any] = None):
             agent = router_agent(router, name)
             fallbacks[name] = {"count": getattr(agent, "cpu_fallback_count", 0),
                                "last_reason": getattr(agent, "last_fallback_reason", None)}
+        idle = ({"idle_unload_seconds": idle_unload_seconds,
+                 "idle_seconds": round(time.monotonic() - last_request, 1)} if idle_unload_seconds else {})
         return {
             "status": "ok",
             "loaded": router.loaded,
@@ -922,6 +985,7 @@ def create_app(router: Optional[Any] = None):
             "device_is_preference": actual is None,
             "checkpoint_devices": checkpoint_devices,
             "cpu_fallbacks": fallbacks,
+            **idle,
         }
 
     @asynccontextmanager
@@ -950,6 +1014,7 @@ def create_app(router: Optional[Any] = None):
 
     async def _systemone_inner(request: Request):
         nonlocal gate
+        _mark_request()
         body = await _read_json_body(request)
         if not isinstance(body, dict) or "questions" not in body:
             raise HTTPException(status_code=400, detail="request body must be an object with a 'questions' field")
@@ -997,12 +1062,8 @@ def create_app(router: Optional[Any] = None):
             async with gate:
                 loop = asyncio.get_running_loop()
                 t0 = time.perf_counter()
-                if predict_kwargs:
-                    result = await loop.run_in_executor(
-                        pool, lambda: router.predict(state, questions, model=model, **predict_kwargs))
-                else:
-                    result = await loop.run_in_executor(
-                        pool, lambda: router.predict(state, questions, model=model))
+                result = await loop.run_in_executor(
+                    pool, _run_inference, partial(router.predict, state, questions, model=model, **predict_kwargs))
                 infer_ms = (time.perf_counter() - t0) * 1000.0
                 if _env_bool("LAYA_JEV_STRICT", False):
                     result = _project_jev_strict(result)
@@ -1039,6 +1100,7 @@ def create_app(router: Optional[Any] = None):
 
     async def _systemone_batch_inner(request: Request):
         nonlocal gate
+        _mark_request()
         body = await _read_json_body(request)
         if not isinstance(body, dict) or "questions" not in body or "states" not in body:
             raise HTTPException(
@@ -1139,7 +1201,7 @@ def create_app(router: Optional[Any] = None):
                     }
 
                 t0 = time.perf_counter()
-                batch_res = await loop.run_in_executor(pool, _do_batch)
+                batch_res = await loop.run_in_executor(pool, _run_inference, _do_batch)
                 infer_ms = (time.perf_counter() - t0) * 1000.0
                 if _env_bool("LAYA_JEV_STRICT", False):
                     batch_res["results"] = [_project_jev_strict(item) for item in batch_res["results"]]

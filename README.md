@@ -662,7 +662,8 @@ language evidence falls back to, `english` by default; set it to `multilingual` 
 your traffic is not English), `LAYA_MAX_LOADED` (checkpoints resident at
 once, 2 by default; raise it to 3 when `LAYA_AUTO_TASK` makes a third one
 reachable on demand, or the server rebuilds one every time routing switches),
-and `LAYA_API_KEY` (when set, clients must
+`LAYA_IDLE_UNLOAD_SECONDS` (unload idle checkpoints; `0` disables it, `300` frees device memory
+after five minutes and makes the next request pay a cold load), and `LAYA_API_KEY` (when set, clients must
 send `Authorization: Bearer <key>`). A client's `model` field is honoured when it
 names a Laya checkpoint (`english`/`multilingual`/`typed-decisions`), otherwise
 the router auto-selects by script/language. The same body can also carry `task`,
@@ -1185,6 +1186,12 @@ This is an **optional extra**: the core package has no `mcp` dependency.
 pip install "laya[mcp]"
 laya-mcp-server          # or: python -m laya.mcp.server
 ```
+
+To share a `laya-serve` on your own hardware across editor sessions, set
+`LAYA_BASE_URL=http://127.0.0.1:8000` in each MCP client's environment. Its prediction tools use
+HTTP and import no torch; routing stays local. Set `LAYA_API_KEY` to the server's bearer key and
+`LAYA_REMOTE_TIMEOUT` to the allowed HTTP wait (300 seconds by default). `laya_shortlist` is
+unavailable in this mode. See [shared-server MCP setup](https://github.com/NandhaKishorM/laya/blob/main/docs/cli-mcp.md#share-one-model-server-across-mcp-sessions).
 
 Example MCP client configuration (stdio transport):
 

@@ -105,6 +105,20 @@ check_param("load", load, "compile", False)
 check_param("ONNXAgent.__init__", ONNXAgent.__init__, "token", None)
 
 # --------------------------------------------------------------- predict surfaces
+from laya.mcp.remote import RemoteRouter  # noqa: E402
+
+check_true("RemoteRouter/is a Router", issubclass(RemoteRouter, Router))
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "base_url", inspect.Parameter.empty)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "api_key", None)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "timeout", None)
+for method in ("predict", "predict_batch"):
+    check("RemoteRouter/%s signature" % method,
+          [(p.name, p.kind, p.default) for p in sig(getattr(RemoteRouter, method)).values()],
+          [(p.name, p.kind, p.default) for p in sig(getattr(Router, method)).values()])
+for method in ("route", "route_batch"):
+    check_true("RemoteRouter/%s stays local" % method,
+               getattr(RemoteRouter, method) is getattr(Router, method))
+
 for label, fn in (("Agent.predict_batch", Agent.predict_batch),
                   ("Agent.system_one", Agent.system_one),
                   ("Agent.predict_long", Agent.predict_long),
