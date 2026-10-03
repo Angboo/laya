@@ -384,6 +384,11 @@ def main(argv=None):
         from .evals_cli import main as eval_main
         return eval_main(argv[1:])
     args = build_parser().parse_args(argv)
+    # Redirected output is encoded with the locale's codec by default (cp1252 on Windows), which
+    # cannot hold a non-Latin request or answer, so `laya --batch FILE > out.txt` failed with a
+    # codec error instead of writing it. utf-8 is what --batch reads back.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     text = " ".join(args.text).strip()
     # Routing answers nothing, so there is no confidence to gate: `route` does not take the
     # threshold at all. Accepting the flag there would let `laya --min-confidence 0.9 "..."` exit 0
