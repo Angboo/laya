@@ -926,6 +926,22 @@ for param in ("checkpoint_id", "embedder_id"):
     check_param("evaluate_shortlist", evaluate_shortlist, param, inspect.Parameter.empty)
 
 
+# Pin the optional TileLang entry points without importing the fast extra in CI.
+import ast  # noqa: E402
+
+with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "laya", "tl_kernels.py")) as f:
+    _tl_defs = {node.name: node for node in ast.parse(f.read()).body if isinstance(node, ast.FunctionDef)}
+for _name in ("gemm_kernel", "gemm_geglu_kernel", "add_ln_kernel", "rope_kernel", "attn_kernel"):
+    _args = _tl_defs[_name].args
+    check("%s/cpu keyword-only" % _name, [arg.arg for arg in _args.kwonlyargs], ["cpu"])
+    check("%s/cpu default" % _name, ast.literal_eval(_args.kw_defaults[0]), False)
+    check("%s/GPU dtype default" % _name, ast.literal_eval(_args.defaults[-1]), "bfloat16")
+_args = _tl_defs["compile_cpu"].args
+check("compile_cpu/arguments", [arg.arg for arg in _args.args], ["kernel"])
+check("compile_cpu/varargs", _args.vararg.arg, "args")
+check("compile_cpu/kwargs", _args.kwarg.arg, "kwargs")
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
