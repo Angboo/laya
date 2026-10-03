@@ -71,6 +71,8 @@
 
 ::: laya.calibrate.apply_binning_map
 
+::: laya.agent.Agent.fit_binning
+
 ::: laya.common.render_options
 
 ::: laya.common.proper_reward

@@ -488,6 +488,7 @@ def calibration_payload(
     model_id_or_path=None,
     subfolder=None,
     config=None,
+    binning_map=None,
 ) -> Dict[str, Any]:
     """JSON body written by `Agent.save_calibration` (no weights).
 
@@ -497,8 +498,11 @@ def calibration_payload(
     `model_id_or_path`, `subfolder`, and `config` say which checkpoint the map was fitted
     against. `config` is `rl_agent_config.json` without `temperature` /
     `temperature_by_options` (those live at the top of this payload).
+
+    `binning_map` is the optional histogram-binning recalibration map fitted by
+    `fit_binning_map`; the key is omitted when no map is installed.
     """
-    return {
+    payload = {
         "version": CALIBRATION_VERSION,
         "temperature": [float(x) for x in temperature],
         "temperature_by_options": {
@@ -508,6 +512,9 @@ def calibration_payload(
         "subfolder": subfolder,
         "config": _config_identity(config),
     }
+    if binning_map is not None:
+        payload["binning_map"] = binning_map
+    return payload
 
 
 def _warn_if_identity_mismatch(obj, payload) -> None:
@@ -611,6 +618,43 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
         raise ValueError(
             "calibration JSON temperature_by_options must be an object of bucket -> float, "
             "got %s" % type(by_options).__name__)
+    binning = payload.get("binning_map")
+    if binning is not None:
+        if not isinstance(binning, dict):
+            raise ValueError(
+                "calibration JSON binning_map must be an object of bucket -> {bins, values}, "
+                "got %s" % type(binning).__name__)
+        for name, entry in binning.items():
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    "calibration JSON binning_map[%r] must be an object with \"bins\" and \"values\", "
+                    "got %s" % (name, type(entry).__name__))
+            n_bins = entry.get("bins")
+            values = entry.get("values")
+            if isinstance(n_bins, bool) or not isinstance(n_bins, int) or n_bins < 1:
+                raise ValueError(
+                    "calibration JSON binning_map[%r] must have an integer \"bins\" >= 1, got %r" % (name, n_bins))
+            if not isinstance(values, (list, tuple)) or len(values) != n_bins:
+                raise ValueError(
+                    "calibration JSON binning_map[%r] must have \"values\" of length \"bins\" (%d)"
+                    % (name, n_bins))
+            try:
+                parsed_values = [float(v) for v in values]
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "calibration JSON binning_map[%r] values must be numbers, got %r" % (name, values)) from exc
+            for v in values:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be numbers, got %r" % (name, values))
+            for v in parsed_values:
+                if not np.isfinite(v):
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be finite, got %r" % (name, values))
+                if not 0.0 <= v <= 1.0:
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be in [0, 1], got %r" % (name, values))
+    obj.binning_map = binning
     if version >= CALIBRATION_VERSION:
         _warn_if_identity_mismatch(obj, payload)
     _install_temperatures(obj, temps, by_options)

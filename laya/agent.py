@@ -16,7 +16,10 @@ import torch
 from ._compile import compile_model, independent_dims
 from .calibrate import (
     _install_temperatures,
+    apply_binning_map,
     apply_calibration_payload,
+    MIN_BINNING_BUCKET_N,
+    fit_binning_map,
     calibration_payload,
     fit_temperature_map,
 )
@@ -678,6 +681,9 @@ class Agent(HookRegistry):
         self.temperature = [clamp_temperature(t) for t in self.temperature_raw]
         self.temperature_by_options = {k: clamp_temperature(v)
                                        for k, v in self.temperature_by_options_raw.items()}
+        # Optional histogram-binning map installed by `load_calibration` or fit via
+        # `fit_binning`; absent/None means answer_confidence is the temperature-scaled one.
+        self.binning_map = None
 
         # Shared with `ONNXAgent` so both backends accept the same option and produce the same
         # confidences; see `common.resolve_lang_temperatures` for why the shape is checked before
@@ -1238,7 +1244,14 @@ class Agent(HookRegistry):
             # scaling fits and ECE measures. Rather than change one underneath existing
             # callers, report both: `answer_confidence` is the calibrated one, on every
             # question type, so a caller can gate across types on a single number.
-            ans_conf = round(answer_confidence(p, k), 4)
+            ans_raw = answer_confidence(p, k)
+            lang_override = bool(lang and lang.split("-")[0].lower() in self.lang_temperatures)
+            if getattr(self, "binning_map", None) and not lang_override:
+                ans_conf = round(
+                    apply_binning_map(ans_raw, temp_bucket(qt, k), self.binning_map), 4
+                )
+            else:
+                ans_conf = round(ans_raw, 4)
             ext = {"act_probability": round(float(act[r, 0]), 4)}
 
             if q["t"] == "choice":
@@ -1859,6 +1872,18 @@ class Agent(HookRegistry):
         _install_temperatures(self, result["temperature"], result["temperature_by_options"], warn=False)
         return result
 
+    def fit_binning(self, records, min_bucket_n: int = MIN_BINNING_BUCKET_N) -> Dict[str, Any]:
+        """Fit a histogram-binning map on top of this agent's fitted temperatures and store it.
+
+        `records` are the same `(qtype, logits, target[, k])` tuples as `fit_temperatures`
+        consumed. The map is keyed exactly like `temperature_by_options`, composes on top of
+        the current temperatures, and is written out by `save_calibration` as `binning_map`.
+        """
+        self.binning_map = fit_binning_map(
+            records, self.temperature, self.temperature_by_options, min_bucket_n=min_bucket_n
+        )
+        return self.binning_map
+
     def save_calibration(self, path: str) -> None:
         """Write temperatures and the checkpoint they were fitted for. Does not write weights."""
         payload = calibration_payload(
@@ -1867,6 +1892,7 @@ class Agent(HookRegistry):
             model_id_or_path=getattr(self, "model_id_or_path", None),
             subfolder=getattr(self, "subfolder", None),
             config=getattr(self, "cfg", None),
+            binning_map=getattr(self, "binning_map", None),
         )
         destination = os.path.realpath(path)
         fd, temporary = tempfile.mkstemp(dir=os.path.dirname(destination), prefix=".calibration.", suffix=".tmp")
