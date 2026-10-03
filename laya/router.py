@@ -1185,7 +1185,7 @@ class Router(HookRegistry):
                 ``questions``.
             hooks_timeout: Override the Router's ``hooks_timeout`` for this call, applied to
                 every request's ``on_route`` dispatch, as on :meth:`route`.
-            hooks: Per-call hook or sequence of hooks for this call.
+            hooks (HookArg): Per-call hook or sequence of hooks for this call.
             hooks_raise: Override the Router's ``hooks_raise`` policy for this call.
         """
         if not isinstance(requests, SequenceABC) or isinstance(requests, (str, bytes)):
@@ -1267,15 +1267,15 @@ class Router(HookRegistry):
                 ``lang_guess`` routing overrides and ``max_len`` / ``head_max_len`` token-budget
                 overrides.
             batch_size: Optional maximum number of states per Agent forward-pass batch.
-            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
             min_confidence: Optional float or per-bucket mapping for confidence gating.
             sort_by_length: Forwarded to every ``Agent.predict_batch`` call, so each question
                 group pads to a shorter maximum; see ``Agent.predict_batch``. Results retain the
                 input order either way. Silently dropped for an attached agent whose
                 ``predict_batch`` predates the knob (#294).
-            hooks: Per-call hook or sequence of hooks for this call.
-            on_predict_start: Plain callable or sequence of callables for start events.
-            on_predict_end: Plain callable or sequence of callables for end events.
+            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
+            hooks (HookArg): Per-call hook or sequence of hooks for this call.
+            on_predict_start (PredictHookArg): Plain callable or sequence of callables for start events.
+            on_predict_end (PredictHookArg): Plain callable or sequence of callables for end events.
             hooks_raise: Override the Router's ``hooks_raise`` policy for this call.
 
         Returns:
