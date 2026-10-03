@@ -62,7 +62,7 @@ def gemm_kernel(N, K, bias=False, act="none", bm=64, bn=128, bk=64, stages=3, th
 
 
 @tilelang.jit(pass_configs=FAST)
-def gemm_geglu_kernel(F, K, bm=64, bn=64, bk=64, stages=3, threads=128, dtype="bfloat16", *, cpu=False):
+def gemm_geglu_kernel(F, K, bm=64, bn=64, bk=64, stages=2, threads=128, dtype="bfloat16", *, cpu=False):
     """ModernBERT GLU MLP up-projection, fused:  C[M,F] = gelu(A @ Wi[:F]^T) * (A @ Wi[F:]^T)."""
     DT = _dt(dtype, cpu)
     alloc = T.alloc_local if cpu else T.alloc_fragment
