@@ -2,9 +2,16 @@ name: .NET
 
 # Parity lane for laya-dotnet. The golden fixtures under laya-dotnet/tests/Laya.Tests/golden are
 # recorded from the Python `laya` package, so this runs on EVERY push and pull request (no path
-# filter): a change to laya/ that moves what the goldens capture must show up here as a red
-# check, not as silent drift. Each run re-records the goldens from the Python code at that commit
+# filter): a change to laya/ that moves what the goldens capture shows up here rather than as
+# silent drift. Each run re-records the goldens from the Python code at that commit
 # (tools/regen_golden.py) and runs the C# tests against the fresh copies.
+#
+# ADVISORY, not blocking. Both jobs carry `continue-on-error`, so this lane reports drift and
+# attributes it to the pull request that caused it without failing that pull request. The reason
+# is direction: the Python package is the product and laya-dotnet follows it, so a Python-side
+# improvement must not be blocked on a C# port catching up. The optional-dependency CVE audit in
+# security.yml is advisory for the same reason ("visible here, not blocking PRs"). When this lane
+# goes red, the fix is a follow-up port, not a revert of the Python change.
 
 on:
   pull_request:
@@ -33,6 +40,7 @@ jobs:
   build:
     name: build + model-free tests
     runs-on: ubuntu-latest
+    continue-on-error: true   # advisory: see the header
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -89,6 +97,7 @@ jobs:
   parity:
     name: parity (${{ matrix.name }})
     runs-on: ubuntu-latest
+    continue-on-error: true   # advisory: see the header
     timeout-minutes: 60
     strategy:
       fail-fast: false
