@@ -26,6 +26,13 @@ by sequence length, so it has no such buffer.
   during load. `compile_warmup=False` restores lazy compilation, and `agent.warmup(shapes=...)`
   remains available manually. Eager and TileLang loads do not warm automatically. These shapes
   cover common requests, not every possible shape guard.
+- **Warm-up failure.** Automatic warm-up is best effort: a failure emits a `RuntimeWarning`
+  naming the error (including the underlying compiler error) and load returns with the
+  `torch.compile` wrapper and compile settings intact. For example, Windows without MSVC can
+  load with `compile=True` even though warm-up fails. Later requests still use the compiled
+  model and surface compilation failures; Laya does not switch them to eager execution.
+  Explicit `agent.warmup()` calls also propagate failures, including after a failed automatic
+  warm-up. A successful load therefore does not guarantee that compiled inference is ready.
 - **Across restarts.** Inductor's FX-graph cache keeps compiled graphs under
   `TORCHINDUCTOR_CACHE_DIR`. The default is under `/tmp`, which does not survive a reboot or a
   container restart. Set it to a persistent directory, or a volume in a container, and a second

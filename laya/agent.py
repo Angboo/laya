@@ -774,7 +774,14 @@ class Agent(HookRegistry):
                 % (fell_back_from, fell_back_why), RuntimeWarning)
 
         if self._compiled and compile_warmup:
-            self.warmup()
+            try:
+                self.warmup()
+            except Exception as e:
+                # Compilation is lazy: unavailable toolchains fail on the first forward.
+                # Only automatic warm-up is best effort; explicit warmup() still raises.
+                warnings.warn("Warning: laya compile warm-up failed (%s: %s); keeping the compiled model. "
+                              "Later requests and explicit warmup() calls may still raise."
+                              % (type(e).__name__, e), RuntimeWarning)
 
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,

@@ -232,6 +232,79 @@ def test_constructor_warms_only_the_active_compiled_path():
             cache_spy.assert_not_called()
 
 
+def test_missing_compiler_preserves_wrapper_and_warns_only_during_automatic_warmup():
+    import json
+    import tempfile
+    import warnings
+    from pathlib import Path
+    from unittest.mock import patch
+    from torch._inductor.exc import InvalidCxxCompiler
+    from torch._dynamo.eval_frame import OptimizedModule
+    import laya.agent as module
+    from laya import load
+
+    attempts = []
+
+    def missing_compiler(graph, inputs, **kwargs):
+        attempts.append(True)
+        # Torch versions differ: some take the compiler, others read cpp.cxx.
+        with torch._inductor.config.patch({"cpp.cxx": ("laya-missing-cxx",)}):
+            try:
+                error = InvalidCxxCompiler()
+            except TypeError:
+                error = InvalidCxxCompiler("laya-missing-cxx")
+        raise error
+
+    def compile_without_toolchain(model, **kwargs):
+        return compile_model(model, backend=missing_compiler, **kwargs)
+
+    torch._dynamo.reset()
+    model = tiny_model()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "rl_agent_config.json").write_text(json.dumps({"encoder": "unused", "head_layers": 1}))
+        (root / "model.safetensors").touch()
+        with patch.object(module, "build_model", return_value=model), \
+             patch.object(module, "_load_tokenizer", return_value=SimpleNamespace(cls_token_id=1)), \
+             patch("safetensors.torch.load_file", return_value=model.state_dict()), \
+             patch.object(module, "compile_model", side_effect=compile_without_toolchain):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                agent = load(directory, device="cpu", compile=True, compile_mode="reduce-overhead")
+            assert attempts, "automatic warm-up never reached the compile backend"
+            assert any(issubclass(w.category, RuntimeWarning)
+                       and "InvalidCxxCompiler" in str(w.message)
+                       and "laya-missing-cxx" in str(w.message)
+                       and "keeping the compiled model" in str(w.message) for w in caught)
+            wrapped = agent.model
+            assert isinstance(wrapped, OptimizedModule) and wrapped._orig_mod is model
+            assert agent._compiled and agent._reduce_overhead
+            assert model.encoder.config.reference_compile is True
+            for operation in (lambda: agent._infer(batch(2, 16, 3)), agent.warmup):
+                calls = len(attempts)
+                try:
+                    operation()
+                except Exception as error:
+                    assert "InvalidCxxCompiler" in str(error) and "laya-missing-cxx" in str(error)
+                else:
+                    raise AssertionError("request or explicit warmup swallowed the compiler failure")
+                assert len(attempts) > calls
+                assert agent.model is wrapped and agent._compiled and agent._reduce_overhead
+                assert model.encoder.config.reference_compile is True
+            calls = len(attempts)
+
+            explicit = load(directory, device="cpu", compile=True, compile_warmup=False)
+            assert len(attempts) == calls
+            try:
+                explicit.warmup()
+            except Exception as error:
+                assert "InvalidCxxCompiler" in str(error) and "laya-missing-cxx" in str(error)
+            else:
+                raise AssertionError("explicit warmup swallowed the compiler failure")
+            assert len(attempts) > calls and explicit._compiled
+    torch._dynamo.reset()
+
+
 def test_persistent_cache_is_opt_in_and_respects_the_environment():
     import tempfile
     from pathlib import Path

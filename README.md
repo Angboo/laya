@@ -872,6 +872,11 @@ agent = laya.load("convaiinnovations/laya", compile=True, compile_warmup=False)
 seconds = agent.warmup()         # manual entry point, also accepts shapes=[(rows, tokens, markers)]
 ```
 
+If automatic warm-up fails, load emits a `RuntimeWarning` naming the underlying error and returns
+with the `torch.compile` wrapper and compile settings intact. Later requests still use the compiled
+model and propagate compilation failures; there is no automatic eager fallback. Explicit
+`agent.warmup()` calls also propagate failures, even after automatic warm-up has failed.
+
 Warm-up uses synthetic inputs without prediction hooks or prediction caches. It covers common batch
 and single-row shapes, not every possible guard or CUDA graph shape. `compile=False` and `fast=True`
 do not warm automatically. Manual warm-up still works on both paths.
