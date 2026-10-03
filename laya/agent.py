@@ -465,6 +465,7 @@ class Agent(HookRegistry):
     _amp_failures = 0
     # The stock forward is also used by lightweight runtimes built with __new__ in tests.
     _fast = None
+    _backend = None
     # Scoped CPU-fallback observability: how often _infer's per-request OOM fallback fired
     # and what the last failure was, so an operator sees a slow lane in /health instead of
     # discovering it by accident. Class defaults cover instances built without __init__.
@@ -492,8 +493,13 @@ class Agent(HookRegistry):
         hooks_concurrent: bool = True,
         hooks_timeout: Optional[float] = None,
         calibration: Optional[str] = None,
+        backend: Optional[str] = None,
     ):
         """Load a Laya checkpoint.
+
+        `backend` selects "eager", "auto", "compile" or "tilelang"; see `laya.backends`.
+        It takes precedence over `fast` and `compile`. Omit it to keep those legacy flags.
+        For ONNX use `load(backend="onnx")` instead.
 
         `revision` optionally pins the Hub download to an explicit commit SHA/branch/tag;
         when omitted, huggingface_hub's normal default and existing offline cache are used.
@@ -524,6 +530,13 @@ class Agent(HookRegistry):
         `hooks_concurrent=False` serialises hooks that are not safe to run in parallel, and
         `hooks_timeout` bounds each hook call in seconds (None means no limit).
         """
+        if backend is not None:
+            from .backends import normalise
+            backend = normalise(backend)
+            if backend == "onnx":
+                raise ValueError("use laya.load(..., backend='onnx') or ONNXAgent")
+            fast = compile = False
+
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
@@ -741,7 +754,9 @@ class Agent(HookRegistry):
             else:
                 raise e
 
-        if fast:
+        if backend is not None:
+            self.set_backend(backend)
+        elif fast:
             self.accelerate()
 
         if fell_back_from is not None:
@@ -754,6 +769,34 @@ class Agent(HookRegistry):
                 "    pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128\n"
                 "  See https://pytorch.org/get-started/locally/\n"
                 % (fell_back_from, fell_back_why), RuntimeWarning)
+
+    @property
+    def backend(self) -> str:
+        """The active inference backend, including the legacy compile and fast flags."""
+        if self._backend is not None:
+            return self._backend.name
+        return "tilelang" if self._fast is not None else "compile" if self._compiled else "eager"
+
+    @property
+    def backend_object(self):
+        """The installed Backend object, or None for a legacy runtime."""
+        return self._backend
+
+    def set_backend(self, name: str = "auto", strict: bool = False, **options) -> str:
+        """Switch backends; unavailable backends warn and use eager unless `strict=True`.
+
+        Options go to the backend constructor, e.g. `warmup=False` for compile or
+        `use_graphs=False` for tilelang. Switching waits for in-flight inference.
+        """
+        from . import backends
+        name = backends.normalise(name)
+        with self._gate.write_lock():
+            self.deaccelerate()
+            if self._compiled:
+                self.model = self.model._orig_mod
+                self._compiled = False
+                self.model.encoder.config.reference_compile = False
+            return backends.install(self, name, strict=strict, **options).name
 
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,
@@ -770,6 +813,8 @@ class Agent(HookRegistry):
             if strict:
                 raise RuntimeError("laya fast path needs a CUDA device")
             return False
+        if self._backend is not None:
+            self.deaccelerate()
         last = None
         for _attempt in range(2):  # tilelang's JIT cache has been seen to fail once, then succeed
             try:
@@ -823,7 +868,11 @@ class Agent(HookRegistry):
 
     def deaccelerate(self):
         """Restore the stock forward."""
-        if self._fast is not None:
+        if self._backend is not None:
+            self._backend.uninstall()
+            self._backend = None
+            self._fast = None
+        elif self._fast is not None:
             self.model.forward = self._stock_forward
             self._fast = None
 
@@ -1093,6 +1142,10 @@ class Agent(HookRegistry):
             b = _pad_cuda_compile_batch(b, self.tok.pad_token_id)
         use_amp = self._amp_enabled_for(b["input_ids"].shape[0])
 
+        limit = getattr(self._backend, "max_len", None)
+        if limit is not None and b["input_ids"].shape[1] > limit:
+            raise ValueError("the %s backend was built for max_len=%d; this request needs %d tokens"
+                             % (self.backend, limit, b["input_ids"].shape[1]))
         if self._fast is not None and b["input_ids"].shape[1] > self._fast.max_len:
             raise ValueError(
                 "the CUDA fast path was built for max_len=%d; this request needs %d tokens. "
@@ -1140,7 +1193,8 @@ class Agent(HookRegistry):
                     if self.device.type == "cpu":
                         return run()
                     held_device, held_dtype, held_amp = self.device, self.dtype, self.amp_enabled
-                    had_fast = self._fast is not None
+                    held_backend = self._backend
+                    had_fast = self._fast is not None and held_backend is None
                     # Only our batch scope can retain BF16 copies after this failed forward.
                     # Release them before moving the model and retrying on CPU.
                     if self.device.type == "cuda" and _BATCH_AUTOCAST_CACHE.get():
@@ -1159,6 +1213,15 @@ class Agent(HookRegistry):
                         return run()
                     finally:
                         self._restore_runtime(held_device, held_dtype, held_amp, had_fast)
+                        if held_backend is not None and self.device == held_device:
+                            from .backends import BackendUnavailable, warn_fallback
+                            try:
+                                held_backend.install()
+                            except BackendUnavailable as exc:
+                                warn_fallback(held_backend.name, exc)
+                            else:
+                                self._backend = held_backend
+                                self._fast = getattr(held_backend, "fast", None)
             if use_amp and self.device.type in ("mps", "cpu"):
                 # Not every MPS/CPU build implements autocast for every op. Retry this
                 # request in full precision. One miss must not turn AMP off; a build that
@@ -1352,7 +1415,7 @@ class Agent(HookRegistry):
                         # caller already owns a CUDA autocast scope, its cache is sufficient.
                         if (chunk < len(states) and getattr(self, "device", None) is not None
                                 and self.device.type == "cuda" and self.amp_enabled
-                                and self._fast is None and not self._compiled
+                                and self._fast is None and not self._compiled and self.backend != "compile"
                                 and not torch.is_autocast_enabled()):
                             amp_stack.enter_context(torch.autocast(device_type="cuda", dtype=self.dtype,
                                                                    enabled=False))
@@ -1907,7 +1970,8 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          hooks=None, on_predict_start=None, on_predict_end=None,
          hooks_raise: bool = True, hooks_concurrent: bool = True,
          hooks_timeout: Optional[float] = None,
-         calibration: Optional[str] = None) -> Agent:
+         calibration: Optional[str] = None, backend: Optional[str] = None,
+         onnx_path: Optional[str] = None):
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:
@@ -1924,6 +1988,10 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         laya.load("ml")                                               # multilingual
 
     Anything else (a Hub repo id, a local directory) is passed to `Agent` unchanged.
+
+    `backend` selects "auto", "eager", "compile", "tilelang" or "onnx". ONNX returns
+    the existing `ONNXAgent`, with `onnx_path` (default "laya.onnx").
+    Other backends use `Agent`; an explicit backend takes precedence over the legacy flags.
 
     `revision`/`expected_sha256` pin and verify the downloaded artifacts; see `Agent`.
     `hooks` / `on_predict_start` / `on_predict_end` observe or shape every prediction; see
@@ -1942,10 +2010,21 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         spec = resolve_model_spec(model_id_or_path)
         if spec is not None:
             model_id_or_path, subfolder = spec
+    if backend is not None:
+        from .backends import normalise
+        backend = normalise(backend)
+    if backend == "onnx":
+        from .onnx_agent import ONNXAgent
+        return ONNXAgent(model_id_or_path, onnx_path=onnx_path or "laya.onnx",
+                         token=token, subfolder=subfolder, revision=revision, expected_sha256=expected_sha256,
+                         lang_temperatures=lang_temperatures, calibration=calibration,
+                         hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,
+                         hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent, hooks_timeout=hooks_timeout)
+    options = {"backend": backend} if backend is not None else {}
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
                  compile=compile,
                  revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,
                  hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent,
-                 hooks_timeout=hooks_timeout, calibration=calibration)
+                 hooks_timeout=hooks_timeout, calibration=calibration, **options)

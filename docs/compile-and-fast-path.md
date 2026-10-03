@@ -5,6 +5,36 @@ come from measurements taken while working on #472, #576 and #718, on an RTX 407
 torch 2.11 and tilelang 0.1.14. They are here so the next person does not have to measure them
 again.
 
+## Backend selection
+
+`Agent(..., backend="auto")` and `laya.load(..., backend="auto")` opt into the backend
+class layer. The default remains eager. Explicit `backend=` takes precedence over `compile`
+and `fast`; omitting it preserves both flags' existing behaviour.
+
+- `eager`: the stock PyTorch forward, on any supported device.
+- `compile`: CUDA-only `torch.compile` with dynamic shapes and `reduce-overhead` mode,
+  bucket padding, persistent inductor cache, and warmup at installation. It reuses the same
+  independent-dimension scope as `compile=True`, which keeps its existing default mode and
+  CPU support. Set `LAYA_COMPILE_WARMUP=0` to defer backend warmup and `LAYA_INDUCTOR_CACHE_DIR`
+  to choose its cache directory (default `~/.cache/laya/inductor`).
+- `tilelang`: an adapter around the current fast path, using the agent's bf16 or fp16 dtype.
+- `auto`: TileLang on CUDA with a supported ModernBERT encoder and dtype when TileLang is
+  installed, otherwise compile on CUDA; eager on other devices.
+- `onnx`: `laya.load(..., backend="onnx", onnx_path="model.onnx")` returns the existing
+  `ONNXAgent`. Without `onnx_path`, it uses `laya.onnx`.
+
+An unavailable backend emits a `RuntimeWarning` naming the resolved backend and falls back to
+eager. To require a backend, use `agent.set_backend("tilelang", strict=True)`. Switching waits
+for active inference; `agent.backend` reports the active name and `agent.backend_object`
+exposes the installed object. `agent.set_backend("compile", warmup=False)` defers compilation
+until inference, so compilation errors then surface on the request. `agent.warmup()` remains
+available. `agent.deaccelerate()` removes a backend installed through the class layer.
+
+Routers forward an explicit selection through `Router(agent_kwargs={"backend": "auto"})`.
+They pass no backend argument by default, preserving compatibility with existing Agent-like
+constructors. Scoped CPU OOM retries detach the backend and restore it when the model returns
+to its original device.
+
 ## `compile=True` materialises the attention mask
 
 Eager SDPA takes ModernBERT's `(rows, 1, L, L)` attention mask as a broadcast view. Under the
