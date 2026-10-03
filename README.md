@@ -94,6 +94,18 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
+## What's new in 0.3.26
+
+A small release: one new SDK, one TypeScript port, and the dependency bumps.
+
+* **.NET SDK.** `laya-dotnet/` is a C# port of the inference path running the official checkpoints exported to ONNX on ONNX Runtime, so calling Laya from .NET no longer needs a Python sidecar (#673). It ships with a parity lane that re-records its golden fixtures from the Python package at every commit, so drift surfaces on the pull request that causes it; the lane is advisory, because a Python improvement should not wait on a C# port. Long prediction, per-language temperatures, hooks, batching, option ordering, digest controls and usage diagnostics are not ported yet, and there is no NuGet package.
+* **Histogram binning in laya-ts.** `applyBinningMap` / `checkBinningMap` port the non-parametric recalibration from core, including the language-override bypass, and the recalibrated `answer_confidence` is what the abstention gate reads.
+* **Dependencies.** `@types/node` 24 to 26, zensical 0.0.65 to 0.0.67, ruff 0.16.8 to 0.16.9, and the CodeQL actions to 4.38.2. The three that could have broken a lane were each verified against that lane before merging.
+
+7 pull requests: 2 from contributors and 5 dependency bumps.
+
+---
+
 ## What's new in 0.3.25
 
 * **Memory on demand.** `LAYA_IDLE_UNLOAD_SECONDS` lets `laya-serve` give its checkpoints back after an idle window, and `LAYA_BASE_URL` lets `laya-mcp-server` answer from a running server over HTTP instead of loading its own copy, so several editor sessions share one resident model (#888). Both default to off.
