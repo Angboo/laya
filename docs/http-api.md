@@ -33,6 +33,7 @@ Everything is environment variables, so one image serves a laptop dev run and a 
 | `LAYA_MODELS` | comma list to preload (`english,multilingual,typed-decisions`); empty = all | all |
 | `LAYA_THREADS` | cap torch intra-op threads on CPU; keep it <= physical cores -- oversubscribing logical cores is a large regression | torch default |
 | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint | `0` |
+| `LAYA_IDLE_UNLOAD_SECONDS` | unload resident checkpoints after this many idle seconds; the next request loads its checkpoint again. Zero disables unloading | `0` |
 | `LAYA_DEFAULT_MODEL` | checkpoint a state with no language evidence falls back to; aliases such as `ml` resolve the way core resolves them, and an unresolvable name stops the server at startup | `english` |
 | `LAYA_API_KEY` | if set, require `Authorization: Bearer <key>` | none |
 | `LAYA_LOG_LEVEL` | uvicorn log level | `info` |
@@ -45,6 +46,12 @@ strip `/laya` before forwarding requests to Laya; the app's routes remain `/heal
 `/v1/systemone` internally.
 
 For containers, including CUDA and ARM64 images, see [Docker quickstart](docker.md).
+
+For bursty local use, set `LAYA_IDLE_UNLOAD_SECONDS=300`. Inference and unload run on the same
+worker, and the idle window starts again when a single or batch forward pass finishes, including
+failed requests. The next prediction pays a cold load. Unloading releases model references and
+device caches, including Metal; the process allocator may retain RAM pages, so process RSS need
+not fall by the size of the checkpoint.
 
 ## Endpoints
 
@@ -68,6 +75,10 @@ no `LAYA_API_KEY` set, every caller gets the full payload shown here.
 One server's answer, so the blocks agree with each other: every key of `revisions`,
 `checkpoint_devices` and `cpu_fallbacks` is a name in `loaded`. `tests/test_serve.py` holds this
 sample to the handler that produces it, field by field.
+
+With idle unloading enabled, authenticated health responses also include `idle_unload_seconds`
+(the configured window) and `idle_seconds` (time since the last inference request or completion).
+Health probes do not reset that clock. An empty `loaded` list is normal after an idle unload.
 
 - `status` is `ok` whenever the process answers at all. It says nothing about the checkpoints.
 - `loaded` lists the checkpoints resident in memory. It is empty until a request builds one, which is

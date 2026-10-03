@@ -33,6 +33,7 @@ from laya.serve import (  # noqa: E402
     _env_bool,
     _LONE_SURROGATE_DETAIL,
     _resolve_max_token_budget,
+    _resolve_idle_unload_seconds,
     _resolve_max_loaded,
     _resolve_model,
     create_app,
@@ -2834,3 +2835,164 @@ def test_http_api_page_documents_the_gate_report_on_an_answer():
         assert set(answer) == discriminator | rows[answer["type"]] | rows["all"], (
             "the sample's %s answer says %s, its table row plus the shared row say %s" % (
                 qid, sorted(answer), sorted(discriminator | rows[answer["type"]] | rows["all"])))
+
+
+class IdleRouter(FakeRouter):
+    def __init__(self):
+        import threading
+        super().__init__()
+        self.loaded = ["english"]
+        self.unloaded = threading.Event()
+        self.unload_threads = []
+
+    def unload(self):
+        import threading
+        self.unload_threads.append(threading.current_thread().name)
+        self.loaded = []
+        self.unloaded.set()
+
+    def predict(self, *args, **kwargs):
+        self.loaded = ["english"]
+        return super().predict(*args, **kwargs)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, 0.0), ("", 0.0), ("  ", 0.0), ("0", 0.0), ("-5", 0.0), ("abc", 0.0),
+    ("nan", 0.0), ("inf", 0.0), ("-inf", 0.0), ("1e999", 0.0),
+    ("300", 300.0), (" 0.5 ", 0.5), ("1e2", 100.0),
+])
+def test_idle_unload_setting_is_finite_and_opt_in(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("LAYA_IDLE_UNLOAD_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", raw)
+    assert _resolve_idle_unload_seconds() == expected
+
+
+def test_idle_unload_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("LAYA_IDLE_UNLOAD_SECONDS", raising=False)
+    router = IdleRouter()
+    with TestClient(create_app(router)) as client:
+        assert not router.unloaded.wait(0.15)
+        assert router.loaded == ["english"]
+        assert "idle_seconds" not in client.get("/health").json()
+
+
+def test_idle_unload_reloads_on_the_next_request(monkeypatch):
+    monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", "0.1")
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    router = IdleRouter()
+    with TestClient(create_app(router)) as client:
+        first = client.post("/v1/systemone", json=REQ).json()
+        assert router.unloaded.wait(2.0)
+        health = client.get("/health").json()
+        assert health["loaded"] == [] and health["idle_unload_seconds"] == 0.1
+        assert health["idle_seconds"] >= 0.1
+        assert client.post("/v1/systemone", json=REQ).json() == first
+        assert router.loaded == ["english"]
+    assert all(name.startswith("laya-infer") for name in router.unload_threads)
+
+
+def test_idle_details_stay_authenticated(monkeypatch):
+    monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", "300")
+    monkeypatch.setenv("LAYA_API_KEY", "key")
+    with TestClient(create_app(IdleRouter())) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/health", headers={"Authorization": "Bearer key"}).json()["idle_unload_seconds"] == 300
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_idle_window_starts_after_worker_finishes_even_on_cancel_or_failure(monkeypatch, batch, cancel, fail):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", "0.2")
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+
+    class BlockingRouter(IdleRouter):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.active = False
+
+        def predict(self, *args, **kwargs):
+            self.active = True
+            self.started.set()
+            try:
+                assert self.release.wait(3.0)
+                if fail:
+                    raise ValueError("test failure")
+                return super().predict(*args, **kwargs)
+            finally:
+                self.active = False
+                self.finished.set()
+
+        def unload(self):
+            assert not self.active, "unload overlapped inference"
+            super().unload()
+
+    router = BlockingRouter()
+    path = "/v1/systemone/batch" if batch else "/v1/systemone"
+    body = {"states": [REQ["state"]], "questions": REQ["questions"]} if batch else REQ
+    app = create_app(router)
+    if cancel:
+        import httpx
+
+        async def exercise():
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+                    task = asyncio.create_task(client.post(path, json=body))
+                    try:
+                        assert await asyncio.to_thread(router.started.wait, 2.0)
+                        task.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await task
+                        # A reaper can now queue behind the still-running forward pass.
+                        await asyncio.sleep(0.3)
+                        assert not router.unloaded.is_set()
+                        router.release.set()
+                        assert await asyncio.to_thread(router.finished.wait, 2.0)
+                        assert not await asyncio.to_thread(router.unloaded.wait, 0.1)
+                        assert await asyncio.to_thread(router.unloaded.wait, 2.0)
+                    finally:
+                        router.release.set()
+        asyncio.run(exercise())
+    else:
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as callers:
+            request = callers.submit(client.post, path, json=body)
+            try:
+                assert router.started.wait(2.0)
+                time.sleep(0.3)
+                assert not router.unloaded.is_set()
+                router.release.set()
+                assert request.result(timeout=2.0).status_code == (422 if fail else 200)
+                assert not router.unloaded.wait(0.1)
+                assert router.unloaded.wait(2.0)
+            finally:
+                router.release.set()
+
+
+def test_idle_unload_retries_failure_and_stops_at_shutdown(monkeypatch):
+    monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", "0.05")
+
+    class RetryRouter(IdleRouter):
+        attempts = 0
+
+        def unload(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("test unload failure")
+            super().unload()
+
+    router = RetryRouter()
+    with TestClient(create_app(router)):
+        assert router.unloaded.wait(2.0)
+    assert router.attempts == 2
+    router.loaded = ["english"]
+    router.unloaded.clear()
+    assert not router.unloaded.wait(0.15)
