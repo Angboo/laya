@@ -670,9 +670,8 @@ class ONNXAgent(HookRegistry):
             # type so a caller can gate across types on one number -- matching the PyTorch Agent,
             # whose output ONNX callers otherwise cannot read (KeyError on cross-backend swap).
             ans_raw = answer_confidence(p, k)
-            if binning_map:
-                from .calibrate import apply_binning_map
-
+            lang_override = bool(lang and lang.split("-")[0].lower() in self.lang_temperatures)
+            if binning_map and not lang_override:
                 ans_conf = round(
                     apply_binning_map(ans_raw, temp_bucket(qt, k), binning_map), 4
                 )

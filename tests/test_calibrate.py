@@ -533,6 +533,23 @@ onnx_select.binning_map = {"noul:2": {"bins": 2, "values": [0.95, 0.05]}}
 onnx_with_map = onnx_select._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0)
 check("onnx/binning remaps confidence", onnx_with_map["flag"]["answer_confidence"], 0.05)
 
+agent_bin = Agent.__new__(Agent)
+agent_bin.temperature = [1.0, 1.0, 1.0]
+agent_bin.temperature_by_options = {}
+agent_bin.binning_map = {"noul:2": {"bins": 2, "values": [0.95, 0.05]}}
+agent_binned = agent_bin._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0)
+check("agent/binning remaps confidence", agent_binned["flag"]["answer_confidence"], 0.05)
+agent_bin.lang_temperatures = {"zh": {"temperature": [1.0, 1.0, 1.0], "temperature_by_options": {}}}
+agent_lang = agent_bin._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0, lang="zh")
+check("agent/lang override skips binning", agent_lang["flag"]["answer_confidence"], 0.8)
+onnx_lang = ONNXAgent.__new__(ONNXAgent)
+onnx_lang.temperature = [1.0, 1.0, 1.0]
+onnx_lang.temperature_by_options = {}
+onnx_lang.binning_map = {"noul:2": {"bins": 2, "values": [0.95, 0.05]}}
+onnx_lang.lang_temperatures = {"zh": {"temperature": [1.0, 1.0, 1.0], "temperature_by_options": {}}}
+onnx_runtime = onnx_lang._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0, lang="zh")
+check("onnx/lang override skips binning", onnx_runtime["flag"]["answer_confidence"], 0.8)
+
 # A payload with no version is the original schema and must still load, even onto an
 # agent that has its own identity. No warning: there is no recorded checkpoint to disagree with.
 legacy = {"temperature": [1.4, 1.2, 1.1], "temperature_by_options": {"noul:2": 1.5}}

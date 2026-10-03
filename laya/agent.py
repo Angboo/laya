@@ -1218,7 +1218,8 @@ class Agent(HookRegistry):
             # callers, report both: `answer_confidence` is the calibrated one, on every
             # question type, so a caller can gate across types on a single number.
             ans_raw = answer_confidence(p, k)
-            if getattr(self, "binning_map", None):
+            lang_override = bool(lang and lang.split("-")[0].lower() in self.lang_temperatures)
+            if getattr(self, "binning_map", None) and not lang_override:
                 ans_conf = round(
                     apply_binning_map(ans_raw, temp_bucket(qt, k), self.binning_map), 4
                 )
