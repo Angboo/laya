@@ -355,6 +355,74 @@ export function tempBucket(qtype: number, k: number): string {
   const size = k <= 2 ? "2" : k <= 5 ? "3-5" : k <= 10 ? "6-10" : "11+";
   return `${["choice", "score", "noul"][qtype]}:${size}`;
 }
+
+export interface BinningEntry {
+  bins: number;
+  values: number[];
+}
+
+export type BinningMap = Record<string, BinningEntry>;
+
+/**
+ * Validate a histogram-binning recalibration map.
+ *
+ * Keys are option-count bucket strings like "choice:2", "choice:3-5", "score:6-10", "noul:2".
+ * Values are objects with an integer `bins >= 1` and a `values` array of length `bins`
+ * where each number is in [0.0, 1.0].
+ */
+export function checkBinningMap(m: unknown): BinningMap {
+  if (!m || typeof m !== "object" || Array.isArray(m)) {
+    throw new Error(`binning_map must be an object of bucket -> {bins, values}, got ${pyRepr(m)}`);
+  }
+  const out: BinningMap = {};
+  for (const [name, entry] of Object.entries(m as Record<string, unknown>)) {
+    if (!BUCKET_KEY.test(name)) {
+      throw new Error(`binning_map key ${pyRepr(name)} is not a bucket like "choice:2" or "score:3-5"`);
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`binning_map[${pyRepr(name)}] must be an object with "bins" and "values", got ${pyRepr(entry)}`);
+    }
+    const rec = entry as Record<string, unknown>;
+    const nBins = rec.bins;
+    const values = rec.values;
+    if (typeof nBins === "boolean" || typeof nBins !== "number" || !Number.isInteger(nBins) || nBins < 1) {
+      throw new Error(`binning_map[${pyRepr(name)}] must have an integer "bins" >= 1, got ${pyRepr(nBins)}`);
+    }
+    if (!Array.isArray(values) || values.length !== nBins) {
+      throw new Error(`binning_map[${pyRepr(name)}] must have "values" of length "bins" (${nBins})`);
+    }
+    const parsedValues: number[] = [];
+    for (const v of values) {
+      if (typeof v === "boolean" || typeof v !== "number" || !Number.isFinite(v) || v < 0.0 || v > 1.0) {
+        throw new Error(`binning_map[${pyRepr(name)}] values must be numbers in [0, 1], got ${pyRepr(v)}`);
+      }
+      parsedValues.push(v);
+    }
+    out[name] = { bins: nBins, values: parsedValues };
+  }
+  return out;
+}
+
+/**
+ * Recalibrate one `answer_confidence` for its option-count `bucket` (tempBucket).
+ *
+ * Returns the confidence unchanged when the map has no entry for the bucket, so a bucket the map
+ * was not fit for passes through rather than being forced to a wrong value.
+ */
+export function applyBinningMap(
+  confidence: number,
+  bucket: string,
+  binningMap?: BinningMap | null,
+): number {
+  if (!Number.isFinite(confidence)) return confidence;
+  const entry = binningMap?.[bucket];
+  if (!entry) {
+    return confidence;
+  }
+  const bins = entry.bins;
+  const b = Math.min(bins - 1, Math.max(0, Math.floor(confidence * bins)));
+  return entry.values[b];
+}
 /** Max of a length list without spread (Math.max(...arr) throws RangeError past ~100k args). */
 export function maxOf(values: ArrayLike<number>, fallback = 0): number {
   let m = fallback;

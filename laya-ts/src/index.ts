@@ -66,6 +66,8 @@ export {
   resolveMinConfidence,
   clampTemperature,
   tempBucket,
+  applyBinningMap,
+  checkBinningMap,
   collateItems,
   TEMP_MIN,
   TEMP_MAX,
@@ -80,6 +82,8 @@ export type {
   OptionStats,
   MinConfidence,
   MinConfidenceMap,
+  BinningEntry,
+  BinningMap,
 } from "./common.js";
 export { q, best, topK, isConfident } from "./dx.js";
 export { bpeEncode, metaspaceEncode, encodeWithData, parseTokenizerJson, loadTokenizerJson, CHECKPOINT_IDS, SPECIAL_ALIASES, METASPACE_REPLACEMENT } from "./tokenizer.js";
