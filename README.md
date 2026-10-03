@@ -1187,6 +1187,12 @@ pip install "laya[mcp]"
 laya-mcp-server          # or: python -m laya.mcp.server
 ```
 
+To share a `laya-serve` on your own hardware across editor sessions, set
+`LAYA_BASE_URL=http://127.0.0.1:8000` in each MCP client's environment. Its prediction tools use
+HTTP and import no torch; routing stays local. Set `LAYA_API_KEY` to the server's bearer key and
+`LAYA_REMOTE_TIMEOUT` to the allowed HTTP wait (300 seconds by default). `laya_shortlist` is
+unavailable in this mode. See [shared-server MCP setup](docs/cli-mcp.md#share-one-model-server-across-mcp-sessions).
+
 Example MCP client configuration (stdio transport):
 
 ```json
