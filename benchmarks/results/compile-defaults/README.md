@@ -81,3 +81,108 @@ The second process hit both FX graphs, reducing load from 111.64 s to 51.29 s.
 The cache location adds no meaningful GPU memory requirement; both peaks match the earlier
 warm-up experiments. These final runs had no other compute jobs in their GPU snapshots.
 Reboot/container persistence was not exercised; that depends on retaining the directory.
+
+## Item 3: opt-in reduce-overhead mode
+
+`compile_mode="reduce-overhead"` forwards that mode to `torch.compile`. The default remains
+`"default"`; the active compiled path rejects other values. Laya serializes its CUDA graph
+forwards, marks a new step, and clones both outputs before unlocking. Eager, CPU, and
+TileLang forwards do not enter that CUDA context. Builds lacking the step-marker API
+fail explicitly when this CUDA mode is invoked.
+
+The benchmark now reports CUDA graph node count and allocator memory after each of three
+passes, and stores decoded answers so they can be compared across modes. The default-mode
+reference reuses the verified cache. Reduced-overhead uses a separate fresh XDG directory
+for its cold run and reuses it for its restart. GPU snapshots accompany all runs.
+
+The weight-free CUDA check actually records a graph, changes input values across replays,
+retains all returned tensors, and verifies two-thread calls against eager results:
+
+```
+TORCHINDUCTOR_CACHE_DIR=/tmp/laya-compile-defaults-cuda-test-20261003 /home/ckl/projects/S/laya/.venv/bin/python tests/test_compile_cuda.py
+```
+
+Output: `CUDA graph capture, replay, retained outputs, and two-thread parity passed`.
+`mode-cuda-tests.log` records the initial check; the final check is in `mode-cuda-final.log`.
+`mode-final-validation.log` records all required lint/compile gates, the compile regression,
+API contract, router/criteria/hooks suites, and strict docs build. `mode-regressions.log`
+records exact commands and output for batch, predict_batch, runtime_fixes, load_errors,
+doc_tables, and portability checks. All exit codes are recorded.
+
+Cross-mode decoded parity is checked with:
+
+```
+/home/ckl/projects/S/laya/.venv/bin/python benchmarks/compare_compile_defaults.py benchmarks/results/compile-defaults/mode-default-reference.log benchmarks/results/compile-defaults/mode-cold.log benchmarks/results/compile-defaults/mode-restart.log
+```
+
+See `mode-parity.log` for output. Categorical outputs must match, and numerical differences
+must be at most 1e-5. The benchmark also asserts exact answer equality on repeated requests
+inside each process.
+
+| Run | Load s | Request 1 ms | Request 8 ms | Pass 2 median ms | Pass 3 median ms | Peak alloc/reserved MiB | CUDA graphs | FX hits/misses |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mode-default-reference | 46.659 | 22.27 | 8.67 | 12.64 | 12.65 | 1671.0 / 1796.0 | 0 | 2 / 0 |
+| mode-cold | 99.089 | 25.73 | 14.69 | 26.94 | 12.41 | 1687.5 / 1892.0 | 10 | 0 / 2 |
+| mode-restart | 48.100 | 25.00 | 13.86 | 28.72 | 13.83 | 1669.5 / 1818.0 | 10 | 2 / 0 |
+
+Both reduced-overhead runs exactly match the default-mode decoded answers (max delta 0).
+They each record ten CUDA graphs despite having only two Dynamo graphs. The second pass pays
+recording costs; graph recordings are recreated after restart even when both FX graphs hit disk.
+On the cold run, median replay improves only from 12.65 to 12.41 ms, while recording costs
+26.94 ms median. This is not a general latency win, which is why the mode stays opt-in.
+Peak reserved memory is 1,892 MiB on the reduced cold run versus 1,820 MiB for the default
+cold run; end-of-run reserved memory is 1,842 versus 1,796 MiB. Memory depends on recording
+history; the reduced restart peaks at 1,818 MiB. Longer shape sweeps can retain more pools.
+
+## Verification limits
+
+- One English checkpoint, one GPU, torch 2.11.0+cu130, and ten concrete request shapes.
+  No multilingual checkpoint, other GPU/OS/torch versions, long-batch OOM stress, or unbounded
+  shape sweep was measured. CPU logic is covered by weight-free tests, not a CPU performance run.
+- The initial warm-up/cache attempts overlapped other GPU jobs and are identified above.
+  Final verified cache and mode GPU snapshots contain only this benchmark plus desktop processes.
+  CPU regression suites also ran during some compilation intervals. These are single trials,
+  not confidence intervals or an isolated machine throughput study.
+- Persistence was checked across fresh processes, not a reboot or container recreation.
+  Filesystem persistence remains the deployment's responsibility; PyTorch may invalidate graphs.
+- The threaded retained-output regression uses a tiny CUDA model. The real checkpoint is
+  checked serially for decoded parity. Application-owned compiled graphs/custom streams are
+  outside Laya's lock; callers must coordinate them. OOM fallback under graph-pool pressure was
+  not forced.
+- No pushes or pull requests were performed. All three changes are local conventional commits.
+
+## Changed source files versus fa9a2a7
+
+Generated benchmark/test output is kept separately in this directory so the implementation
+remains reviewable. The nine source, test, benchmark, and documentation files total +420/-25:
+
+| File | Added | Removed |
+|---|---:|---:|
+| `laya/agent.py` | 37 | 10 |
+| `laya/_compile.py` | 26 | 2 |
+| `tests/test_compile.py` | 111 | 0 |
+| `tests/test_compile_cuda.py` | 62 | 0 |
+| `tests/test_hooks_api.py` | 5 | 0 |
+| `benchmarks/bench_compile_defaults.py` | 88 | 0 |
+| `benchmarks/compare_compile_defaults.py` | 33 | 0 |
+| `README.md` | 17 | 11 |
+| `docs/compile-and-fast-path.md` | 41 | 2 |
+
+Final required validation (full output in `mode-final-validation.log`):
+
+```
+PATH=/home/ckl/projects/S/laya/.venv/bin:$PATH
+ruff check laya/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
+python -m compileall -q laya/ tests/
+python tests/test_compile.py
+python tests/test_hooks_api.py
+python tests/test_router.py
+python tests/test_criteria.py
+python tests/test_hooks.py
+zensical build --strict --clean
+```
+
+Outputs: `All checks passed!`; compileall silent, exit 0; all 9 compile tests pass;
+API 403 passed / 0 failed; router 703 / 0; criteria 198 / 0; hooks 240 / 0;
+docs `No issues found`, with no `griffe:` lines. Every command exits 0.
+Raw GPU logs preserve `nvidia-smi` trailing spaces; source diffs pass whitespace checks.

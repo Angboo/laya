@@ -40,6 +40,35 @@ by sequence length, so it has no such buffer.
   home/volume. Cache compatibility and invalidation are managed by PyTorch; a GPU, torch,
   compiler, model, or input guard change can require compilation again.
 
+## Opt-in CUDA graphs
+
+```python
+agent = laya.load("convaiinnovations/laya", compile=True,
+                  compile_cache=True, compile_mode="reduce-overhead")
+```
+
+`compile_mode` defaults to `"default"`; only `"default"` and `"reduce-overhead"` are accepted
+on the active compiled path. Eager and TileLang loads ignore the compile options. CPU compilation
+still works, but CUDA graph recording only applies on CUDA. The CUDA mode requires PyTorch's
+`torch.compiler.cudagraph_mark_step_begin` API; older builds without it raise an explicit error.
+
+Dynamic Dynamo graphs do not imply shape-independent CUDA graphs: new concrete shapes may
+require warm-up and recording again, without a new Dynamo graph. The two default synthetic
+warm-up shapes do not pre-record every request shape. Repeated shapes can benefit, but varying
+shapes can pay extra latency and retain graph pools. PyTorch may skip CUDA graphs for unsupported
+operations or configurations; setting this mode is not a guarantee of capture.
+
+Laya marks each compiled CUDA forward as a new step, serializes these forwards across its agents,
+and clones both output tensors outside the compiled graph before releasing the lock. This keeps
+retained outputs valid across replays, at the cost of two copies and serialized forward execution.
+The lock does not coordinate unrelated application-owned compiled models; callers sharing CUDA
+graph iterations or using custom streams must manage their own coordination. Disk caches reuse
+compiled code, not live CUDA graph recordings or their device memory, across processes.
+
+Reproduce cold/restart timings, memory, and cache counters with
+`benchmarks/bench_compile_defaults.py`; see
+[the recorded measurements](https://github.com/NandhaKishorM/laya/blob/main/benchmarks/results/compile-defaults/README.md).
+
 ## AOTInductor: not yet
 
 Shipping a precompiled artifact per checkpoint and GPU architecture

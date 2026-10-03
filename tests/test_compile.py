@@ -215,6 +215,20 @@ def test_constructor_warms_only_the_active_compiled_path():
             load(directory, device="cpu", compile=False, compile_cache=True)
             load(directory, device="cpu", compile=True, fast=True, compile_cache=True)
             compile_spy.assert_not_called()
+            reduced = load(directory, device="cpu", compile=True, compile_warmup=False,
+                           compile_mode="reduce-overhead")
+            assert reduced._reduce_overhead
+            assert compile_spy.call_args.kwargs == {"mode": "reduce-overhead"}
+            compile_spy.reset_mock()
+            load(directory, device="cpu", compile=False, compile_mode="reduce-overhead")
+            load(directory, device="cpu", compile=True, fast=True, compile_mode="reduce-overhead")
+            compile_spy.assert_not_called()
+            try:
+                load(directory, device="cpu", compile=True, compile_mode="typo")
+            except ValueError as error:
+                assert "compile_mode" in str(error)
+            else:
+                raise AssertionError("invalid mode accepted")
             cache_spy.assert_not_called()
 
 
@@ -245,6 +259,29 @@ def test_persistent_cache_is_opt_in_and_respects_the_environment():
             del os.environ["TORCHINDUCTOR_CACHE_DIR"]
             del os.environ["XDG_CACHE_HOME"]
             assert configure_cache() == directory + "/.cache/laya/torchinductor"
+
+
+def test_cuda_graph_step_marks_each_forward_and_releases_after_failure():
+    from unittest.mock import patch
+    from laya._compile import cuda_graph_step
+
+    with patch("torch.compiler.cudagraph_mark_step_begin") as mark:
+        try:
+            with cuda_graph_step():
+                raise RuntimeError("forward failed")
+        except RuntimeError:
+            pass
+        with cuda_graph_step():
+            pass
+        assert mark.call_count == 2
+    with patch.object(torch, "compiler", None):
+        try:
+            with cuda_graph_step():
+                pass
+        except RuntimeError as error:
+            assert "requires torch.compiler.cudagraph_mark_step_begin" in str(error)
+        else:
+            raise AssertionError("unsupported CUDA graph step API accepted")
 
 
 if __name__ == "__main__":

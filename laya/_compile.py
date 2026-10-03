@@ -22,8 +22,9 @@ last call returns (refcounted, so concurrent calls on several threads do not res
 torch (2.14) keeps config overrides per thread (a `ContextVar` per entry), so each call sets and
 restores its own thread's value with the config's `patch`. Nothing is left changed between calls.
 
-Mode and device are unchanged from what `compile=True` has always done: the default inductor mode,
-on whatever device the agent runs on, CPU included.
+The default Inductor mode is unchanged. `compile_mode="reduce-overhead"` opts into CUDA graphs;
+Laya serializes those forwards and copies their outputs before a later replay can overwrite them.
+Compilation still runs on whatever device the agent uses, CPU included.
 """
 import threading
 import os
@@ -35,6 +36,7 @@ import torch
 _lock = threading.Lock()
 _depth = 0
 _saved = None
+_cudagraph_lock = threading.Lock()
 
 
 def compile_model(model, **kwargs):
@@ -50,6 +52,17 @@ def configure_cache():
     directory = os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(root, "laya", "torchinductor"))
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+@contextmanager
+def cuda_graph_step():
+    """Serialize Laya CUDA graph forwards until their outputs have been copied."""
+    mark_step = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
+    if mark_step is None:
+        raise RuntimeError("reduce-overhead on CUDA requires torch.compiler.cudagraph_mark_step_begin")
+    with _cudagraph_lock:
+        mark_step()
+        yield
 
 
 def _fx_config():

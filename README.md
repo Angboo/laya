@@ -884,6 +884,12 @@ persistent directory to keep them across restarts. Alternatively, load with
 `~/.cache/laya/torchinductor`). This opt-in sets the process-wide environment variable only if
 absent; an existing value always wins. It does nothing on eager or TileLang loads.
 
+`compile_mode="reduce-overhead"` is a separate opt-in for CUDA graphs. With `compile=True`, it
+can reduce launch overhead on repeated shapes, but each new shape needs recording and GPU memory
+can grow. Laya copies outputs out of reusable graph buffers and serializes these CUDA forwards.
+The default mode remains unchanged. See [the engineering notes](docs/compile-and-fast-path.md)
+for measurements and limitations.
+
 ---
 
 ## Automated Confidence Gating

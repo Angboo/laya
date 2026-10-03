@@ -53,6 +53,7 @@ def main():
     times = []
     # Repeat the sequence to expose CUDA graph recording/replay and retained-output issues.
     answers = []
+    pass_memory = []
     for i, (n, k, words) in enumerate(CALLS * 3):
         state = " ".join(WORDS[j % len(WORDS)] for j in range(words))
         t = time.perf_counter()
@@ -65,7 +66,16 @@ def main():
         else:
             assert result["answers"] == answers[i % len(CALLS)], i
         print("request", i + 1, "seconds", elapsed, "graphs", counters["stats"]["unique_graphs"], flush=True)
+        if (i + 1) % len(CALLS) == 0:
+            pass_memory.append({"allocated_mib": torch.cuda.memory_allocated() / 2**20,
+                                "reserved_mib": torch.cuda.memory_reserved() / 2**20})
+    from torch._inductor.cudagraph_trees import get_manager
+    manager = get_manager(agent.device.index or 0, create_if_none_exists=False)
+    def count_nodes(node):
+        return 1 + sum(count_nodes(child) for children in node.children.values() for child in children)
+    graph_nodes = sum(count_nodes(node) for node in manager.get_roots()) if manager else 0
     print("RESULT", json.dumps({"load_s": load_s, "requests_s": times,
+          "answers": answers, "cuda_graph_nodes": graph_nodes, "pass_memory": pass_memory,
           "allocated_mib": torch.cuda.memory_allocated() / 2**20,
           "reserved_mib": torch.cuda.memory_reserved() / 2**20,
           "peak_allocated_mib": torch.cuda.max_memory_allocated() / 2**20,

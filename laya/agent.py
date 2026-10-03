@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 
-from ._compile import compile_model, independent_dims, configure_cache
+from ._compile import compile_model, independent_dims, configure_cache, cuda_graph_step
 from .calibrate import (
     _install_temperatures,
     apply_calibration_payload,
@@ -472,6 +472,7 @@ class Agent(HookRegistry):
     last_fallback_reason = None
     # Set when `compile=True` wrapped the model in torch.compile.
     _compiled = False
+    _reduce_overhead = False
     _gate = _InferenceGate()
 
     def __init__(
@@ -494,6 +495,7 @@ class Agent(HookRegistry):
         calibration: Optional[str] = None,
         compile_warmup: bool = True,
         compile_cache: bool = False,
+        compile_mode: str = "default",
     ):
         """Load a Laya checkpoint.
 
@@ -516,6 +518,9 @@ class Agent(HookRegistry):
         work to requests or a manual `warmup()` call. Eager and fast agents are unchanged.
         `compile_cache=True` opts into a persistent Laya Inductor directory (process-wide),
         respecting any existing `TORCHINDUCTOR_CACHE_DIR`; see the compile engineering notes.
+        `compile_mode="reduce-overhead"` opts into CUDA graphs. It can retain more GPU memory
+        and records each new shape separately. CUDA outputs are copied before the next replay;
+        compiled CUDA graph forwards are serialized. The default mode remains "default".
 
         `subfolder` selects one checkpoint from a repo that bundles several, e.g.
         `Agent("convaiinnovations/laya", subfolder="multilingual")`. Only that subfolder is
@@ -654,7 +659,11 @@ class Agent(HookRegistry):
         # dynamic=True plus independent dimensions (laya/_compile.py) so a new request shape
         # does not recompile.
         if compile and not fast:
-            self.model = compile_model(self.model)
+            if compile_mode not in ("default", "reduce-overhead"):
+                raise ValueError("compile_mode must be 'default' or 'reduce-overhead'")
+            self._reduce_overhead = compile_mode == "reduce-overhead"
+            compile_kwargs = {"mode": compile_mode} if self._reduce_overhead else {}
+            self.model = compile_model(self.model, **compile_kwargs)
             self._compiled = True
 
         # Keep what the checkpoint shipped for inspection, but only ever apply clamped values:
@@ -1119,14 +1128,18 @@ class Agent(HookRegistry):
             if enabled is None:
                 enabled = self._amp_enabled_for(b["input_ids"].shape[0])
             dims = independent_dims() if self._compiled else nullcontext()
-            with _amp_context(self.device, self.dtype, enabled), dims:
-                return self.model(
+            graph_outputs = self._reduce_overhead and self._fast is None and self.device.type == "cuda"
+            step = cuda_graph_step() if graph_outputs else nullcontext()
+            with _amp_context(self.device, self.dtype, enabled), dims, step:
+                out = self.model(
                     b["input_ids"].to(self.device),
                     b["attention_mask"].to(self.device),
                     b["marker_pos"].to(self.device),
                     b["marker_mask"].to(self.device),
                     b["qtype"].to(self.device),
                 )
+                # CUDA graph outputs belong to a reusable pool; callers can retain our copies.
+                return tuple(t.clone() for t in out) if graph_outputs else out
 
         try:
             with self._gate.read_lock():
@@ -1920,7 +1933,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          hooks_raise: bool = True, hooks_concurrent: bool = True,
          hooks_timeout: Optional[float] = None,
          calibration: Optional[str] = None, compile_warmup: bool = True,
-         compile_cache: bool = False) -> Agent:
+         compile_cache: bool = False, compile_mode: str = "default") -> Agent:
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:
@@ -1957,6 +1970,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
             model_id_or_path, subfolder = spec
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
                  compile=compile, compile_warmup=compile_warmup, compile_cache=compile_cache,
+                 compile_mode=compile_mode,
                  revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,

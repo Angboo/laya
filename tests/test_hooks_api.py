@@ -78,6 +78,7 @@ for label, fn in (("Agent.__init__", Agent.__init__), ("load", load),
 for label, fn in (("Agent.__init__", Agent.__init__), ("load", load)):
     check_param(label, fn, "compile_warmup", True)
     check_param(label, fn, "compile_cache", False)
+    check_param(label, fn, "compile_mode", "default")
 
 # Router keeps lang_guess and explicit per-model revisions too
 check_param("Router.__init__", Router.__init__, "lang_guess", None)
