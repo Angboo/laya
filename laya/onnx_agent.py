@@ -669,11 +669,15 @@ class ONNXAgent(HookRegistry):
             # `answer_confidence` is the calibrated max(p) confidence, reported on every question
             # type so a caller can gate across types on one number -- matching the PyTorch Agent,
             # whose output ONNX callers otherwise cannot read (KeyError on cross-backend swap).
-            ans_conf = round(answer_confidence(p, k), 4)
+            ans_raw = answer_confidence(p, k)
             if binning_map:
+                from .calibrate import apply_binning_map
+
                 ans_conf = round(
-                    apply_binning_map(ans_conf, temp_bucket(qt, k), binning_map), 4
+                    apply_binning_map(ans_raw, temp_bucket(qt, k), binning_map), 4
                 )
+            else:
+                ans_conf = round(ans_raw, 4)
             ext = {"act_probability": round(float(act[offset + r, 0]), 4)}
 
             if q["t"] == "choice":

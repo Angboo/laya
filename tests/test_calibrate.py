@@ -481,6 +481,58 @@ bin_decoder.binning_map = bm
 remapped = bin_decoder._decode_answers(bin_logits, bin_act, bin_items, bin_ids, bin_internal, 0)
 check("decode/binning remaps confidence", remapped["pick"]["answer_confidence"], 0.2)
 
+# Q1: the fitter bins full-precision answer_confidence; the runtime must bin the same
+# value and only round the final public field. Boundary case: a max(p) just below a
+# histogram boundary rounds to the boundary, and the rounded value would pick the wrong bin.
+boundary_bins = {"noul:2": {"bins": 20, "values": [round(0.05 * i, 2) for i in range(20)]}}
+bounce_target = 0.9499995  # just below bin 19's start at 0.95
+boundary_logits = np.log([[1.0 - bounce_target, bounce_target]]) * 1.0
+boundary_act = np.array([[0.01, 0.99]])
+boundary_ids = ["flag"]
+boundary_internal = {"flag": {"t": "noul", "crit": None}}
+boundary_items = [{"markers": [0, 1]}]
+
+agent_boundary = Agent.__new__(Agent)
+agent_boundary.temperature = [1.0, 1.0, 1.0]
+agent_boundary.temperature_by_options = {}
+agent_boundary.binning_map = boundary_bins
+agent_decoded = agent_boundary._decode_answers(
+    boundary_logits, boundary_act, boundary_items, boundary_ids, boundary_internal, 0
+)
+check(
+    "decode/binning uses unrounded value (agent)",
+    agent_decoded["flag"]["answer_confidence"],
+    boundary_bins["noul:2"]["values"][18],
+)
+
+from laya.onnx_agent import ONNXAgent  # noqa: E402
+
+onnx_boundary = ONNXAgent.__new__(ONNXAgent)
+onnx_boundary.temperature = [1.0, 1.0, 1.0]
+onnx_boundary.temperature_by_options = {}
+onnx_boundary.binning_map = boundary_bins
+onnx_decoded = onnx_boundary._decode_answers(
+    boundary_logits, boundary_act, boundary_items, boundary_ids, boundary_internal, 0
+)
+check(
+    "decode/binning uses unrounded value (onnx)",
+    onnx_decoded["flag"]["answer_confidence"],
+    agent_decoded["flag"]["answer_confidence"],
+)
+
+# Q3: cross-backend selectability — the same installed map must move both decodes to the same value.
+onnx_select = ONNXAgent.__new__(ONNXAgent)
+onnx_select.temperature = [1.0, 1.0, 1.0]
+onnx_select.temperature_by_options = {}
+onnx_select_ids = ["flag"]
+onnx_select_internal = {"flag": {"t": "noul", "crit": None}}
+select_logits = np.log([[0.8, 0.2]]) * 1.0
+onnx_no_map = onnx_select._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0)
+check("onnx/no binning keeps scaled confidence", onnx_no_map["flag"]["answer_confidence"], 0.8)
+onnx_select.binning_map = {"noul:2": {"bins": 2, "values": [0.95, 0.05]}}
+onnx_with_map = onnx_select._decode_answers(select_logits, bin_act, bin_items, onnx_select_ids, onnx_select_internal, 0)
+check("onnx/binning remaps confidence", onnx_with_map["flag"]["answer_confidence"], 0.05)
+
 # A payload with no version is the original schema and must still load, even onto an
 # agent that has its own identity. No warning: there is no recorded checkpoint to disagree with.
 legacy = {"temperature": [1.4, 1.2, 1.1], "temperature_by_options": {"noul:2": 1.5}}
@@ -556,6 +608,13 @@ _refuses("shape/non-object payload", ["temperature", [1.0, 1.0, 1.0]], "must be 
 _refuses("shape/binning not object", {"temperature": [1.0, 1.0, 1.0], "binning_map": [1, 2]}, "binning_map")
 _refuses("shape/binning wrong entry", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": 1}}, "bins")
 _refuses("shape/binning values length", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 2, "values": [0.5]}}}, "values")
+_refuses("shape/binning value above 1", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [1.5]}}}, "[0, 1]")
+_refuses("shape/binning value below 0", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [-0.1]}}}, "[0, 1]")
+_refuses("shape/binning NaN", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [float("nan")]}}}, "finite")
+_refuses("shape/binning Infinity", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [float("inf")]}}}, "finite")
+_refuses("shape/binning bool value", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [True]}}}, "number")
+_refuses("shape/binning string value", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": ["0.5"]}}}, "number")
+_refuses("shape/binning null value", {"temperature": [1.0, 1.0, 1.0], "binning_map": {"a": {"bins": 1, "values": [None]}}}, "number")
 _refuses("shape/scalar temperature", {"temperature": 5}, "[3 floats]")
 _refuses("shape/string temperature", {"temperature": "abc"}, "[3 floats]")
 _refuses("shape/dict temperature", {"temperature": {"a": 1, "b": 2, "c": 3}}, "[3 floats]")

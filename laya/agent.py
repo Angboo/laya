@@ -1217,11 +1217,13 @@ class Agent(HookRegistry):
             # scaling fits and ECE measures. Rather than change one underneath existing
             # callers, report both: `answer_confidence` is the calibrated one, on every
             # question type, so a caller can gate across types on a single number.
-            ans_conf = round(answer_confidence(p, k), 4)
+            ans_raw = answer_confidence(p, k)
             if getattr(self, "binning_map", None):
                 ans_conf = round(
-                    apply_binning_map(ans_conf, temp_bucket(qt, k), self.binning_map), 4
+                    apply_binning_map(ans_raw, temp_bucket(qt, k), self.binning_map), 4
                 )
+            else:
+                ans_conf = round(ans_raw, 4)
             ext = {"act_probability": round(float(act[r, 0]), 4)}
 
             if q["t"] == "choice":

@@ -639,10 +639,21 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
                     "calibration JSON binning_map[%r] must have \"values\" of length \"bins\" (%d)"
                     % (name, n_bins))
             try:
-                [float(v) for v in values]
+                parsed_values = [float(v) for v in values]
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     "calibration JSON binning_map[%r] values must be numbers, got %r" % (name, values)) from exc
+            for v in values:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be numbers, got %r" % (name, values))
+            for v in parsed_values:
+                if not np.isfinite(v):
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be finite, got %r" % (name, values))
+                if not 0.0 <= v <= 1.0:
+                    raise ValueError(
+                        "calibration JSON binning_map[%r] values must be in [0, 1], got %r" % (name, values))
     obj.binning_map = binning
     if version >= CALIBRATION_VERSION:
         _warn_if_identity_mismatch(obj, payload)
