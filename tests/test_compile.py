@@ -312,26 +312,33 @@ def test_persistent_cache_is_opt_in_and_respects_the_environment():
     from laya._compile import configure_cache
 
     with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        # Keep mixed separators in the inputs: Windows accepts them, and joining
+        # child names need not preserve the spelling produced by pathlib.
         with patch.dict(os.environ, {"XDG_CACHE_HOME": directory + "/xdg"}, clear=True), \
              patch("os.path.expanduser", return_value=directory + "/.cache"), \
              patch("torch.compile") as compiler:
             compile_model(object())
             assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
             configure_cache()
-            expected = str(Path(directory) / "xdg/laya/torchinductor")
-            assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == expected
-            assert Path(expected).is_dir()
+            expected = root / "xdg" / "laya" / "torchinductor"
+            assert Path(os.environ["TORCHINDUCTOR_CACHE_DIR"]) == expected
+            assert expected.is_dir()
             assert compiler.call_args.kwargs == {"dynamic": True}
             # A caller-selected directory always wins, including after repeated loads.
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = directory + "/explicit"
-            assert configure_cache() == directory + "/explicit"
-            assert configure_cache() == directory + "/explicit"
+            assert Path(configure_cache()) == root / "explicit"
+            assert Path(configure_cache()) == root / "explicit"
+            assert (root / "explicit").is_dir()
             del os.environ["TORCHINDUCTOR_CACHE_DIR"]
             os.environ["XDG_CACHE_HOME"] = "relative-is-invalid"
-            assert configure_cache() == directory + "/.cache/laya/torchinductor"
+            expected = root / ".cache" / "laya" / "torchinductor"
+            assert Path(configure_cache()) == expected
+            assert expected.is_dir()
             del os.environ["TORCHINDUCTOR_CACHE_DIR"]
             del os.environ["XDG_CACHE_HOME"]
-            assert configure_cache() == directory + "/.cache/laya/torchinductor"
+            assert Path(configure_cache()) == expected
+            assert expected.is_dir()
 
 
 def test_cuda_graph_step_marks_each_forward_and_releases_after_failure():
