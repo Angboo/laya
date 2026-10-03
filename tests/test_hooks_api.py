@@ -75,6 +75,9 @@ for label, fn in (("Agent.__init__", Agent.__init__), ("load", load),
     for param, default in HOOK_KEYS.items():
         check_param(label, fn, param, default)
 
+for label, fn in (("Agent.__init__", Agent.__init__), ("load", load)):
+    check_param(label, fn, "compile_warmup", True)
+
 # Router keeps lang_guess and explicit per-model revisions too
 check_param("Router.__init__", Router.__init__, "lang_guess", None)
 check_param("Router.__init__", Router.__init__, "revisions", None)

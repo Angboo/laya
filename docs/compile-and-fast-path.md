@@ -22,8 +22,10 @@ by sequence length, so it has no such buffer.
 ## Cold start
 
 - **First compile.** It takes tens of seconds per graph. `compile=True` needs two graphs: one for
-  batches and one for a single row, which torch specialises. `agent.warmup()` (#718) builds both
-  before traffic arrives.
+  batches and one for a single row, which torch specialises. `compile=True` now calls `agent.warmup()`
+  during load. `compile_warmup=False` restores lazy compilation, and `agent.warmup(shapes=...)`
+  remains available manually. Eager and TileLang loads do not warm automatically. These shapes
+  cover common requests, not every possible shape guard.
 - **Across restarts.** Inductor's FX-graph cache keeps compiled graphs under
   `TORCHINDUCTOR_CACHE_DIR`. The default is under `/tmp`, which does not survive a reboot or a
   container restart. Set it to a persistent directory, or a volume in a container, and a second

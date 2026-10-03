@@ -492,6 +492,7 @@ class Agent(HookRegistry):
         hooks_concurrent: bool = True,
         hooks_timeout: Optional[float] = None,
         calibration: Optional[str] = None,
+        compile_warmup: bool = True,
     ):
         """Load a Laya checkpoint.
 
@@ -510,6 +511,8 @@ class Agent(HookRegistry):
         new one on almost every request, so those graphs usually cost more than they return;
         use it when the traffic is repetitive. `fast=True` takes precedence, because the
         TileLang path replaces the forward that would be compiled.
+        Compiled agents run `warmup()` before returning; `compile_warmup=False` defers that
+        work to requests or a manual `warmup()` call. Eager and fast agents are unchanged.
 
         `subfolder` selects one checkpoint from a repo that bundles several, e.g.
         `Agent("convaiinnovations/laya", subfolder="multilingual")`. Only that subfolder is
@@ -755,6 +758,9 @@ class Agent(HookRegistry):
                 "  See https://pytorch.org/get-started/locally/\n"
                 % (fell_back_from, fell_back_why), RuntimeWarning)
 
+        if self._compiled and compile_warmup:
+            self.warmup()
+
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,
         sliding-window flash attention, 16-bit resident weights, CUDA graphs per shape bucket).
@@ -798,10 +804,10 @@ class Agent(HookRegistry):
     def warmup(self, shapes=None) -> float:
         """Run the forward on synthetic input of each shape now and return the seconds it took.
 
-        `compile=True` traces and compiles on the first request that needs a graph (tens of
-        seconds on a GPU), and `fast=True` builds its kernels and CUDA graphs per shape bucket on
-        first use. Calling this after loading, before serving, moves that cost out of the first
-        requests. With the stock forward it is a few ordinary forward passes. `shapes` is a list
+        `compile=True` calls this at load unless `compile_warmup=False`. Extra shapes can still
+        be warmed manually. `fast=True` builds its kernels and CUDA graphs per shape bucket on
+        first use; calling this before serving moves that cost out of the first requests.
+        With the stock forward it is a few ordinary forward passes. `shapes` is a list
         of (rows, tokens, markers); tokens are capped at the agent's `max_len`. Nothing is
         returned to or recorded for any caller, and hooks do not run.
         """
@@ -1907,7 +1913,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          hooks=None, on_predict_start=None, on_predict_end=None,
          hooks_raise: bool = True, hooks_concurrent: bool = True,
          hooks_timeout: Optional[float] = None,
-         calibration: Optional[str] = None) -> Agent:
+         calibration: Optional[str] = None, compile_warmup: bool = True) -> Agent:
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:
@@ -1943,7 +1949,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         if spec is not None:
             model_id_or_path, subfolder = spec
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
-                 compile=compile,
+                 compile=compile, compile_warmup=compile_warmup,
                  revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,

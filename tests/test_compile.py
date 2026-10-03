@@ -173,6 +173,38 @@ def test_eager_agent_leaves_the_setting_alone():
     assert seen == [fx_config.use_duck_shape]
 
 
+def test_constructor_warms_only_the_active_compiled_path():
+    import json
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+    import laya.agent as module
+    from laya import load
+
+    model = tiny_model()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "rl_agent_config.json").write_text(json.dumps({"encoder": "unused", "head_layers": 1}))
+        (root / "model.safetensors").touch()
+        with patch.object(module, "build_model", return_value=model), \
+             patch.object(module, "_load_tokenizer", return_value=SimpleNamespace(cls_token_id=1)), \
+             patch("safetensors.torch.load_file", return_value=model.state_dict()), \
+             patch.object(module, "compile_model", side_effect=lambda m: m) as compile_spy, \
+             patch.object(Agent, "accelerate"), \
+             patch.object(Agent, "warmup", autospec=True) as warm:
+            agent = load(directory, device="cpu", compile=True)
+            warm.assert_called_once_with(agent)
+            assert not agent.model.training and agent._compiled
+            warm.reset_mock()
+            load(directory, device="cpu", compile=True, compile_warmup=False)
+            load(directory, device="cpu", compile=False)
+            load(directory, device="cpu", compile=True, fast=True)
+            warm.assert_not_called()
+            assert compile_spy.call_count == 2
+            agent.warmup()
+            warm.assert_called_once_with(agent)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
