@@ -9,9 +9,11 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
 
 os.environ.setdefault("USE_TF", "0")
@@ -390,6 +392,60 @@ class EndToEndTests(unittest.TestCase):
     def test_train_model_rejects_empty_input(self):
         with self.assertRaises(ValueError):
             train_model(None, self.tok, [], TrainConfig(), torch.device("cpu"), 64, 40)
+
+
+class CalibrationReportTests(unittest.TestCase):
+    @staticmethod
+    def records(qtype, n, k=3, scale=1.0):
+        # Logits that favour the target option by `scale`; target one-hot on option 0.
+        return [(qtype, [scale] + [0.0] * (k - 1), [1.0] + [0.0] * (k - 1), k) for _ in range(n)]
+
+    def test_each_kind_of_weak_fit_is_named(self):
+        from laya.train import CALIB_WARN_N, calibration_report
+
+        records = (self.records(QTYPES["choice"], 5) + self.records(QTYPES["noul"], 30, k=2)
+                   + self.records(QTYPES["score"], CALIB_WARN_N + 10))
+        report = calibration_report(records, [1.0, 1.0, 2.0])   # choice, score, noul
+        self.assertEqual(report["choice"]["items"], 5)
+        self.assertIn("not fitted", report["choice"]["issues"][0])
+        self.assertEqual(len(report["noul"]["issues"]), 1)
+        self.assertIn("only 30", report["noul"]["issues"][0])
+        self.assertEqual(len(report["score"]["issues"]), 1)
+        self.assertIn("unchanged at 1.0", report["score"]["issues"][0])
+        self.assertAlmostEqual(report["score"]["accuracy"], 1.0)
+
+    def test_clamped_and_healthy_fits(self):
+        from laya.train import CALIB_WARN_N, calibration_report
+
+        n = CALIB_WARN_N
+        records = self.records(QTYPES["choice"], n) + self.records(QTYPES["score"], n)
+        report = calibration_report(records, [TEMP_MIN, 1.3, 1.0])   # choice, score, noul
+        self.assertIn("clamp", report["choice"]["issues"][0])
+        self.assertEqual(report["score"]["issues"], [])
+        # a type absent from the data is reported, but not as a problem
+        self.assertEqual((report["noul"]["items"], report["noul"]["issues"]), (0, []))
+        self.assertNotIn("accuracy", report["noul"])
+        p = torch.softmax(torch.tensor([1.0, 0.0, 0.0]) / 1.3, -1)
+        self.assertAlmostEqual(report["score"]["mean_confidence"], p.max().item(), places=6)
+
+    def test_finetune_warns_and_records_a_weak_calibration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_checkpoint(root / "base", make_tokenizer())
+            data = root / "train.jsonl"
+            data.write_text("\n".join(json.dumps(r) for r in rows(2)), encoding="utf-8")
+            config = TrainConfig(epochs=1, micro_batch=8, grad_accum=1, calib_frac=0.2, log_every=0)
+            # warnings.catch_warnings, not assertWarns: assertWarns walks every loaded module, and
+            # transformers' lazy modules then try to import optional packages such as torchvision.
+            with patch("huggingface_hub.snapshot_download", side_effect=AssertionError("unexpected download")), \
+                    warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                report = finetune(str(data), str(root / "base"), str(root / "out"), config, device="cpu")
+            saved = json.loads((root / "out" / "rl_agent_config.json").read_text())
+        messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+        self.assertTrue(any(re.match(r"laya\.train: \w+ calibration: not fitted", m) for m in messages), messages)
+        self.assertEqual(saved["training"]["laya_train_calibration"], report["calibration"])
+        self.assertEqual(sum(e["items"] for e in report["calibration"].values()), report["calibration_items"])
 
 
 if __name__ == "__main__":

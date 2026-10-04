@@ -17,7 +17,9 @@ copies do not have:
 
 Calibration goes through `laya.calibrate.fit_temperature_map`, so a fine-tuned checkpoint is
 fitted with the same clamp and buckets the runtime applies instead of a local copy of the
-fitter.
+fitter. `calibration_report` says per question type what that fit rests on, and `finetune` warns
+when it rests on too little: a short run can otherwise save a checkpoint whose temperatures never
+moved from 1.0, and nothing but the numbers would show it.
 
 Items keep the question and the tokenized state rather than a finished sequence, because a
 shuffled epoch needs to rebuild the head. States are tokenized once per row and shared by
@@ -29,14 +31,18 @@ import json
 import math
 import os
 import random
+import warnings
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 
-from .calibrate import fit_temperature_map
+from .calibrate import MIN_TYPE_N, fit_temperature_map
 from .common import (
+    QTYPE_NAMES,
     QTYPES,
+    TEMP_MAX,
+    TEMP_MIN,
     build_head,
     build_model,
     build_sequence,
@@ -48,6 +54,9 @@ from .common import (
 )
 
 LOSSES = ("soft-ce", "rlcd")
+# Below this many calibration items of a type, a fitted temperature is reported as resting on
+# little evidence. MIN_TYPE_N (laya.calibrate) is the floor below which it is not fitted at all.
+CALIB_WARN_N = 50
 _MASKED = -1e4
 
 
@@ -452,6 +461,59 @@ def calibration_records(model, tok, items: Sequence[Dict[str, Any]], device: tor
     return records
 
 
+def calibration_report(records: Sequence[Tuple[int, Any, Any, int]],
+                       temperature: Sequence[float]) -> Dict[str, Dict[str, Any]]:
+    """Per question type: how many calibration items there were, what was fitted, and what to doubt.
+
+    `records` are the `calibration_records` the temperatures were fitted on, and `temperature`
+    the per-type scalars `fit_temperature_map` returned. Each type gets `items`, `temperature`,
+    `accuracy` and `mean_confidence` (top probability at the fitted temperature) on the
+    calibration items, and a list of `issues`, empty when nothing looks wrong:
+
+    - fewer than `MIN_TYPE_N` items: the temperature was not fitted and stays 1.0;
+    - fewer than `CALIB_WARN_N` items: it was fitted, on little evidence;
+    - it landed on the `[TEMP_MIN, TEMP_MAX]` clamp;
+    - it came back unchanged at 1.0 although it was fitted, which usually means the items gave
+      the fit nothing to correct -- what a model already certain and right on them produces.
+
+    A type with no calibration items at all has no issues; it was not in the data.
+    """
+    import numpy as np
+
+    by_type: Dict[int, List[Tuple[Any, Any]]] = {qt: [] for qt in QTYPE_NAMES}
+    for qt, logits, target, _k in records:
+        by_type[int(qt)].append((np.asarray(logits, dtype=float), np.asarray(target, dtype=float)))
+    report = {}
+    for qt, name in QTYPE_NAMES.items():
+        pairs, t = by_type[qt], float(temperature[qt])
+        entry: Dict[str, Any] = {"items": len(pairs), "temperature": t, "issues": []}
+        if pairs:
+            right, conf = 0, 0.0
+            for logits, target in pairs:
+                z = logits / t
+                p = np.exp(z - z.max())
+                p /= p.sum()
+                right += int(p.argmax() == target.argmax())
+                conf += float(p.max())
+            entry["accuracy"] = right / len(pairs)
+            entry["mean_confidence"] = conf / len(pairs)
+        n, issues = len(pairs), entry["issues"]
+        if 0 < n < MIN_TYPE_N:
+            issues.append("not fitted: %d calibration items, fewer than %d, so the temperature stays 1.0"
+                          % (n, MIN_TYPE_N))
+        elif n >= MIN_TYPE_N:
+            if n < CALIB_WARN_N:
+                issues.append("fitted on only %d calibration items" % n)
+            if t <= TEMP_MIN or t >= TEMP_MAX:
+                issues.append("the fitted temperature %.3g is on the [%g, %g] clamp" % (t, TEMP_MIN, TEMP_MAX))
+            elif abs(t - 1.0) < 1e-3:
+                issues.append("the fit came back unchanged at 1.0 (accuracy %.2f, mean confidence %.3f on the "
+                              "calibration items), which usually means they gave it nothing to correct; this "
+                              "type's confidences are uncalibrated" % (entry["accuracy"], entry["mean_confidence"]))
+        report[name] = entry
+    return report
+
+
 def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainConfig] = None,
              device: Optional[str] = "auto") -> Dict[str, Any]:
     """Preprocess, train, calibrate and save; returns a summary of the run.
@@ -481,14 +543,22 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
     history = train_model(model, tok, train_items, config, dev, max_len, head_max_len,
                           on_epoch_end=checkpoint_latest)
 
-    fitted = fit_temperature_map(calibration_records(model, tok, calib_items, dev, max_len, head_max_len))
+    records = calibration_records(model, tok, calib_items, dev, max_len, head_max_len)
+    fitted = fit_temperature_map(records)
+    calibration = calibration_report(records, fitted["temperature"])
+    for name, entry in calibration.items():
+        for issue in entry["issues"]:
+            # Logged as a warning rather than left to the report alone: a checkpoint whose
+            # confidences were never calibrated looks the same as one that was.
+            warnings.warn("laya.train: %s calibration: %s" % (name, issue), RuntimeWarning, stacklevel=2)
     out_cfg = dict(cfg, max_len=max_len, head_max_len=head_max_len, fine_tuned=True,
                    temperature=fitted["temperature"])
     # An inherited bucket map takes precedence at inference and would mask the new fit.
     out_cfg.pop("temperature_by_options", None)
     if fitted["temperature_by_options"]:
         out_cfg["temperature_by_options"] = fitted["temperature_by_options"]
-    out_cfg["training"] = dict(out_cfg.get("training") or {}, laya_train=asdict(config))
+    out_cfg["training"] = dict(out_cfg.get("training") or {}, laya_train=asdict(config),
+                               laya_train_calibration=calibration)
     save_checkpoint(model, tok, out_cfg, output_dir)
     return {
         "train_items": len(train_items),
@@ -498,5 +568,6 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
         "temperature": fitted["temperature"],
         "temperature_by_options": fitted["temperature_by_options"],
         "n_by_bucket": fitted["n_by_bucket"],
+        "calibration": calibration,
         "output_dir": output_dir,
     }
