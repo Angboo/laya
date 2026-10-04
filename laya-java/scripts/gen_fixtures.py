@@ -545,6 +545,252 @@ LONG_OPTION = ("a refund of the duplicate charge together with written confirmat
                "payment method on file has been removed and will not be charged again under any "
                "circumstances whatsoever, including renewals")
 
+# Route cases, each naming the precedence level or detection branch it exercises. `state` is a
+# plain string unless noted; `questions` is a bare id -> spec mapping.
+_WORKFLOW_IDS = {
+    "agent_trace_observability": ["action", "needs_review", "outcome", "risk", "urgency"],
+    "customer_service": ["action", "category", "churn_risk", "needs_human", "urgency"],
+    "invoice_processing": ["discrepancy_severity", "disposition", "duplicate", "matches_order",
+                           "urgency"],
+    "security_incidents": ["credential_compromise", "disposition", "severity", "true_positive",
+                           "urgency"],
+}
+
+
+def _noul_set(ids):
+    """A question mapping with those ids, which is all `match_typed_decisions_workflow` reads."""
+    return {qid: {"type": "noul", "instructions": "Is `message` about %s?" % qid} for qid in ids}
+
+
+def router():
+    """Everything `laya.router` decides before a checkpoint is loaded.
+
+    The routing decision is the part of the router that is pure logic, and it is the part that
+    decides whether a request reaches a checkpoint that can read it. The English checkpoint does
+    not degrade gently off English -- 0.100 on 20-option Hindi intent against 0.050 for random,
+    while reporting high confidence -- so a wrong route is a wrong answer delivered confidently.
+
+    The `reason` strings are recorded too, not just the model. They are user-visible, they go into
+    API responses, and they are built with two Python formats that Java spells differently:
+    `%r`, which is CPython's repr, and `%.0f`, which rounds halves to EVEN where
+    `String.format("%.0f", ...)` rounds them up. One of the reasons interpolates the mixed
+    segment, a slice of the caller's own text, so both formats see arbitrary input.
+    """
+    from laya import router as mod
+
+    names = ["english", "multilingual", "typed-decisions"]
+    aliases = sorted(mod._ALIASES)
+    hostile_names = ["", "  ", "ENGLISH", " english ", "English", "nope", "laya-x", "en-US",
+                     "typed decisions", "multilingual2"]
+
+    def normalise(name):
+        try:
+            return {"ok": mod.normalise_name(name)}
+        except ValueError as failure:
+            return {"error": str(failure)}
+
+    def spec(name):
+        resolved = mod.resolve_model_spec(name)
+        return None if resolved is None else list(resolved)
+
+    english_codes = [
+        None, "", "   ", "en", "EN", "En", "eng", "english", "ENGLISH",
+        "en-US", "en_US", "en_US.UTF-8", "en-GB", "engx", "enx",
+        "fr", "FR", "pt-BR", "pt_BR.UTF-8", "zh-Hans", "de", "x",
+        "c", "C", "POSIX", "C.UTF-8", "und", "zxx", "mul", "UND",
+        ".", "-", "_", ".UTF-8", "-US", 1, True, 0,
+    ]
+
+    schemas = [
+        {},
+        {"a": {"type": "noul", "instructions": "x"}},
+        # Option ORDER is positional in render_options, so two orders are two schemas and must
+        # not share a forward pass.
+        {"q": {"type": "choice", "instructions": "x", "criteria": {"a": "1", "b": "2"}}},
+        {"q": {"type": "choice", "instructions": "x", "criteria": {"b": "2", "a": "1"}}},
+        {"q": {"type": "score", "instructions": "x", "criteria": ["low", "high"]}},
+        {"b": {"type": "noul", "instructions": "x"}, "a": {"type": "noul", "instructions": "y"}},
+        {"q": {"type": "noul", "instructions": "café 中文"}},
+    ]
+
+    long_english = ("The customer opened this ticket yesterday and we have asked for a "
+                    "screenshot. The browser console shows no errors. ")
+    cases = [
+        # ---- explicit model wins over everything
+        ("explicit-model-english", {"state": "अपने खाते",
+                                    "model": "english"}),
+        ("explicit-model-alias-en", {"state": "अपने", "model": "en"}),
+        ("explicit-model-alias-multi", {"state": "plain english here", "model": "multi"}),
+        ("explicit-model-alias-typed", {"state": "plain english here", "model": "typed"}),
+        ("explicit-model-uppercase", {"state": "plain english here", "model": "MULTILINGUAL"}),
+        ("explicit-model-padded", {"state": "plain english here", "model": "  english  "}),
+        # ---- explicit task next
+        ("explicit-task-typed-underscore", {"state": "plain english", "task": "typed_decisions"}),
+        ("explicit-task-typed-hyphen", {"state": "plain english", "task": "typed-decisions"}),
+        ("explicit-task-english", {"state": "अपने", "task": "english"}),
+        # ---- detected workflow, only when opted in
+        ("workflow-detected-off", {"state": "plain english",
+                                   "questions": _noul_set(_WORKFLOW_IDS["customer_service"])}),
+        ("workflow-detected-on", {"state": "plain english",
+                                  "questions": _noul_set(_WORKFLOW_IDS["customer_service"]),
+                                  "auto_task_detection": True}),
+        ("workflow-invoice-on", {"state": "plain english",
+                                 "questions": _noul_set(_WORKFLOW_IDS["invoice_processing"]),
+                                 "auto_task_detection": True}),
+        ("workflow-security-on", {"state": "plain english",
+                                  "questions": _noul_set(_WORKFLOW_IDS["security_incidents"]),
+                                  "auto_task_detection": True}),
+        ("workflow-trace-on", {"state": "plain english",
+                               "questions": _noul_set(_WORKFLOW_IDS["agent_trace_observability"]),
+                               "auto_task_detection": True}),
+        # a superset is not a match: an unrelated schema holding `urgency` must not be captured
+        ("workflow-superset-on", {"state": "plain english",
+                                  "questions": _noul_set(
+                                      _WORKFLOW_IDS["customer_service"] + ["extra"]),
+                                  "auto_task_detection": True}),
+        ("workflow-subset-on", {"state": "plain english",
+                                "questions": _noul_set(
+                                    _WORKFLOW_IDS["customer_service"][:-1]),
+                                "auto_task_detection": True}),
+        # the workflow is still REPORTED when a later branch decides, which is why it is a field
+        ("workflow-reported-with-lang", {"state": "plain english",
+                                         "questions": _noul_set(_WORKFLOW_IDS["customer_service"]),
+                                         "lang": "fr"}),
+        # ---- explicit lang
+        ("lang-en", {"state": "अपने खाते", "lang": "en"}),
+        ("lang-en-us", {"state": "अपने", "lang": "en-US"}),
+        ("lang-posix", {"state": "plain english words here now", "lang": "en_US.UTF-8"}),
+        ("lang-fr", {"state": "plain english words here now", "lang": "fr"}),
+        ("lang-blank-falls-through", {"state": "plain english words here now", "lang": "   "}),
+        ("lang-agnostic-C-falls-through", {"state": "plain english words here now", "lang": "C"}),
+        ("lang-und-falls-through", {"state": "अपने खाते",
+                                    "lang": "und"}),
+        # ---- lang_guess, per call and installed
+        ("guess-per-call-pt", {"state": "plain english words here now", "lang_guess": "pt"}),
+        ("guess-per-call-en", {"state": "अपने", "lang_guess": "en"}),
+        ("guess-installed-pt", {"state": "plain english words here now",
+                                "router_lang_guess": "pt"}),
+        ("guess-per-call-beats-installed", {"state": "plain english words here now",
+                                            "lang_guess": "en", "router_lang_guess": "pt"}),
+        ("guess-abstains-falls-through", {"state": "अपने", "lang_guess": "C"}),
+        ("guess-after-lang", {"state": "plain english words here now", "lang": "fr",
+                              "lang_guess": "en"}),
+        # ---- detection branches
+        ("detect-no-letters", {"state": "12345 !!! ---"}),
+        ("detect-no-letters-default-multi", {"state": "12345 !!! ---",
+                                             "default": "multilingual"}),
+        ("detect-non-latin-hindi", {"state": "मैं अपने "
+                                             "खाते में"}),
+        ("detect-non-latin-korean", {"state": "계정에 로그인할 "
+                                              "수 없어요"}),
+        ("detect-non-latin-partial", {"state": "Order ACME-99281 shipped but the label is wrong "
+                                               "注文番号が違いま"
+                                               "すよ"}),
+        ("detect-identified-language", {"state": "Você pode me mandar a nota fiscal do "
+                                                 "pedido que eu fiz ontem?"}),
+        ("detect-mixed-segment", {"state": long_english
+                                  + "\nNao consigo entrar na minha conta e a senha nao funciona"}),
+        ("detect-undecided-with-diacritics",
+         {"state": "Nie mogę się zalogować na swoje konto, hasło nie działa"}),
+        ("detect-undecided-no-diacritics", {"state": "Quero cancelar"}),
+        ("detect-undecided-default-multi", {"state": "Quero cancelar",
+                                            "default": "multilingual"}),
+        ("detect-english", {"state": "I cannot log in to my account and the password reset email "
+                                     "never arrives."}),
+        ("detect-none-state", {"state": None}),
+        ("detect-structured-state", {"state": {"id": "T-1", "msg": "Ich kann mich nicht in mein "
+                                                                   "Konto einloggen und das "
+                                                                   "Passwort"}}),
+        # one eighth of the letters non-Latin: the percentage is exactly 12.5, where half-even
+        # prints 12 and half-up prints 13
+        ("detect-percent-halfway", {"state": "Set the threshold values to Α and rerun"}),
+        # The two reasons that carry a percentage, at a share where the rounding mode is visible.
+        # Seventy Latin letters and ten lowercase Greek ones is a non-Latin share of exactly
+        # 10/80 = 0.125, so the reason reads "12% of letters" with CPython's half-to-even %.0f and
+        # "13%" with `String.format`. Without this case the router could misreport a percentage it
+        # puts in front of a user and every other route case would still pass.
+        ("detect-percent-halfway-non-latin",
+         {"state": " ".join(["abcdefg"] * 10)
+                   + " \u03b1\u03b2\u03b3\u03b4\u03b5 \u03b6\u03b7\u03b8\u03b9\u03ba"}),
+        # And the same on the other percentage: five accented characters in exactly forty
+        # CHARACTERS -- the rate is measured over every character, not every letter -- is 0.125,
+        # in a state whose language stays unidentified. The trailing "xx" is what makes it forty;
+        # at thirty-eight the rate is 0.1316 and rounds the same way either side, which is how the
+        # first attempt at this case passed while proving nothing.
+        ("detect-percent-halfway-diacritics",
+         {"state": "\u00e9\u00e9\u00e9\u00e9\u00e9 zz ww qq vv bb nn mm hh kk ll jjxx"}),
+        # a mixed segment holding a no-break space and a quote, so the reason's repr has to escape
+        ("detect-mixed-segment-hostile",
+         {"state": long_english + "\nNao consigo entrar na 'minha' conta e a senha nao "
+                                  "funciona de jeito nenhum"}),
+    ]
+
+    def route_case(options):
+        router_kwargs = {}
+        if "default" in options:
+            router_kwargs["default"] = options["default"]
+        if "auto_task_detection" in options:
+            router_kwargs["auto_task_detection"] = options["auto_task_detection"]
+        if "router_lang_guess" in options:
+            router_kwargs["lang_guess"] = options["router_lang_guess"]
+        instance = mod.Router(**router_kwargs)
+        decision = instance._route(
+            options.get("state"),
+            options.get("questions"),
+            model=options.get("model"),
+            task=options.get("task"),
+            lang=options.get("lang"),
+            lang_guess=options.get("lang_guess"),
+        )
+        detection = decision.get("detection")
+        return {
+            "options": {k: v for k, v in options.items() if k != "state"},
+            "state": _state_repr(options.get("state")),
+            "decision": {
+                "model": decision["model"],
+                "repo": decision["repo"],
+                "reason": decision["reason"],
+                "workflow": decision.get("workflow"),
+                "detection": None if detection is None else {
+                    "script": detection["script"],
+                    "language": detection["language"],
+                    "is_english": detection["is_english"],
+                    "language_undecided": detection["language_undecided"],
+                    "non_latin_fraction": detection["non_latin_fraction"],
+                    "diacritic_rate": detection["diacritic_rate"],
+                    "mixed_segment": detection["mixed_segment"],
+                },
+            },
+        }
+
+    return {
+        "notes": router.__doc__,
+        "bundle_repo": mod.BUNDLE_REPO,
+        "default_models": {k: list(mod._split(v)) for k, v in mod.DEFAULT_MODELS.items()},
+        "standalone_models": {k: list(mod._split(v)) for k, v in mod.STANDALONE_MODELS.items()},
+        "aliases": dict(mod._ALIASES),
+        "repo_strings": {k: mod._repo_str(v) for k, v in mod.DEFAULT_MODELS.items()},
+        "standalone_repo_strings": {k: mod._repo_str(v)
+                                    for k, v in mod.STANDALONE_MODELS.items()},
+        "max_loaded_default": 2,
+        "normalise_name": {name: normalise(name)
+                           for name in names + aliases + hostile_names},
+        "resolve_model_spec": {name: spec(name)
+                               for name in names + aliases + hostile_names},
+        "typed_decision_workflows": {k: sorted(v)
+                                     for k, v in mod._TYPED_DECISION_WORKFLOWS.items()},
+        "match_workflow": [
+            [sorted(ids), mod.match_typed_decisions_workflow(_noul_set(ids))]
+            for ids in list(_WORKFLOW_IDS.values())
+            + [_WORKFLOW_IDS["customer_service"] + ["extra"],
+               _WORKFLOW_IDS["customer_service"][:-1],
+               ["urgency"], [], ["action", "category", "churn_risk", "needs_human", "urgency",
+                                 "action"]]
+        ],
+        "english_from_code": [[code, mod._english_from_code(code)] for code in english_codes],
+        "question_schema": [[schema, mod._question_schema(schema)] for schema in schemas],
+        "routes": [dict(route_case(options), name=name) for name, options in cases],
+    }
 
 def tokenizer_ids():
     """Exact token ids per checkpoint for a corpus designed to break a port.
@@ -906,6 +1152,49 @@ def decode_answers():
     return out
 
 
+# Strings `repr` is asked for, chosen for the rule each one exercises rather than for realism:
+# quote selection in all four combinations, the letter escapes, the three widths of numeric escape,
+# and the printable non-ASCII that CPython deliberately does NOT escape.
+_REPR_CASES = [
+    "", "english", "multilingual", "pt", "typed_decisions",
+    "it's here", 'say "hi"', 'both \' and "', "'", '"', "'\"",
+    "line\nbreak", "tab\there", "carriage\rreturn", "back\\slash", "bell\a", "null\0",
+    "caf\u00e9", "\u4e2d\u6587", "\U0001f600", "\U00011f00",          # printable, left alone
+    "a\u00a0b", "a\u00adb", "a\u200bb", "a\u2028b", "a\u0085b",       # unprintable, escaped
+    "a\ufeffb", "a\u202eb", "a\ue000b", "a\u0378b", "a\x7fb",
+    "a\u0301b",                                                      # a combining mark IS printable
+    "Nao consigo entrar na minha conta e a senha nao funciona",
+    "Ich kann mich nicht in mein Konto einloggen und das Passwort",
+    "MON LA EST COM DES",
+    "mixed \u00a0 and \u200b and 'quotes' in one line",
+]
+
+# Fractions whose percentage lands on a halfway value, plus ordinary ones. A share of one letter in
+# eight is exactly 12.5%, which is where half-up and half-even part company.
+_PERCENT_CASES = [
+    0.0, 1.0, 0.005, 0.015, 0.025, 0.045, 0.125, 0.135, 0.205, 0.5, 0.625,
+    0.0312, 0.0313, 0.1, 0.2222, 0.2941, 0.3333, 0.4, 0.6667, 0.7778, 0.9999,
+    1.0 / 3.0, 2.0 / 3.0, 1.0 / 8.0, 3.0 / 8.0, 5.0 / 8.0, 7.0 / 8.0, 1.0 / 16.0,
+]
+
+
+def _repr_digest():
+    """One sha256 over `repr` of every code point, so the escape rule is proven exhaustively.
+
+    The hostile list above covers the rules a reader can name. This covers the ones nobody
+    enumerated: 148,998 of Unicode's code points are printable and the rest are not, and the
+    boundary between them moves with the Unicode version.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for cp in range(0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        digest.update(repr("a" + chr(cp) + "b").encode("utf-8"))
+    return digest.hexdigest()
+
+
 def python_json():
     """CPython's `json.dumps(ensure_ascii=False)` and `round(v, 4)` on values a port gets wrong.
 
@@ -995,6 +1284,13 @@ def python_json():
                        for v in structured],
         "round4": {name: [{"bits": bits(v), "r4": round(v, 4)} for v in values]
                    for name, values in rounding.items()},
+        # `repr` and `%.0f` are the two formats the ROUTER's reason strings are built from, and
+        # both are places Java differs by default: `String.format("%.0f", 12.5)` rounds halves UP
+        # where CPython rounds to even, and an ASCII-only escape check leaves U+00A0 raw. One of
+        # the reasons interpolates a slice of the caller's own text, so neither is theoretical.
+        "repr_strings": [[value, repr(value)] for value in _REPR_CASES],
+        "repr_digest": _repr_digest(),
+        "percent0": [[fraction, "%.0f" % (100.0 * fraction)] for fraction in _PERCENT_CASES],
     }
 
 
@@ -1088,6 +1384,7 @@ FAMILIES = {
     "lang_tables.json": lang_tables,
     "lang_detect.json": lang_detect,
     "presets.json": presets,
+    "router.json": router,
     "tokenizer_ids.json": tokenizer_ids,
     "sequences.json": sequences,
     "decode.json": decode_answers,

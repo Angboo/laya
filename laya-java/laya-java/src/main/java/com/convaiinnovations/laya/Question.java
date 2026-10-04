@@ -138,6 +138,51 @@ public final class Question {
         return type;
     }
 
+    /**
+     * The question as the reference's own mapping: {@code type}, {@code instructions}, and the
+     * {@code criteria} it has.
+     *
+     * <p>What a schema signature serialises. Two details are not decoration. A {@code noul} holds
+     * a criteria map internally even when neither side was described, and the reference's mapping
+     * simply has no {@code criteria} key then -- emitting an empty one would change the signature
+     * of every plain noul. And the key order here is the order the reference writes, because the
+     * signature is order-sensitive on purpose.
+     *
+     * <p><b>What this cannot carry.</b> The reference's questions are free-form dictionaries, so a
+     * caller may put extra keys in one, or write {@code criteria} in an order of their own. A
+     * typed {@link Question} has nowhere to keep either. That costs nothing for what the signature
+     * is for -- grouping states whose questions render identically, so they can share a forward
+     * pass -- because identical questions still produce identical signatures and any difference
+     * that reaches the model still changes them. It does mean the signature is an internal
+     * grouping key and not a cross-language wire format.
+     */
+    public Map<String, Object> spec() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("type", type.wireName());
+        out.put("instructions", instructions);
+        if (type == Type.SCORE) {
+            out.put("criteria", new ArrayList<>(criteriaList));
+        } else if (type == Type.CHOICE) {
+            out.put("criteria", new LinkedHashMap<>(criteriaMap));
+        } else {
+            Object described = criteriaMap.get("true");
+            Object negated = criteriaMap.get("false");
+            if (described != null || negated != null) {
+                Map<String, Object> criteria = new LinkedHashMap<>();
+                criteria.put("true", described);
+                criteria.put("false", negated);
+                out.put("criteria", criteria);
+            }
+            if (!"false".equals(falseLabel) || !"true".equals(trueLabel)) {
+                Map<String, Object> labels = new LinkedHashMap<>();
+                labels.put("false", falseLabel);
+                labels.put("true", trueLabel);
+                out.put("labels", labels);
+            }
+        }
+        return java.util.Collections.unmodifiableMap(out);
+    }
+
     public String instructions() {
         return instructions;
     }
