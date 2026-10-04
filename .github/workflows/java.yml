@@ -93,6 +93,8 @@ jobs:
       - name: Language tables match laya/lang.py
         if: ${{ !cancelled() }}
         run: python laya-java/scripts/gen_language_tables.py --check
+      # The pre-tokenizer's letter/number classes are probed from the reference tokenizer, so this
+      # one needs a checkpoint and runs in the parity lane instead -- see that job.
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
@@ -159,6 +161,10 @@ jobs:
           LAYA_ONNX_GRAPH: ${{ github.workspace }}/laya-java/.work/onnx/multilingual/laya.onnx
           LAYA_PREDICT_MODEL: multilingual
         run: python laya-java/scripts/gen_fixtures.py --strict
+      - name: Pre-tokenizer class tables match the reference
+        run: >
+          python laya-java/scripts/gen_pretokenizer_tables.py --check
+          --tokenizer laya-java/.work/checkpoints/english/tokenizer/tokenizer.json
       # Informational: float noise across platforms is expected in the model-backed family, and the
       # Java test's tolerance is the gate rather than byte equality of the file.
       - name: Fixture drift vs. committed (informational)
