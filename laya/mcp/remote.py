@@ -175,7 +175,9 @@ class RemoteRouter(Router):
         head_max_len: Optional[int] = None,
         min_confidence: Optional[float] = None,
     ) -> Dict[str, Any]:
-        if any(value is not None for value in (hooks, on_predict_start, on_predict_end, hooks_raise, hooks_timeout)):
+        if hooks_timeout is not None:
+            raise RemoteError("unsupported_remote", "hooks_timeout belongs to the server's hooks")
+        if any(value is not None for value in (hooks, on_predict_start, on_predict_end, hooks_raise)):
             raise RemoteError("unsupported_remote",
                               "hooks are callables and cannot be sent to laya-serve; install them on the server")
         body: Dict[str, Any] = {"state": state, "questions": questions}
@@ -211,7 +213,9 @@ class RemoteRouter(Router):
         keep working. The server applies its own batching inside each call.
         """
         results: List[Dict[str, Any]] = []
-        if any(value is not None for value in (hooks, on_predict_start, on_predict_end, hooks_raise, hooks_timeout)):
+        if hooks_timeout is not None:
+            raise RemoteError("unsupported_remote", "hooks_timeout belongs to the server's hooks")
+        if any(value is not None for value in (hooks, on_predict_start, on_predict_end, hooks_raise)):
             raise RemoteError("unsupported_remote",
                               "hooks are callables and cannot be sent to laya-serve; install them on the server")
         for item in requests:
