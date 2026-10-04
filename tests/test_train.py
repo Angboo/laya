@@ -168,6 +168,14 @@ class DataTests(unittest.TestCase):
         self.assertEqual(target(LEVEL, 1), [0.0, 1.0])
         self.assertEqual(target(LEVEL, "1"), [0.0, 1.0])
 
+        # Fractional score answers (e.g. from laya-evals ScoreMAE / ScoreWithin)
+        three_level = {"type": "score", "instructions": "which level ?", "criteria": ["low", "mid", "high"]}
+        self.assertEqual(target(three_level, 1.5), [0.0, 0.5, 0.5])
+        res_frac2 = target(three_level, 0.2)
+        self.assertAlmostEqual(res_frac2[0], 0.8)
+        self.assertAlmostEqual(res_frac2[1], 0.2)
+        self.assertAlmostEqual(res_frac2[2], 0.0)
+
     def test_target_from_expected_label_smoothing(self):
         res = target_from_expected(to_internal("q", DEPARTMENT), "billing", label_smoothing=0.1)
         self.assertAlmostEqual(res[0], 0.9 + 0.1 / 3)
@@ -190,6 +198,8 @@ class DataTests(unittest.TestCase):
                 target_from_expected(to_internal("q", URGENT), bad_num)
         with self.assertRaises(ValueError):
             target_from_expected(to_internal("q", LEVEL), 99)
+        with self.assertRaises(ValueError):
+            target_from_expected(to_internal("q", LEVEL), -0.5)
         for bad_smooth in (-0.1, 1.0, 1.5, True):
             with self.assertRaises(ValueError):
                 target_from_expected(to_internal("q", DEPARTMENT), "billing", label_smoothing=bad_smooth)
@@ -214,7 +224,14 @@ class DataTests(unittest.TestCase):
             self.assertEqual(data[0]["expected"]["label"], "billing")
             q = data[0]["questions"]["label"]
             self.assertEqual(q["type"], "choice")
-            self.assertEqual(list(q["criteria"].keys()), ["billing", "technical"])
+            self.assertEqual(q["criteria"], ["billing", "technical"])
+
+            # Test Excel UTF-8 BOM encoding
+            bom_csv = Path(tmpdir) / "bom.csv"
+            bom_csv.write_bytes("\ufeffbody,department\nrefund invoice,billing\ncrash,technical\n".encode("utf-8"))
+            bom_data = read_data(str(bom_csv), text_column="body", label_column="department")
+            self.assertEqual(len(bom_data), 2)
+            self.assertEqual(bom_data[0]["state"], "refund invoice")
 
     def test_rows_from_csv_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -238,6 +255,17 @@ class DataTests(unittest.TestCase):
         self.assertEqual(skipped, {})
         self.assertEqual(items[0]["target"], [1.0, 0.0, 0.0])
         self.assertEqual(items[1]["target"], [0.0, 1.0, 0.0])
+
+    def test_items_from_rows_skip_tracking(self):
+        exp_rows_with_empty = [
+            {"state": "", "questions": {"department": DEPARTMENT}, "expected": {"department": "billing"}},
+            {"state": "valid text", "questions": {"department": DEPARTMENT}, "expected": {"department": ""}},
+            {"state": "valid text", "questions": {"department": DEPARTMENT}, "expected": {"department": "billing"}},
+        ]
+        items, skipped = items_from_rows(self.tok, exp_rows_with_empty, 64, 40)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(skipped.get("empty_text"), 1)
+        self.assertEqual(skipped.get("empty_label"), 1)
 
     def test_questions_are_rendered_exactly_as_inference_renders_them(self):
         # The sequence a training item produces must be the one `Agent` builds for the same
@@ -504,6 +532,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(args.shuffle_options)
         self.assertTrue(args.freeze_encoder)
 
+        # --out is required when --dry-run is not set
+        code_missing_out = train_cli_main(["--data", "train.csv"])
+        self.assertEqual(code_missing_out, 2)
+
+        # --dry-run without --out succeeds parsing
+        dry_args = parser.parse_args(["--data", "train.csv", "--dry-run"])
+        self.assertIsNone(dry_args.output_dir)
+        self.assertTrue(dry_args.dry_run)
+
     def test_laya_train_cli_runs_on_csv(self):
         csv_path = self.root / "tickets.csv"
         lines = ["text,department"]
@@ -530,10 +567,25 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((out_dir / "model.safetensors").exists())
         self.assertTrue((out_dir / "rl_agent_config.json").exists())
+        self.assertTrue((out_dir / "questions.json").exists())
+        saved_q = json.loads((out_dir / "questions.json").read_text(encoding="utf-8"))
+        self.assertIn("label", saved_q)
+        self.assertEqual(saved_q["label"]["criteria"], ["billing", "technical"])
+
         agent = load(str(out_dir), device="cpu")
         ans = agent.predict("please refund invoice", {"label": {"type": "choice", "instructions": "Classify",
                                                                "criteria": ["billing", "technical"]}})
         self.assertIn(ans["answers"]["label"]["choice"], ["billing", "technical"])
+
+        # Test --dry-run
+        dry_code = train_cli_main([
+            "--data", str(csv_path),
+            "--base", str(self.root / "base"),
+            "--text-column", "text",
+            "--label-column", "department",
+            "--dry-run",
+        ])
+        self.assertEqual(dry_code, 0)
 
 
 if __name__ == "__main__":

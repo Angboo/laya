@@ -204,23 +204,41 @@ def target_from_expected(q: Dict[str, Any], expected_val: Any,
             raise ValueError("expected answer %r cannot be parsed as a noul boolean" % (expected_val,))
     else:  # score
         keys = list(crit.keys()) if isinstance(crit, dict) else [str(i) for i in range(len(crit))]
-        try:
-            if not isinstance(expected_val, bool):
-                num = int(expected_val)
-                if 0 <= num < len(keys):
-                    idx = num
-        except (ValueError, TypeError):
-            pass
-        if idx is None:
+        K = len(keys)
+        target = None
+        if isinstance(expected_val, str) and expected_val in keys:
+            idx = keys.index(expected_val)
+            target = [1.0 if i == idx else 0.0 for i in range(K)]
+        else:
+            try:
+                if not isinstance(expected_val, bool):
+                    val = float(expected_val)
+                    if 0.0 <= val <= float(K - 1):
+                        low = int(math.floor(val))
+                        if low == K - 1 or val == float(low):
+                            target = [1.0 if i == low else 0.0 for i in range(K)]
+                        else:
+                            frac = val - float(low)
+                            target = [0.0] * K
+                            target[low] = 1.0 - frac
+                            target[low + 1] = frac
+                    else:
+                        raise ValueError("expected score %r out of bounds [0, %d]" % (expected_val, K - 1))
+            except (ValueError, TypeError) as exc:
+                if isinstance(exc, ValueError) and "out of bounds" in str(exc):
+                    raise
+                pass
+        if target is None:
             str_val = str(expected_val)
             for i, key in enumerate(keys):
                 if str(key) == str_val:
-                    idx = i
+                    target = [1.0 if j == i else 0.0 for j in range(K)]
                     break
-        if idx is None:
+        if target is None:
             raise ValueError("expected answer %r not found in score levels %r" % (expected_val, keys))
 
-    target = [1.0 if i == idx else 0.0 for i in range(k)]
+    if target is None:
+        target = [1.0 if i == idx else 0.0 for i in range(k)]
     if label_smoothing > 0.0:
         smooth_val = label_smoothing / k
         target = [(1.0 - label_smoothing) * v + smooth_val for v in target]
@@ -258,14 +276,19 @@ def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
     """Items from `{state, questions, gold}` or `{state, questions, expected}` rows; returns `(items, skipped)`.
 
     `skipped` counts, by reason, questions that were labelled but could not become an item:
-    `invalid_question` and `invalid_target` (a `ValueError` from `to_internal`, `target_from_gold` or
-    `target_from_expected`), plus the two reasons `make_item` gives (`options_collapsed` and `target_mismatch`).
+    `empty_text`, `empty_label`, `invalid_question` and `invalid_target` (a `ValueError` from
+    `to_internal`, `target_from_gold` or `target_from_expected`), plus the two reasons `make_item`
+    gives (`options_collapsed` and `target_mismatch`).
     Questions with neither `gold` nor `expected` entry are not counted -- the row simply does not label them.
     """
     items, skipped = [], {}
     for row in rows:
-        state_ids = encode_state(tok, row["state"], max_len)
-        for qid, question in row["questions"].items():
+        state = row.get("state")
+        if state is None or (isinstance(state, str) and not state.strip()):
+            skipped["empty_text"] = skipped.get("empty_text", 0) + 1
+            continue
+        state_ids = encode_state(tok, state, max_len)
+        for qid, question in row.get("questions", {}).items():
             gold_q = row.get("gold", {}).get(qid) if isinstance(row.get("gold"), dict) else None
             expected_q = row.get("expected", {}).get(qid) if isinstance(row.get("expected"), dict) else None
             if gold_q is None and expected_q is None:
@@ -280,7 +303,10 @@ def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
                     if gold_q is not None:
                         target = target_from_gold(q, gold_q)
                     else:
-                        target = target_from_expected(q, expected_q, label_smoothing=label_smoothing)
+                        if isinstance(expected_q, str) and not expected_q.strip():
+                            reason = "empty_label"
+                        else:
+                            target = target_from_expected(q, expected_q, label_smoothing=label_smoothing)
                 except (ValueError, TypeError, KeyError):
                     reason = "invalid_target"
             if reason is None:
@@ -298,12 +324,13 @@ def rows_from_csv(path: str, text_column: str = "text", label_column: str = "lab
     """Read a CSV file with one labelled column per row into `{state, questions, expected}` rows.
 
     Discovers distinct labels in `label_column` (preserving order of appearance) and
-    builds a choice question with those labels as criteria.
+    builds a choice question with those labels as a list of criteria to render each option once.
+    Uses `utf-8-sig` encoding so UTF-8 BOM headers from Excel are handled transparently.
     """
     import csv
 
     rows_raw = []
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError("%s is an empty CSV file" % (path,))
@@ -331,12 +358,12 @@ def rows_from_csv(path: str, text_column: str = "text", label_column: str = "lab
         raise ValueError("CSV file %s must contain at least 2 distinct labels in %r, found %r"
                          % (path, label_column, labels))
 
-    instr = instructions or ("Classify the input into one of: %s" % (", ".join(labels)))
+    instr = instructions or "Classify the input into the correct category."
     questions = {
         question_id: {
             "type": "choice",
             "instructions": instr,
-            "criteria": {lbl: lbl for lbl in labels},
+            "criteria": labels,
         }
     }
 
@@ -344,12 +371,11 @@ def rows_from_csv(path: str, text_column: str = "text", label_column: str = "lab
     for r in rows_raw:
         text = r.get(text_column, "")
         lbl = r.get(label_column, "").strip()
-        if text and lbl:
-            output_rows.append({
-                "state": text,
-                "questions": questions,
-                "expected": {question_id: lbl},
-            })
+        output_rows.append({
+            "state": text,
+            "questions": questions,
+            "expected": {question_id: lbl},
+        })
     return output_rows
 
 
@@ -683,6 +709,26 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
         out_cfg["temperature_by_options"] = fitted["temperature_by_options"]
     out_cfg["training"] = dict(out_cfg.get("training") or {}, laya_train=asdict(config))
     save_checkpoint(model, tok, out_cfg, output_dir)
+
+    # Save the questions schema alongside the checkpoint for inference reuse
+    sample_questions = {}
+    for r in rows:
+        qs = r.get("questions")
+        if isinstance(qs, dict):
+            for qid, qdef in qs.items():
+                if qid not in sample_questions:
+                    sample_questions[qid] = qdef
+                elif sample_questions[qid] != qdef:
+                    import warnings
+                    warnings.warn("Conflicting schema detected for question %r across rows; keeping first seen definition." % (qid,))
+    if sample_questions:
+        for d in (output_dir, os.path.join(output_dir, "checkpoint_latest")):
+            os.makedirs(d, exist_ok=True)
+            tmp_path = os.path.join(d, "questions.json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(sample_questions, f, indent=2)
+            os.replace(tmp_path, os.path.join(d, "questions.json"))
+
     return {
         "train_items": len(train_items),
         "calibration_items": len(calib_items),
@@ -693,3 +739,35 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
         "n_by_bucket": fitted["n_by_bucket"],
         "output_dir": output_dir,
     }
+
+
+def dry_run(data: str, model_dir: str, config: Optional[TrainConfig] = None) -> Dict[str, Any]:
+    """Inspect dataset and build items without loading model weights; returns dataset stats."""
+    from transformers import AutoTokenizer
+    from .agent import _fix_tokenizer_config
+
+    config = config or TrainConfig()
+    config.validate()
+    resolved_dir = resolve_checkpoint_dir(model_dir)
+    _fix_tokenizer_config(resolved_dir)
+    tok = AutoTokenizer.from_pretrained(os.path.join(resolved_dir, "tokenizer"))
+    with open(os.path.join(resolved_dir, "rl_agent_config.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    max_len = config.max_len or cfg.get("max_len", 512)
+    head_max_len = config.head_max_len or cfg.get("head_max_len", 192)
+
+    rows = read_data(data, text_column=config.text_column, label_column=config.label_column,
+                     question_id=config.question_id, instructions=config.instructions)
+    items, skipped = items_from_rows(tok, rows, max_len, head_max_len,
+                                     label_smoothing=config.label_smoothing)
+    summary = {
+        "data": data,
+        "rows_read": len(rows),
+        "valid_items": len(items),
+        "skipped": skipped,
+        "max_len": max_len,
+        "head_max_len": head_max_len,
+    }
+    print("dry-run: %d rows read, %d valid items, skipped: %r"
+          % (len(rows), len(items), skipped), flush=True)
+    return summary

@@ -30,7 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         "--output-dir",
         dest="output_dir",
-        required=True,
+        required=False,
+        default=None,
         help="Output directory where the fine-tuned checkpoint will be saved.",
     )
     parser.add_argument(
@@ -140,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override maximum question head token budget.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Inspect dataset, build items, and print stats without loading model weights or training.",
+    )
     return parser
 
 
@@ -147,11 +153,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        if not args.dry_run and not args.output_dir:
+            parser.error("--out is required unless --dry-run is set")
     except SystemExit as exc:
         return exc.code
 
     try:
-        from .train import TrainConfig, finetune
+        from .train import TrainConfig, dry_run, finetune
     except ImportError as err:
         if "torch" in str(err).lower():
             print("laya-train: error: PyTorch is required for training. Please install torch.",
@@ -181,6 +189,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         config.validate()
+        if args.dry_run:
+            dry_run(
+                data=args.data,
+                model_dir=args.model_dir,
+                config=config,
+            )
+            return 0
         summary = finetune(
             data=args.data,
             model_dir=args.model_dir,
