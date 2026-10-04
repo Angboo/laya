@@ -762,6 +762,8 @@ export class Router extends HookRegistry {
     }
 
     const results: (RoutedResult | null)[] = new Array(requests.length).fill(null);
+    // `composeHooks`, not `this.hooks`: `setDefaultHooks` defaults, then installed hooks,
+    // then per-call `opts.hooks`. The instance list alone would drop every default `predict` keeps.
     const active = composeHooks(this.hooks, opts.hooks);
     const raiseErrors = this.hooksRaise;
 

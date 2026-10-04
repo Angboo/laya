@@ -1417,11 +1417,12 @@ class Router(HookRegistry):
         # `predict` returns as it is.
         results: List[Any] = [None] * len(requests)
         answered = 0
-        # `compose_hooks`, not `list(self.hooks)`: this is the composition `predict` uses at its
-        # own dispatch site, and it is what merges in `set_default_hooks`. Reading the instance
-        # list alone silently dropped every process-wide default from the batched path while
-        # keeping them on `predict`, so a default audit or metrics hook saw no Router-level event
-        # for a request that arrived through `predict_batch`.
+        # `compose_hooks`, not `list(self.hooks)`: the composition `predict` uses. It merges
+        # `set_default_hooks` defaults, then installed hooks, then this call's `hooks`,
+        # `on_predict_start` and `on_predict_end`. Reading the instance list alone silently
+        # dropped every `set_default_hooks` default from the batched path while `predict`
+        # kept them, which was the bug behind #909: a default audit or metrics hook saw no
+        # Router-level event for a request that arrived through `predict_batch`.
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
         timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
