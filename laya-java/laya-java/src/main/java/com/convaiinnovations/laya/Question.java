@@ -12,6 +12,11 @@ import java.util.Map;
  * <p>Three types, and they are not interchangeable -- the type name is the first token of the
  * sequence and an integer input to the head ({@code choice=0, score=1, noul=2}).
  *
+ * <p>The factories take {@code Map<String, ?>} and {@code List<?>} rather than
+ * {@code Map<String, Object>} and {@code List<Object>}. That is not cosmetic: Java generics are
+ * invariant, so a parameter of {@code List<Object>} rejects {@code List.of("none", "minor")} --
+ * writing the README is what surfaced it, because the first example in it did not compile.
+ *
  * <p><b>Option order is part of the question.</b> For a {@code choice}, options are rendered in the
  * criteria map's <i>insertion</i> order, so two orders are two different questions and the answer's
  * probabilities are positional. That is why the criteria are held in a {@link LinkedHashMap} and
@@ -73,7 +78,7 @@ public final class Question {
      * as its label alone. Only those two: {@code 0} and {@code false} are legitimate criterion
      * values and render as {@code "label: 0"} and {@code "label: false"}.
      */
-    public static Question choice(String instructions, Map<String, Object> criteria) {
+    public static Question choice(String instructions, Map<String, ?> criteria) {
         requireInstructions(instructions);
         require(criteria != null && !criteria.isEmpty(), "a choice question needs criteria");
         return new Question(Type.CHOICE, instructions, new LinkedHashMap<>(criteria), null,
@@ -81,7 +86,7 @@ public final class Question {
     }
 
     /** A score over ordered levels, rendered as {@code "level <i>: <criterion>"}. */
-    public static Question score(String instructions, List<Object> levels) {
+    public static Question score(String instructions, List<?> levels) {
         requireInstructions(instructions);
         require(levels != null && !levels.isEmpty(), "a score question needs levels");
         for (int i = 0; i < levels.size(); i++) {
