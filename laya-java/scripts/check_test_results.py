@@ -91,8 +91,14 @@ def main(argv=None):
         print("  %d test(s) aborted, which this lane allows:" % len(aborted))
         for name in aborted[:5]:
             print("    " + name)
-    if tests < args.min_tests:
-        problems.append("only %d tests ran, expected at least %d" % (tests, args.min_tests))
+    # Executed, not merely registered. The JUnit `tests` attribute COUNTS SKIPPED tests, so a
+    # suite in which every single test aborted satisfied this floor and both --allow-aborted
+    # lanes -- the build gate and the Maven Central release gate -- went green with nothing
+    # actually run. That is the exact failure this script's docstring says it exists to catch.
+    executed = tests - skipped
+    if executed < args.min_tests:
+        problems.append("only %d of %d tests actually ran (%d skipped), expected at least %d"
+                        % (executed, tests, skipped, args.min_tests))
 
     if problems:
         for line in problems:

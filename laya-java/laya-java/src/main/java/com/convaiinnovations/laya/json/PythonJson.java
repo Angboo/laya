@@ -48,7 +48,26 @@ public final class PythonJson {
         return out.toString();
     }
 
+    /**
+     * How deep {@code dumps} will descend.
+     *
+     * <p>The identity set closed the CYCLIC case; a deep ACYCLIC caller-supplied state still
+     * threw {@link StackOverflowError} -- the same {@link Error} the cycle fix exists to stop.
+     */
+    private static final int MAX_DEPTH = 512;
+
     private static void write(StringBuilder out, Object value, Set<Object> open) {
+        write(out, value, open, 0);
+    }
+
+    private static void write(StringBuilder out, Object value, Set<Object> open, int depth) {
+        if (depth > MAX_DEPTH) {
+            throw new Json.JsonException("value nested deeper than " + MAX_DEPTH + " levels");
+        }
+        writeValue(out, value, open, depth);
+    }
+
+    private static void writeValue(StringBuilder out, Object value, Set<Object> open, int depth) {
         if (value == null) {
             out.append("null");
         } else if (value instanceof String) {
@@ -65,11 +84,11 @@ public final class PythonJson {
             out.append(value.toString());
         } else if (value instanceof Map) {
             enter(open, value);
-            writeObject(out, (Map<?, ?>) value, open);
+            writeObject(out, (Map<?, ?>) value, open, depth);
             open.remove(value);
         } else if (value instanceof List) {
             enter(open, value);
-            writeArray(out, (List<?>) value, open);
+            writeArray(out, (List<?>) value, open, depth);
             open.remove(value);
         } else {
             throw new Json.JsonException(
@@ -86,7 +105,8 @@ public final class PythonJson {
         }
     }
 
-    private static void writeObject(StringBuilder out, Map<?, ?> map, Set<Object> open) {
+    private static void writeObject(StringBuilder out, Map<?, ?> map, Set<Object> open,
+            int depth) {
         out.append('{');
         boolean first = true;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -96,7 +116,7 @@ public final class PythonJson {
             first = false;
             writeString(out, key(entry.getKey()));
             out.append(": ");
-            write(out, entry.getValue(), open);
+            write(out, entry.getValue(), open, depth + 1);
         }
         out.append('}');
     }
@@ -134,13 +154,14 @@ public final class PythonJson {
                 + key.getClass().getName());
     }
 
-    private static void writeArray(StringBuilder out, List<?> list, Set<Object> open) {
+    private static void writeArray(StringBuilder out, List<?> list, Set<Object> open,
+            int depth) {
         out.append('[');
         for (int i = 0; i < list.size(); i++) {
             if (i > 0) {
                 out.append(", ");
             }
-            write(out, list.get(i), open);
+            write(out, list.get(i), open, depth + 1);
         }
         out.append(']');
     }
