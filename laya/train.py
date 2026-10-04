@@ -173,6 +173,7 @@ def target_from_expected(q: Dict[str, Any], expected_val: Any,
     t, crit = q["t"], q["crit"]
     k = len(render_options(q))
     idx = None
+    target = None
 
     if t == "choice":
         keys = list(crit.keys())
