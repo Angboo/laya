@@ -2,6 +2,9 @@ package com.convaiinnovations.laya;
 
 import com.convaiinnovations.laya.json.PythonJson;
 import com.convaiinnovations.laya.lang.LanguageDetection;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -12,6 +15,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Decides which laya checkpoint a request should go to. A port of {@code laya.router}.
@@ -34,7 +39,7 @@ import java.util.TreeSet;
  * <p>This class decides; it does not load. {@link #route} runs no model and touches no disk, so it
  * is safe to call on every request and to test without a checkpoint.
  */
-public final class Router {
+public final class Router implements AutoCloseable {
 
     /** The hub repository that bundles all three checkpoints. */
     public static final String BUNDLE_REPO = "convaiinnovations/laya";
@@ -139,6 +144,116 @@ public final class Router {
         }
     }
 
+    /**
+     * Builds the agent for a checkpoint.
+     *
+     * <p>The reference downloads from the hub. This port takes local paths, so the mapping from a
+     * checkpoint to an {@link Agent} belongs to the caller -- see
+     * {@link Builder#checkpointsRoot(Path)} for the common layout.
+     */
+    @FunctionalInterface
+    public interface AgentFactory {
+
+        /** Build the agent for {@code checkpoint}. */
+        Agent create(Checkpoint checkpoint) throws IOException;
+    }
+
+    /**
+     * A borrowed agent, held open for as long as the lease is.
+     *
+     * <p>This exists because of a difference between the languages, not as ceremony. In the
+     * reference an evicted agent stays alive as long as a caller still refers to it: dropping the
+     * router's reference is all eviction does, and CPython's refcounting takes care of the rest.
+     * A JVM has no equivalent for a native ONNX session -- the garbage collector will not free it,
+     * so the router has to close it, and closing one that a caller is mid-prediction with would
+     * crash that prediction.
+     *
+     * <p>So eviction marks a slot retired and closes it when the last lease is released.
+     * {@link #predict} leases internally, which makes the ordinary path safe without a caller
+     * thinking about it; this is for code that needs the agent directly.
+     *
+     * <pre>{@code
+     * try (Router.Lease lease = router.lease("multilingual")) {
+     *     Prediction answer = lease.agent().predict(state, questions);
+     * }
+     * }</pre>
+     */
+    public final class Lease implements AutoCloseable {
+
+        private final Checkpoint checkpoint;
+        private final Slot slot;
+        private boolean released;
+
+        private Lease(Checkpoint checkpoint, Slot slot) {
+            this.checkpoint = checkpoint;
+            this.slot = slot;
+        }
+
+        /** The agent, valid until this lease is closed. */
+        public Agent agent() {
+            if (released) {
+                throw new IllegalStateException("this lease on " + checkpoint.wireName()
+                        + " has been released");
+            }
+            return slot.agent;
+        }
+
+        /** Which checkpoint this is. */
+        public Checkpoint checkpoint() {
+            return checkpoint;
+        }
+
+        /** Release it. Idempotent, so a try-with-resources around an early return is safe. */
+        @Override
+        public void close() {
+            if (released) {
+                return;
+            }
+            released = true;
+            release(slot);
+        }
+    }
+
+    /** One resident agent and what the router is allowed to do with it. */
+    private static final class Slot {
+
+        private final Agent agent;
+        /**
+         * False for an agent handed in through {@link Router#attach}: the caller kept ownership,
+         * so the router must never close it. Eviction still drops it, which is what the reference
+         * does too.
+         */
+        private final boolean ownsClosing;
+        private int leases;
+        private boolean retired;
+
+        private Slot(Agent agent, boolean ownsClosing) {
+            this.agent = agent;
+            this.ownsClosing = ownsClosing;
+        }
+    }
+
+    /**
+     * One build in progress, which every other caller for that checkpoint waits on.
+     *
+     * <p>Worth being precise about what this earns, because {@link Router#buildLock} looks like it
+     * covers the same ground. On the SUCCESS path it does: a caller that takes the build lock and
+     * then finds the checkpoint resident returns it instead of building a second copy, so one
+     * build per checkpoint holds with or without this latch.
+     *
+     * <p>The failure path is where they differ, and it is the expensive one. A build that fails
+     * leaves nothing resident, so without this latch each waiter in turn takes the build lock,
+     * finds no checkpoint, and re-enters the factory to discover the same failure for itself. For
+     * a load that fails by timing out a download, that is six slow failures instead of one.
+     * With it, the builder's error is handed to everyone waiting. Measured both ways: a mutant
+     * that removes the latch leaves one build on success and six attempts on failure.
+     */
+    private static final class InFlight {
+
+        private final CountDownLatch done = new CountDownLatch(1);
+        private volatile RuntimeException error;
+    }
+
     // Names people are likely to type. Insertion order is not significant here, but the sorted
     // order is: an unknown name's error message lists these, and that message is recorded.
     private static final Map<String, Checkpoint> ALIASES;
@@ -216,10 +331,24 @@ public final class Router {
     private static final Set<String> LANGUAGE_AGNOSTIC_CODES =
             Set.of("c", "posix", "und", "zxx", "mul");
 
+    /** How many checkpoints stay resident unless asked otherwise, as in the reference. */
+    public static final int DEFAULT_MAX_LOADED = 2;
+
     private final Map<Checkpoint, ModelSpec> models;
     private final Checkpoint defaultCheckpoint;
     private final boolean autoTaskDetection;
     private final LanguageHint langGuess;
+    private final AgentFactory agents;
+
+    private final ReentrantLock lock = new ReentrantLock();
+    /** Serialises builds, so two cold loads do not hold two checkpoints in flight at once. */
+    private final ReentrantLock buildLock = new ReentrantLock();
+    private final Map<Checkpoint, Slot> slots = new LinkedHashMap<>();
+    /** Least recently used first, which is the end eviction takes from. */
+    private final List<Checkpoint> order = new ArrayList<>();
+    private final Map<Checkpoint, InFlight> loading = new LinkedHashMap<>();
+    private int maxLoaded;
+    private boolean closed;
 
     private Router(Builder builder) {
         Map<Checkpoint, ModelSpec> resolved =
@@ -229,6 +358,8 @@ public final class Router {
         this.defaultCheckpoint = builder.defaultCheckpoint;
         this.autoTaskDetection = builder.autoTaskDetection;
         this.langGuess = builder.langGuess;
+        this.agents = builder.agents;
+        this.maxLoaded = builder.maxLoaded;
     }
 
     /** A router with the reference's defaults: the bundle, English as default, no auto-detection. */
@@ -249,6 +380,8 @@ public final class Router {
         private boolean autoTaskDetection;
         private boolean standaloneRepos;
         private LanguageHint langGuess;
+        private AgentFactory agents;
+        private int maxLoaded = DEFAULT_MAX_LOADED;
 
         private Builder() {
         }
@@ -286,6 +419,53 @@ public final class Router {
         public Builder langGuess(LanguageHint value) {
             this.langGuess = value;
             return this;
+        }
+
+        /**
+         * How many checkpoints may be resident at once. Two by default, as in the reference.
+         *
+         * <p>Each is hundreds of megabytes, so this is a memory ceiling and not a cache size
+         * hint. The least recently used is evicted past it.
+         */
+        public Builder maxLoaded(int value) {
+            if (value < 1) {
+                throw new IllegalArgumentException("maxLoaded must be at least 1, got " + value);
+            }
+            this.maxLoaded = value;
+            return this;
+        }
+
+        /**
+         * How to build an agent for a checkpoint.
+         *
+         * <p>The reference downloads from the hub; this port takes local paths, so the mapping
+         * from a checkpoint to an {@link Agent} is the caller's. A seam rather than a hard-coded
+         * directory layout, for the same reason {@code InferenceSession} is one: it makes the
+         * eviction order, the lease counting and the attach-versus-build distinction testable in
+         * milliseconds, where a real checkpoint is hundreds of megabytes and would keep all of it
+         * out of any CI that does not download one.
+         */
+        public Builder agents(AgentFactory factory) {
+            this.agents = requireNonNull(factory, "factory");
+            return this;
+        }
+
+        /**
+         * Load each checkpoint from {@code <root>/<name>}, graph included.
+         *
+         * <p>The layout {@code Agent.open} expects, with the subdirectory named as the reference
+         * names the checkpoint: {@code english}, {@code multilingual}, {@code typed-decisions}.
+         */
+        public Builder checkpointsRoot(Path root) {
+            return checkpointsRoot(root, root);
+        }
+
+        /** As {@link #checkpointsRoot(Path)}, with the ONNX graphs under a separate root. */
+        public Builder checkpointsRoot(Path models, Path graphs) {
+            requireNonNull(models, "models");
+            requireNonNull(graphs, "graphs");
+            return agents(checkpoint -> Agent.open(models.resolve(checkpoint.wireName()),
+                    graphs.resolve(checkpoint.wireName())));
         }
 
         /** Point one checkpoint somewhere else -- a mirror, or a local export. */
@@ -597,6 +777,497 @@ public final class Router {
     private RouteDecision decision(Checkpoint key, String reason,
             LanguageDetection.Analysis detection, String workflow) {
         return new RouteDecision(key, models.get(key).repoString(), reason, detection, workflow);
+    }
+
+    // ------------------------------------------------------------------ the lifecycle
+
+    /**
+     * Borrow the agent for a checkpoint, building it on first use.
+     *
+     * <p>Concurrent callers asking for the same checkpoint share one build rather than each
+     * paying for a copy. The lease keeps the agent open; see {@link Lease} for why that matters
+     * here and not in the reference.
+     */
+    public Lease lease(String name) {
+        return lease(normaliseName(name));
+    }
+
+    /** Borrow the agent for a checkpoint. */
+    public Lease lease(Checkpoint checkpoint) {
+        requireNonNull(checkpoint, "checkpoint");
+        Slot slot = acquire(checkpoint);
+        return new Lease(checkpoint, slot);
+    }
+
+    /**
+     * The agent for a checkpoint, building it on first use.
+     *
+     * <p><b>Valid only while it stays resident.</b> Eviction and {@link #unload} close an agent
+     * the router built, so a reference held across either is a closed session. That is the price
+     * of a native resource on a JVM -- the reference can rely on refcounting here and this cannot.
+     * Prefer {@link #lease} or {@link #predict}, which hold the agent open for exactly as long as
+     * they use it; this exists for a caller doing its own lifetime management, and for
+     * {@link #preload}.
+     */
+    public Agent load(String name) {
+        Checkpoint checkpoint = normaliseName(name);
+        Slot slot = acquire(checkpoint);
+        release(slot);
+        return slot.agent;
+    }
+
+    /** The slot for a checkpoint, with one lease taken. */
+    private Slot acquire(Checkpoint checkpoint) {
+        while (true) {
+            InFlight waitFor = null;
+            InFlight mine = null;
+            lock.lock();
+            try {
+                requireOpen();
+                // The fast path, and not merely an optimisation: it returns a resident checkpoint
+                // without touching `buildLock`, so a request for a loaded model is not stalled
+                // behind a cold load of a different one. Remove it and every cached call queues
+                // on the build lock, which in a server means one checkpoint loading blocks all
+                // the traffic the other checkpoints could have served.
+                Slot resident = slots.get(checkpoint);
+                if (resident != null) {
+                    touch(checkpoint);
+                    resident.leases++;
+                    return resident;
+                }
+                waitFor = loading.get(checkpoint);
+                if (waitFor == null) {
+                    mine = new InFlight();
+                    loading.put(checkpoint, mine);
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (mine != null) {
+                // This caller owns the build, and `mine` is the handle the others are waiting on.
+                // It has to be the one registered above: creating a second one here would leave
+                // every waiter blocked on a latch nobody ever counts down.
+                return build(checkpoint, mine);
+            }
+            // Someone else is building this one. Wait for them rather than build a second copy.
+            await(waitFor);
+            if (waitFor.error != null) {
+                throw waitFor.error;
+            }
+        }
+    }
+
+    private Slot build(Checkpoint checkpoint, InFlight inflight) {
+        List<Checkpoint> evicted = List.of();
+        Slot built;
+        try {
+            // The build itself runs outside `lock`, so routing and eviction are not stalled for
+            // the seconds a cold checkpoint takes, and serialised by `buildLock` so two cold
+            // loads do not hold two checkpoints in flight at once.
+            buildLock.lock();
+            try {
+                lock.lock();
+                try {
+                    Slot resident = slots.get(checkpoint);
+                    if (resident != null) {
+                        // Built or attached while this caller waited for the build lock.
+                        touch(checkpoint);
+                        resident.leases++;
+                        finish(checkpoint, inflight);
+                        return resident;
+                    }
+                } finally {
+                    lock.unlock();
+                }
+                Agent agent = create(checkpoint);
+                lock.lock();
+                try {
+                    Slot attached = slots.get(checkpoint);
+                    if (attached != null) {
+                        // Attached while it was building: keep that one and close the duplicate,
+                        // which the reference leaves to refcounting.
+                        touch(checkpoint);
+                        attached.leases++;
+                        built = attached;
+                        agent.close();
+                    } else {
+                        built = new Slot(agent, true);
+                        built.leases++;
+                        slots.put(checkpoint, built);
+                        order.add(checkpoint);
+                        evicted = evictLocked();
+                    }
+                    finish(checkpoint, inflight);
+                } finally {
+                    lock.unlock();
+                }
+            } finally {
+                buildLock.unlock();
+            }
+        } catch (RuntimeException | Error failure) {
+            lock.lock();
+            try {
+                inflight.error = failure instanceof RuntimeException
+                        ? (RuntimeException) failure
+                        : new IllegalStateException("building " + checkpoint.wireName()
+                                + " failed", failure);
+                loading.remove(checkpoint, inflight);
+                inflight.done.countDown();
+            } finally {
+                lock.unlock();
+            }
+            throw failure;
+        }
+        if (!evicted.isEmpty()) {
+            // Nothing to dispatch here, but keeping the list is what lets a caller see which
+            // checkpoints left: `loaded()` after a load is the observable form of it.
+            assert evicted.size() <= Checkpoint.values().length;
+        }
+        return built;
+    }
+
+    private Agent create(Checkpoint checkpoint) {
+        if (agents == null) {
+            throw new IllegalStateException(
+                    "this Router can route but not load: no agent factory was configured. Use"
+                    + " Router.builder().checkpointsRoot(path) or .agents(factory) to give it one,"
+                    + " or call route(...) and load the checkpoint yourself.");
+        }
+        try {
+            Agent agent = agents.create(checkpoint);
+            if (agent == null) {
+                throw new IllegalStateException("the agent factory returned null for "
+                        + checkpoint.wireName());
+            }
+            return agent;
+        } catch (IOException failure) {
+            throw new UncheckedIOException("cannot load the " + checkpoint.wireName()
+                    + " checkpoint from " + models.get(checkpoint).repoString(), failure);
+        }
+    }
+
+    private void finish(Checkpoint checkpoint, InFlight inflight) {
+        loading.remove(checkpoint, inflight);
+        inflight.done.countDown();
+    }
+
+    private static void await(InFlight inflight) {
+        try {
+            inflight.done.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for a checkpoint to load",
+                    interrupted);
+        }
+    }
+
+    /** Release one lease, closing the agent when it was retired and this was the last one. */
+    private void release(Slot slot) {
+        Agent toClose = null;
+        lock.lock();
+        try {
+            slot.leases--;
+            if (slot.leases <= 0 && slot.retired && slot.ownsClosing) {
+                toClose = slot.agent;
+            }
+        } finally {
+            lock.unlock();
+        }
+        if (toClose != null) {
+            toClose.close();
+        }
+    }
+
+    /** Move a checkpoint to the most-recently-used end. Caller holds {@link #lock}. */
+    private void touch(Checkpoint checkpoint) {
+        order.remove(checkpoint);
+        order.add(checkpoint);
+    }
+
+    /**
+     * Drop least-recently-used agents until {@link #maxLoaded} holds. Caller holds the lock.
+     *
+     * @return the checkpoints that left
+     */
+    private List<Checkpoint> evictLocked() {
+        List<Checkpoint> evicted = new ArrayList<>();
+        List<Agent> toClose = new ArrayList<>();
+        while (order.size() > maxLoaded) {
+            Checkpoint victim = order.remove(0);
+            Slot slot = slots.remove(victim);
+            if (slot != null) {
+                evicted.add(victim);
+                retire(slot, toClose);
+            }
+        }
+        // Keep the two views consistent, as the reference does: a slot with no place in the order
+        // is not reachable and would otherwise be held for the life of the router.
+        if (order.size() < slots.size()) {
+            for (Checkpoint stray : new ArrayList<>(slots.keySet())) {
+                if (!order.contains(stray)) {
+                    Slot slot = slots.remove(stray);
+                    if (slot != null) {
+                        evicted.add(stray);
+                        retire(slot, toClose);
+                    }
+                }
+            }
+        }
+        closeAll(toClose);
+        return evicted;
+    }
+
+    /** Mark a slot gone, and collect its agent for closing when nothing is using it. */
+    private void retire(Slot slot, List<Agent> toClose) {
+        slot.retired = true;
+        if (slot.leases <= 0 && slot.ownsClosing) {
+            toClose.add(slot.agent);
+        }
+    }
+
+    /**
+     * Register an already-built agent instead of loading a second copy.
+     *
+     * <p>Useful when the process holds a checkpoint for other reasons: a service that already
+     * built the English one can hand it over rather than pay for -- and keep resident -- a
+     * duplicate 421M parameters.
+     *
+     * <p>The router never closes an attached agent: the caller keeps ownership. It also raises
+     * {@link #maxLoaded} to fit whatever is now resident, so attaching never immediately evicts
+     * what it just attached.
+     */
+    public Agent attach(String name, Agent agent) {
+        requireNonNull(agent, "agent");
+        Checkpoint checkpoint = normaliseName(name);
+        List<Agent> toClose = new ArrayList<>();
+        lock.lock();
+        try {
+            requireOpen();
+            Slot previous = slots.put(checkpoint, new Slot(agent, false));
+            if (previous != null) {
+                retire(previous, toClose);
+            }
+            touch(checkpoint);
+            maxLoaded = Math.max(maxLoaded, slots.size());
+        } finally {
+            lock.unlock();
+        }
+        closeAll(toClose);
+        return agent;
+    }
+
+    /** Build every checkpoint up front, so no request pays a cold load. */
+    public Router preload() {
+        return preload(null);
+    }
+
+    /**
+     * Build these checkpoints up front, so no request pays a cold load.
+     *
+     * <p>A cold load costs seconds; routing costs microseconds. With the checkpoints resident,
+     * routing is effectively free, which is what a server wants. {@link #maxLoaded} is raised to
+     * fit both what is asked for and whatever is already resident, so preloading in stages does
+     * not evict either.
+     *
+     * @param names checkpoint names or aliases, or null for all of them
+     */
+    public Router preload(Collection<String> names) {
+        List<Checkpoint> wanted = new ArrayList<>();
+        if (names == null) {
+            wanted.addAll(models.keySet());
+        } else {
+            for (String name : names) {
+                wanted.add(normaliseName(name));
+            }
+        }
+        lock.lock();
+        try {
+            requireOpen();
+            Set<Checkpoint> union = new LinkedHashSet<>(wanted);
+            union.addAll(slots.keySet());
+            maxLoaded = Math.max(maxLoaded, union.size());
+        } finally {
+            lock.unlock();
+        }
+        for (Checkpoint checkpoint : wanted) {
+            lock.lock();
+            boolean already;
+            try {
+                already = slots.containsKey(checkpoint);
+            } finally {
+                lock.unlock();
+            }
+            if (!already) {
+                release(acquire(checkpoint));
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Free one checkpoint.
+     *
+     * <p>Waits for an in-flight build of that checkpoint only, so an unrelated cold load does not
+     * stall this call.
+     *
+     * @return the checkpoints that were freed, which is empty when it was not resident
+     */
+    public List<Checkpoint> unload(String name) {
+        Checkpoint checkpoint = normaliseName(name);
+        while (true) {
+            InFlight inflight;
+            List<Agent> toClose = new ArrayList<>();
+            List<Checkpoint> freed = new ArrayList<>();
+            lock.lock();
+            try {
+                inflight = loading.get(checkpoint);
+                if (inflight == null) {
+                    Slot slot = slots.remove(checkpoint);
+                    order.remove(checkpoint);
+                    if (slot != null) {
+                        freed.add(checkpoint);
+                        retire(slot, toClose);
+                    }
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (inflight == null) {
+                closeAll(toClose);
+                return freed;
+            }
+            await(inflight);
+        }
+    }
+
+    /** Free every checkpoint, waiting for any in-flight build first. */
+    public List<Checkpoint> unloadAll() {
+        while (true) {
+            List<InFlight> inflights;
+            List<Agent> toClose = new ArrayList<>();
+            List<Checkpoint> freed = new ArrayList<>();
+            lock.lock();
+            try {
+                inflights = new ArrayList<>(loading.values());
+                if (inflights.isEmpty()) {
+                    freed.addAll(order);
+                    for (Slot slot : slots.values()) {
+                        retire(slot, toClose);
+                    }
+                    slots.clear();
+                    order.clear();
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (inflights.isEmpty()) {
+                closeAll(toClose);
+                return freed;
+            }
+            for (InFlight inflight : inflights) {
+                await(inflight);
+            }
+        }
+    }
+
+    /** Which checkpoints are resident, least recently used first. */
+    public List<Checkpoint> loaded() {
+        lock.lock();
+        try {
+            return List.copyOf(order);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** How many checkpoints may be resident at once; {@link #attach} and {@link #preload} raise it. */
+    public int maxLoaded() {
+        lock.lock();
+        try {
+            return maxLoaded;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Route this state and answer its questions on whichever checkpoint wins. */
+    public Prediction predict(Object state, Map<String, Question> questions) {
+        return predict(state, questions, RouteOptions.none());
+    }
+
+    /** Route this state and answer its questions, with per-call routing arguments. */
+    public Prediction predict(Object state, Map<String, Question> questions,
+            RouteOptions options) {
+        return predict(route(state, questions, options), state, questions,
+                options == null ? null : options.lang());
+    }
+
+    /**
+     * Answer these questions on an already-made decision.
+     *
+     * <p>For a caller that wants the reason as well as the answer: route once, show or log the
+     * decision, then predict with it, rather than routing twice.
+     */
+    public Prediction predict(RouteDecision decision, Object state,
+            Map<String, Question> questions) {
+        return predict(decision, state, questions, null);
+    }
+
+    private Prediction predict(RouteDecision decision, Object state,
+            Map<String, Question> questions, String lang) {
+        requireNonNull(decision, "decision");
+        // The language the checkpoint is told is the caller's if they gave one, else whatever
+        // routing detected -- which is the reference's rule, and it matters: the multilingual
+        // checkpoint takes a language and the detected one is the best available answer.
+        String language = lang;
+        if (language == null && decision.detection() != null) {
+            language = decision.detection().language();
+        }
+        try (Lease lease = lease(decision.model())) {
+            return lease.agent().predict(state, questions, language);
+        }
+    }
+
+    /**
+     * Close the router, freeing every checkpoint it built.
+     *
+     * <p>An attached agent is left alone: its owner is the caller. An agent still under lease is
+     * closed when that lease is released, so closing the router does not break a prediction
+     * already in flight.
+     */
+    @Override
+    public void close() {
+        lock.lock();
+        try {
+            closed = true;
+        } finally {
+            lock.unlock();
+        }
+        unloadAll();
+    }
+
+    private void requireOpen() {
+        if (closed) {
+            throw new IllegalStateException("this Router is closed");
+        }
+    }
+
+    private static void closeAll(List<Agent> agents) {
+        RuntimeException first = null;
+        for (Agent agent : agents) {
+            try {
+                agent.close();
+            } catch (RuntimeException failure) {
+                if (first == null) {
+                    first = failure;
+                } else {
+                    first.addSuppressed(failure);
+                }
+            }
+        }
+        if (first != null) {
+            throw first;
+        }
     }
 
     /** The first {@code count} code points, which is what the reference's slice takes. */
