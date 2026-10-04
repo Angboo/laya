@@ -79,6 +79,11 @@ jobs:
       - name: Model-free fixture drift vs. committed
         if: ${{ !cancelled() }}
         run: python laya-java/scripts/gen_fixtures.py --check --only python_json.json
+      # The compiled-in Unicode tables are recorded from CPython, so a CPython upgrade that moves
+      # them has to show up here rather than as a routing change nobody attributed.
+      - name: Unicode tables match CPython
+        if: ${{ !cancelled() }}
+        run: python laya-java/scripts/gen_unicode_tables.py --check
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
