@@ -1682,15 +1682,19 @@ check("router_batch/route_batch positional hooks_timeout", len(pos_decisions), 1
 kw_decisions = r_pos.route_batch([req("pos1")], 1.0, hooks=[RouteTrace()])
 check("router_batch/route_batch keyword-only hooks", len(kw_decisions), 1)
 
-# predict_batch keeps hooks_timeout keyword-only
-pos_results = r_pos.predict_batch([req("pos2")], 8, hooks_timeout=1.0, hooks=[PerCallTrace()])
-check("router_batch/predict_batch keyword-only controls", len(pos_results), 1)
+# predict_batch preserves hooks_timeout positional prefix from main
+pos_results = r_pos.predict_batch([req("pos2")], 8, 1.0, hooks=[PerCallTrace()])
+check("router_batch/predict_batch positional hooks_timeout", len(pos_results), 1)
+
+# predict_batch takes per-call hooks as keyword-only
+kw_results = r_pos.predict_batch([req("pos2")], 8, hooks=[PerCallTrace()])
+check("router_batch/predict_batch keyword-only hooks", len(kw_results), 1)
 
 # keyword-only enforcement: passing hook controls positionally raises TypeError
 check_raises("router_batch/route_batch rejects positional hooks", TypeError,
              lambda: r_pos.route_batch([req("pos1")], 1.0, [RouteTrace()]))
-check_raises("router_batch/predict_batch rejects positional hooks_timeout past sort_by_length", TypeError,
-             lambda: r_pos.predict_batch([req("pos2")], 8, None, False, 1.0))
+check_raises("router_batch/predict_batch rejects positional hooks", TypeError,
+             lambda: r_pos.predict_batch([req("pos2")], 8, 1.0, None, False, [PerCallTrace()]))
 
 
 # --------------------------------------------------------------- report

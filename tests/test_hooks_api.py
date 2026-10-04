@@ -190,11 +190,11 @@ check("Router.route_batch/positional prefix",
 check("Router.predict_batch/positional prefix",
       [p.name for p in sig(Router.predict_batch).values()
        if p.kind != inspect.Parameter.KEYWORD_ONLY and p.name != "self"],
-      ["requests", "batch_size", "min_confidence", "sort_by_length"])
+      ["requests", "batch_size", "hooks_timeout", "min_confidence", "sort_by_length"])
 for param in ("hooks", "hooks_raise"):
     check("Router.route_batch/%s is keyword-only" % param,
           sig(Router.route_batch)[param].kind, inspect.Parameter.KEYWORD_ONLY)
-for param in ("hooks_timeout", "hooks", "on_predict_start", "on_predict_end", "hooks_raise"):
+for param in ("hooks", "on_predict_start", "on_predict_end", "hooks_raise"):
     check("Router.predict_batch/%s is keyword-only" % param,
           sig(Router.predict_batch)[param].kind, inspect.Parameter.KEYWORD_ONLY)
 

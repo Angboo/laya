@@ -1227,10 +1227,10 @@ class Router(HookRegistry):
         self,
         requests: Sequence[Dict[str, Any]],
         batch_size: Optional[int] = None,
+        hooks_timeout: Optional[float] = None,
         min_confidence: Optional[float] = None,
         sort_by_length: bool = False,
         *,
-        hooks_timeout: Optional[float] = None,
         hooks=None,
         on_predict_start=None,
         on_predict_end=None,
@@ -1267,12 +1267,12 @@ class Router(HookRegistry):
                 ``lang_guess`` routing overrides and ``max_len`` / ``head_max_len`` token-budget
                 overrides.
             batch_size: Optional maximum number of states per Agent forward-pass batch.
+            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
             min_confidence: Optional float or per-bucket mapping for confidence gating.
             sort_by_length: Forwarded to every ``Agent.predict_batch`` call, so each question
                 group pads to a shorter maximum; see ``Agent.predict_batch``. Results retain the
                 input order either way. Silently dropped for an attached agent whose
                 ``predict_batch`` predates the knob (#294).
-            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
             hooks (HookArg): Per-call hook or sequence of hooks for this call.
             on_predict_start (PredictHookArg): Plain callable or sequence of callables for start events.
             on_predict_end (PredictHookArg): Plain callable or sequence of callables for end events.

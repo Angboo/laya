@@ -296,8 +296,8 @@ router.predict(state, questions, model=None, task=None, lang=None, lang_guess=No
                hooks=None, on_predict_start=None, on_predict_end=None, hooks_raise=None,
                hooks_timeout=None, max_len=None, head_max_len=None)
 
-router.predict_batch(requests, batch_size=None, min_confidence=None, sort_by_length=False,
-                     hooks_timeout=None, hooks=None, on_predict_start=None, on_predict_end=None,
+router.predict_batch(requests, batch_size=None, hooks_timeout=None, min_confidence=None,
+                     sort_by_length=False, hooks=None, on_predict_start=None, on_predict_end=None,
                      hooks_raise=None)
 
 router.system_one(...)      # alias of predict
