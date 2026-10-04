@@ -282,6 +282,19 @@
       ]
     }
   ],
+  "stop_word_order": [
+    "en",
+    "fr",
+    "de",
+    "es",
+    "pt",
+    "it",
+    "nl",
+    "sv",
+    "ro",
+    "bn",
+    "az"
+  ],
   "stop_words": {
     "az": [
       "amma",

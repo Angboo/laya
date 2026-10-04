@@ -20,7 +20,9 @@ Phase 0 families (no model weights needed -- these are the tables and the text t
 import argparse
 import json
 import os
+import re
 import sys
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(HERE, "..", "fixtures"))
@@ -50,6 +52,11 @@ def lang_tables():
             {"name": name, "ranges": [[int(lo), int(hi)] for lo, hi in ranges]}
             for name, ranges in lang._SCRIPT_RANGES
         ],
+        # Sorted so the committed file diffs stably -- but sorting LOSES the declaration order,
+        # and that order is data: the language that wins a tied score is the first one iterated.
+        # So it is recorded separately rather than inferred from this mapping, which is exactly
+        # the mistake `render`'s missing `sort_keys` was already fixed for once.
+        "stop_word_order": list(lang._STOP.keys()),
         "stop_words": {code: _sorted_set(words) for code, words in sorted(lang._STOP.items())},
         "short_swedish_words": _sorted_set(lang._SHORT_SWEDISH_WORDS),
         "non_en_diacritics": _sorted_set(lang._NON_EN_DIACRITICS),
@@ -72,6 +79,355 @@ def lang_tables():
         },
     }
 
+
+def _state_repr(state):
+    """A state as JSON, with `bytes` tagged so a port can rebuild the exact leaf."""
+    if isinstance(state, (bytes, bytearray)):
+        return {"kind": "bytes", "value": list(state)}
+    if isinstance(state, str):
+        return {"kind": "string", "value": state}
+    return {"kind": "json", "value": state}
+
+
+def _unicode_digests():
+    """One sha256 per character property, over every code point.
+
+    A digest rather than a table: the committed Java tables already hold the ranges, and what
+    needs proving is that they still agree with CPython over the WHOLE of Unicode and not just
+    over the corpus below. Nine hashes do that in 500 bytes of fixture, and they fail the moment
+    a JDK upgrade, a table edit or a CPython bump moves a single code point.
+
+    Surrogates are included for the predicates -- Python reports every one of them false, and so
+    must a port -- and excluded from the lowercase digest, which no port can represent.
+    """
+    import hashlib
+
+    word = re.compile(r"[^\W\d_]", re.UNICODE)
+    digit = re.compile(r"\d", re.UNICODE)
+    predicates = {
+        "alpha": lambda ch: ch.isalpha(),
+        "word": lambda ch: word.fullmatch(ch) is not None,
+        "combining": lambda ch: unicodedata.combining(ch) != 0,
+        "digit": lambda ch: digit.fullmatch(ch) is not None,
+        "upper": lambda ch: ch.isupper(),
+        "lower": lambda ch: ch.islower(),
+        "space": lambda ch: ch.isspace(),
+    }
+    out = {}
+    for name, predicate in predicates.items():
+        digest = hashlib.sha256()
+        for cp in range(0x110000):
+            digest.update(b"1" if predicate(chr(cp)) else b"0")
+        out[name] = digest.hexdigest()
+
+    lower = hashlib.sha256()
+    for cp in range(0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        mapped = ",".join(str(ord(c)) for c in chr(cp).lower())
+        lower.update(("%d:%s;" % (cp, mapped)).encode("ascii"))
+    out["python_lower"] = lower.hexdigest()
+
+    from laya import lang
+
+    script = hashlib.sha256()
+    for cp in range(0x110000):
+        script.update(((lang._script_of(chr(cp)) or "") + ";").encode("ascii"))
+    out["script_of"] = script.hexdigest()
+    return out
+
+
+def _round_to_int_cases():
+    """Python's one-argument `round` on halfway values, and on the products `_analyse_text` forms.
+
+    Pinned at the function level and not through the corpus, because the rounding MODE is
+    currently UNOBSERVABLE through `analyse`: the rounded value only ever feeds
+    `n_non_latin >= NON_LATIN_MIN_LETTERS`, half-to-even and half-up differ only at an exact
+    k + 0.5 with k even, and at an EVEN threshold both land on the same side of it. It becomes
+    observable the moment that threshold is odd -- at 9, a product of 8.5 is 8 half-to-even and 9
+    half-up. A mutant that swapped the mode survived all of the corpus, so the contract is
+    recorded here instead of being left to a coincidence in a table.
+    """
+    values = [k + 0.5 for k in range(0, 24)]
+    values += [-(k + 0.5) for k in range(0, 5)]
+    values += [0.0, 1.0, 9.0, 10.0, 0.49999999999999994, 9.499999999999998, 10.000000000000002]
+    for fraction in (0.1, 0.1234, 0.2, 0.25, 0.3333, 0.5, 0.75, 0.9999, 0.0312):
+        for letters in (0, 1, 9, 10, 17, 20, 33, 40, 85, 100, 4000):
+            values.append(round(fraction, 4) * letters)
+    out, seen = [], set()
+    for value in values:
+        key = repr(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append([value, round(value)])
+    return out
+
+
+def lang_detect():
+    """Every output `laya.lang` produces, over a corpus built to break a port.
+
+    WHY EACH CASE IS HERE. The corpus is not a sample of real traffic; every entry exercises a
+    branch that a reimplementation gets wrong by default:
+
+      * the four regexes, which no other language spells the same way -- Java's `\\w` admits
+        combining marks that Python's does not, and `String.split` drops trailing empty fields
+        where Python's keeps them;
+      * `str.lower()`, which is not `String.toLowerCase` (final sigma) and not one-to-one (U+0130);
+      * `str.isspace()`, which `Character.isWhitespace` disagrees with on four code points, two of
+        them the no-break spaces a pasted ticket is full of;
+      * `round(x, 4)` and `round(x)`, both of which are half-to-EVEN on the exact binary value;
+      * dict insertion order, which decides the script profile's order and every tie between two
+        languages with the same score;
+      * and the structured-state scans, where a long English stack trace must not outvote a short
+        foreign message, and a name field must not pull an English ticket off the English model.
+
+    Each case records the full output of `state_text`, `detect_script`, `script_profile`,
+    `latin_profile`, `analyse` and `is_english`. String cases also record every internal helper,
+    so a failure names the step that broke rather than only the verdict.
+    """
+    from laya import lang
+
+    long_english = ("The customer reports that the dashboard will not load after the update. "
+                    "We have asked for a screenshot and the browser console output. ") * 40
+    cases = [
+        ("empty", ""),
+        ("whitespace-only", "   \t\n  "),
+        ("nbsp-only", "\u00a0\u00a0"),
+        ("plain-english", "I cannot log in to my account and the password reset email never arrives."),
+        ("english-short", "reset password"),
+        ("english-one-word", "refund"),
+        ("english-three-words", "please reset this"),
+        ("english-with-cafe", "We met at the cafe near the office and the invoice was paid."),
+        ("english-with-accented-loanword", "We met at the caf\u00e9 near the office and the invoice was paid."),
+        ("english-with-three-accents", "The caf\u00e9 r\u00e9sum\u00e9 of Jos\u00e9 was attached to the ticket."),
+        ("english-rescue-two-en-only-words", "Please the invoice caf\u00e9 and we will have it."),
+        ("french", "Je ne peux pas me connecter a mon compte et le mot de passe ne fonctionne pas."),
+        ("french-accented", "Je n'arrive pas \u00e0 me connecter \u00e0 mon compte, le mot de passe est refus\u00e9."),
+        ("spanish", "No puedo iniciar sesion en mi cuenta y la contrasena no funciona para nada."),
+        ("spanish-accented", "No puedo iniciar sesi\u00f3n en mi cuenta y la contrase\u00f1a no funciona."),
+        ("portuguese-stripped", "Voce pode me mandar a nota fiscal do pedido que eu fiz ontem?"),
+        ("portuguese-accented", "Voc\u00ea pode me mandar a nota fiscal do pedido que eu fiz ontem?"),
+        ("portuguese-jargon-english", "Deu erro 500 no endpoint de login depois do update de ontem"),
+        ("italian", "Non riesco ad accedere al mio account e la password non funziona piu"),
+        ("italian-articulated", "Ho ricevuto la fattura nel mese di marzo ma non trovo il pagamento"),
+        ("german", "Ich kann mich nicht in mein Konto einloggen und das Passwort wird nicht akzeptiert."),
+        ("german-der-twice", "reduzieren der helligkeit der lichter"),
+        ("dutch", "Het is niet mogelijk om in te loggen op mijn account met dit wachtwoord"),
+        ("swedish", "Jag kan inte logga in pa mitt konto och jag behover hjalp med losenord"),
+        ("swedish-login-phrase", "kan inte logga in"),
+        ("swedish-short-fragment", "glomt losenord"),
+        ("swedish-one-short-word", "losenord"),
+        ("danish-nordic-overlap", "Hej jeg kan ikke komme ind pa min konto"),
+        ("romanian", "Nu pot sa intru in contul meu si parola nu functioneaza pentru care am"),
+        ("romanian-diacritics", "Nu pot s\u0103 intru \u00een contul meu \u0219i parola nu func\u021bioneaz\u0103"),
+        ("banglish", "ami amar account e login korte parchi na, password ta kaj korche na"),
+        ("azerbaijani", "M\u0259n hesabima daxil ola bilmir\u0259m v\u0259 \u015fifr\u0259 i\u015fl\u0259mir, bu \u00fc\u00e7\u00fcn k\u00f6m\u0259k"),
+        ("polish-no-stoplist", "Nie mog\u0119 si\u0119 zalogowa\u0107 na swoje konto, has\u0142o nie dzia\u0142a"),
+        ("turkish-no-stoplist", "Hesab\u0131ma giri\u015f yapam\u0131yorum ve \u015fifre \u00e7al\u0131\u015fm\u0131yor, yard\u0131m"),
+        ("turkish-dotted-capital-I", "\u0130stanbul \u0130zmir \u0130ngilizce"),
+        ("shared-words-only", "la o un de pe ca e que"),
+        ("hindi", "\u092e\u0948\u0902 \u0905\u092a\u0928\u0947 \u0916\u093e\u0924\u0947 \u092e\u0947\u0902 \u0932\u0949\u0917 \u0907\u0928 \u0928\u0939\u0940\u0902 \u0915\u0930 \u092a\u093e \u0930\u0939\u093e \u0939\u0942\u0902"),
+        ("korean", "\uacc4\uc815\uc5d0 \ub85c\uadf8\uc778\ud560 \uc218 \uc5c6\uc5b4\uc694"),
+        ("japanese", "\u30a2\u30ab\u30a6\u30f3\u30c8\u306b\u30ed\u30b0\u30a4\u30f3\u3067\u304d\u307e\u305b\u3093"),
+        ("chinese", "\u6211\u65e0\u6cd5\u767b\u5f55\u6211\u7684\u8d26\u6237"),
+        ("arabic", "\u0644\u0627 \u0623\u0633\u062a\u0637\u064a\u0639 \u062a\u0633\u062c\u064a\u0644 \u0627\u0644\u062f\u062e\u0648\u0644"),
+        ("hebrew", "\u05d0\u05e0\u05d9 \u05dc\u05d0 \u05d9\u05db\u05d5\u05dc \u05dc\u05d4\u05ea\u05d7\u05d1\u05e8"),
+        ("greek", "\u0394\u03b5\u03bd \u03bc\u03c0\u03bf\u03c1\u03ce \u03bd\u03b1 \u03c3\u03c5\u03bd\u03b4\u03b5\u03b8\u03ce"),
+        ("cyrillic", "\u042f \u043d\u0435 \u043c\u043e\u0433\u0443 \u0432\u043e\u0439\u0442\u0438 \u0432 \u0441\u0432\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442"),
+        ("thai", "\u0e09\u0e31\u0e19\u0e40\u0e02\u0e49\u0e32\u0e2a\u0e39\u0e48\u0e23\u0e30\u0e1a\u0e1a\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49"),
+        ("tamil", "\u0b8e\u0ba9\u0bcd \u0b95\u0ba3\u0b95\u0bcd\u0b95\u0bbf\u0bb2\u0bcd \u0b89\u0bb3\u0bcd\u0ba8\u0bc1\u0bb4\u0bc8\u0ba3 \u0bae\u0bc1\u0b9f\u0bbf\u0baf\u0bb5\u0bbf\u0bb2\u0bcd\u0bb2\u0bc8"),
+        ("amharic", "\u12a0\u1230\u120b\u121d \u12a8\u1218\u1308\u1263\u1275 \u12a0\u120d\u127d\u120d\u121d"),
+        ("georgian", "\u10d5\u10d4\u10e0 \u10d5\u10d0\u10ee\u10d4\u10e0\u10ee\u10d4 \u10d0\u10dc\u10d2\u10d0\u10e0\u10d8\u10e8\u10d8"),
+        ("armenian", "\u0535\u057d \u0579\u0565\u0574 \u056f\u0561\u0580\u0578\u0572\u0561\u0576\u0578\u0582\u0574 \u0574\u057f\u0576\u0565\u056c"),
+        ("unlisted-script-kawi", "\U00011f00\U00011f01\U00011f02\U00011f03\U00011f04"),
+        ("cjk-extension-b", "\U00020000\U00020001\U00020002"),
+        ("fullwidth-latin", "\uff28\uff45\uff4c\uff4c\uff4f \uff37\uff4f\uff52\uff4c\uff44"),
+        ("latin-ext-additional", "\u1e9e\u1ebd\u1ec5\u1e0d\u1e25"),
+        ("ipa-pronunciation", "The name is pronounced [vl\u0250\u02c8d\u02b2im\u02b2\u0268r] in Russian and that is all"),
+        ("greek-symbol-in-english", "Set \u03b1 to 0.05 and then re-run the whole evaluation again"),
+        ("cyrillic-proper-name", "The reviewer was \u0414\u043c\u0438\u0442\u0440\u0438\u0439 \u041f\u0435\u0442\u0440\u043e\u0432\u0438\u0447 and he approved the change"),
+        ("cyrillic-name-with-combining", "The reviewer was \u0412\u043b\u0430\u0434\u0438\u0301\u043c\u0438\u0440 and he approved the change"),
+        ("latin-brand-in-cjk", "ACME-ORDER-99281-XYZ \u6ce8\u6587\u304c\u5c4a\u304d\u307e\u305b\u3093"),
+        ("latin-plurality-over-cjk", "Order ACME-99281 shipped but the label is wrong \u6ce8\u6587\u756a\u53f7\u304c\u9055\u3044\u307e\u3059\u3088"),
+        ("urls-and-emails", "See github.com/acme/repo and mail user@acme.com about v1.2.3 in the U.S.A."),
+        ("url-heavy-portuguese-looking", "github.com e os.path com o.com de.com na.com"),
+        ("leading-dot-identifier", ".com .org .net and the rest of the list is here now"),
+        ("at-after-dot", "a.@b and the rest of this sentence is plain English prose here"),
+        ("sentence-final-period", "Il pacco e arrivato. Non trovo la fattura nel portale adesso."),
+        ("code-line", "result = round(el, 2); os.path.join(a, b)"),
+        ("acronym-heavy-english", "The MON LA EST COM DES game was moved to the next week entirely"),
+        ("all-caps-portuguese", "N\u00c3O CONSIGO ENTRAR NA MINHA CONTA E A SENHA N\u00c3O FUNCIONA"),
+        ("joined-compound-names", "Nav/Com and OS/2 and C:\\DOS\\mode were all on the same list"),
+        ("nbsp-joined-words", "Je\u00a0ne\u00a0peux\u00a0pas\u00a0me\u00a0connecter\u00a0a\u00a0mon\u00a0compte\u00a0du\u00a0tout"),
+        ("final-sigma", "\u0394\u0395\u039d \u039c\u03a0\u039f\u03a1\u03a9 \u039d\u0391 \u03a3\u03a5\u039d\u0394\u0395\u0398\u03a9"),
+        ("english-with-portuguese-line",
+         "Customer ticket #4471\nNao consigo entrar na minha conta e a senha nao funciona\nAgent: asked for a screenshot"),
+        ("english-stack-trace-with-german-line",
+         "Traceback (most recent call last):\n  File \"app.py\", line 12, in handler\n    raise ValueError(x)\nIch kann mich nicht in mein Konto einloggen und das Passwort geht nicht"),
+        ("single-line-english-only", "I cannot log in to my account at all today"),
+        ("short-lines-under-seven", "ok\nno\nyes\nfail\nabcdef"),
+        # Each of the six below exists because a mutant survived without it. They are not extra
+        # samples of traffic; each one is the single discriminating input for one decision.
+        #
+        # 32 letters of which one is Greek: a non-Latin share of exactly 1/32 = 0.03125, which at
+        # four decimals is a halfway case. Python's round gives 0.0312 and the
+        # `Math.round(x * 1e4) / 1e4` spelling laya-ts uses gives 0.0313.
+        ("one-greek-letter-in-thirty-two", "Set the threshold values to \u0391 and rerun"),
+        # The same halfway case on the other rounded field: one diacritic in exactly 32 characters.
+        ("one-diacritic-in-thirty-two", "caf\u00e9 " + "x" * 27),
+        # Four scripts in the profile, so its ORDER is observable. With fewer than two non-Latin
+        # keys an unordered map passes, which is how a HashMap here survived.
+        ("three-non-latin-scripts", "\u0391\u0392 \u0411\u0412 \u6f22\u5b57 and some latin words here"),
+        # Three Latin letters against three Greek ones. The counts tie, and the tie-break is that
+        # Latin is inserted LAST, so the named script wins -- which only holds while the mapping
+        # keeps insertion order.
+        ("latin-and-greek-tied", "abc \u0391\u0392\u0393"),
+        # `todo` is an English word as well as a Spanish one, so it counts once however often it
+        # repeats. Counting both occurrences scores Spanish 2, clears the margin, and sends this
+        # to the multilingual checkpoint; counting it once scores 1 and leaves it undecided.
+        ("collision-word-twice", "todo todo bueno bueno"),
+        # German scores 2 against English's 1, which is a margin of exactly one. The reference
+        # requires two, so this is English; a margin of one would call it German.
+        ("margin-exactly-one-over-english", "der nicht the house"),
+        # The branch carrying the sharpest comment in the reference: English wins the whole-text
+        # read, so the line-by-line scan runs, and one line alone names a foreign language. These
+        # are the only cases that can produce a `mixed_segment`, and they are plain strings on
+        # purpose -- a string skips the per-leaf scan, so the segment scan is the only thing that
+        # can set it and a port that skipped the scan entirely would still fail here.
+        ("english-note-with-portuguese-line",
+         "The customer opened this ticket yesterday and we have asked for a screenshot.\n"
+         "The browser console shows no errors and the network tab looks clean to me.\n"
+         "Nao consigo entrar na minha conta e a senha nao funciona de jeito nenhum\n"
+         "We will escalate this to the platform team if it is not resolved today."),
+        ("portuguese-line-first-then-english",
+         "Nao consigo entrar na minha conta e a senha nao funciona de jeito nenhum\n"
+         "The customer opened this ticket yesterday and we have asked for a screenshot.\n"
+         "The browser console shows no errors and the network tab looks clean to me.\n"
+         "We will escalate this to the platform team if it is not resolved today."),
+        ("english-note-with-german-line",
+         "The customer opened this ticket yesterday and we have asked for a screenshot.\n"
+         "The browser console shows no errors and the network tab looks clean to me.\n"
+         "Ich kann mich nicht in mein Konto einloggen und das Passwort wird nicht akzeptiert\n"
+         "We will escalate this to the platform team if it is not resolved today."),
+        ("english-note-with-code-line-and-foreign-line",
+         "The customer opened this ticket yesterday and we have asked for a screenshot.\n"
+         "result = round(el, 2); os.path.join(a, b)\n"
+         "Non riesco ad accedere al mio account nel portale e la fattura non arriva\n"
+         "We will escalate this to the platform team if it is not resolved today."),
+        ("english-note-with-acronym-line-and-foreign-line",
+         "The customer opened this ticket yesterday and we have asked for a screenshot.\n"
+         "MON LA EST COM DES\n"
+         "Nao consigo entrar na minha conta e a senha nao funciona de jeito nenhum\n"
+         "We will escalate this to the platform team if it is not resolved today."),
+    ]
+    structured = [
+        ("none-state", None),
+        ("number-state", 42),
+        ("bool-state", True),
+        ("empty-dict", {}),
+        ("empty-list", []),
+        ("bytes-valid", "N\u00e3o consigo entrar na minha conta e a senha n\u00e3o funciona".encode("utf-8")),
+        ("bytes-invalid", b"\xff\xfe not utf-8 at all"),
+        ("dict-english-note-and-portuguese-message", {
+            "note": long_english,
+            "message": "Nao consigo entrar na minha conta e a senha nao funciona de jeito nenhum",
+        }),
+        ("dict-portuguese-past-the-cap", {
+            "note": long_english,
+            "tail": "Nao consigo entrar na minha conta e a senha nao funciona de jeito nenhum",
+        }),
+        ("dict-english-name-field", {"name": "Jos\u00e9", "body": "Please reset my password for this account today"}),
+        ("dict-cyrillic-name-field", {"name": "\u0414\u043c\u0438\u0442\u0440\u0438\u0439", "body": "Please reset my password for this account today"}),
+        ("dict-all-english", {"a": "Please reset my password", "b": "The dashboard will not load at all"}),
+        ("nested-list-of-dicts", [{"t": "Please reset my password for the account"},
+                                  {"t": "Ich kann mich nicht in mein Konto einloggen und das Passwort"}]),
+        ("deep-nesting-within-limit", [[[[[["Ich kann mich nicht in mein Konto einloggen und das Passwort"]]]]]]),
+        ("deep-nesting-past-limit", [[[[[[["Ich kann mich nicht in mein Konto einloggen und das Passwort"]]]]]]]),
+        ("dict-with-korean-value", {"id": "ORDER-1", "msg": "\uacc4\uc815\uc5d0 \ub85c\uadf8\uc778\ud560 \uc218 \uc5c6\uc5b4\uc694 \ub3c4\uc640\uc8fc\uc138\uc694"}),
+        ("dict-with-code-leaf", {"trace": "result = round(el, 2);\nos.path.join(a, b)",
+                                 "msg": "Please take a look at this when you can"}),
+        ("list-of-numbers", [1, 2.5, None, True]),
+        ("long-single-leaf-over-budget", long_english),
+        ("two-leaves-budget-split", ["x" * 3990, "Nao consigo entrar na minha conta e a senha nao funciona"]),
+        # A short English note leaves the segment scan enough budget to reach the second field, so
+        # here the segment scan names the language and records the field. Its sibling above, whose
+        # note is long enough to exhaust the budget, is answered by the per-leaf scan instead and
+        # records no segment -- the two together pin both halves of #384.
+        ("dict-short-english-note-and-german-message", {
+            "note": ("The customer opened this ticket yesterday and we have asked for a "
+                     "screenshot. The browser console shows no errors and the network tab "
+                     "looks clean to me. We will escalate this to the platform team today. "),
+            "message": "Ich kann mich nicht in mein Konto einloggen und das Passwort geht nicht",
+        }),
+    ]
+
+    def record(name, state):
+        text = lang.state_text(state)
+        profile = lang.latin_profile(text)
+        analysis = lang.analyse(state)
+        row = {
+            "name": name,
+            "state": _state_repr(state),
+            "state_text": text,
+            "detect_script": lang.detect_script(text),
+            "script_profile": lang.script_profile(text),
+            "latin_profile": {
+                "language": profile["language"],
+                "english_hits": profile["english_hits"],
+                "diacritic_rate": profile["diacritic_rate"],
+                "looks_non_english": profile["looks_non_english"],
+            },
+            "analyse": {
+                "script": analysis["script"],
+                "script_profile": analysis["script_profile"],
+                "language": analysis["language"],
+                "is_english": analysis["is_english"],
+                "language_undecided": analysis["language_undecided"],
+                "diacritic_rate": analysis["diacritic_rate"],
+                "non_latin_fraction": analysis["non_latin_fraction"],
+                "mixed_segment": analysis["mixed_segment"],
+            },
+            "is_english": lang.is_english(state),
+        }
+        if isinstance(state, str):
+            blanked = lang._LETTER_RUN.sub(
+                lambda m: " " if m.group().isupper() else m.group(), state)
+            row["helpers"] = {
+                "words": lang._WORD.findall(state),
+                "substitute_identifiers": lang._IDENTIFIER.sub(" ", state),
+                "non_latin_words": lang._non_latin_words(state),
+                "named_prose_language": lang._named_prose_language(state),
+                "has_code_line": bool(lang._CODE_LINE.search(state)),
+                "has_joined_tokens": [bool(lang._JOINED.search(tok)) for tok in state.split()],
+                "blank_upper_runs": blanked,
+                "python_lower": state.lower(),
+                "strip": state.strip(),
+                "split_whitespace": state.split(),
+                "split_newline": state.split("\n"),
+                "count_alpha": sum(ch.isalpha() for ch in state),
+                "code_point_length": len(state),
+                "english_rescued_by_words": lang._english_rescued_by_words(
+                    lang._WORD.findall(lang._IDENTIFIER.sub(" ", state).replace("\u0130", "i").lower()),
+                    profile["diacritic_rate"]),
+            }
+        return row
+
+    return {
+        "notes": lang_detect.__doc__,
+        "thresholds": {
+            "non_en_diacritic_rate": lang.NON_EN_DIACRITIC_RATE,
+            "english_rescue_diacritic_rate": lang.ENGLISH_RESCUE_DIACRITIC_RATE,
+            "non_latin_fraction": lang.NON_LATIN_FRACTION,
+            "non_latin_min_fraction": lang.NON_LATIN_MIN_FRACTION,
+            "non_latin_min_letters": lang.NON_LATIN_MIN_LETTERS,
+        },
+        "unicode_version": unicodedata.unidata_version,
+        "unicode_digests": _unicode_digests(),
+        "round_to_int": _round_to_int_cases(),
+        "cases": [record(name, state) for name, state in cases]
+                 + [record(name, state) for name, state in structured],
+    }
 
 def presets():
     """The preset question dicts exactly as a caller receives them, and as the model is shown them.
@@ -693,6 +1049,7 @@ def predict_golden():
 
 FAMILIES = {
     "lang_tables.json": lang_tables,
+    "lang_detect.json": lang_detect,
     "presets.json": presets,
     "tokenizer_ids.json": tokenizer_ids,
     "sequences.json": sequences,
