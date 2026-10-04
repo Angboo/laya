@@ -94,6 +94,22 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
+## What's new in 0.3.27
+
+* **A plain `import laya` no longer crashes when TensorFlow is installed.** transformers 4.x imports TensorFlow while laya builds the model, and a broken TF build turns that into `Fatal Python error: Bus error` from a library laya never uses (#915). The package now sets `USE_TF=0` the way CI, the Dockerfile and the examples already did.
+* **Per-call hooks reach the batch path.** `Router.predict_batch` and `Router.route_batch` take `hooks`, `on_predict_start`, `on_predict_end` and `hooks_raise`, matching `predict` (#909). The batched dispatch also composes installed hooks properly, so a `set_default_hooks` default no longer fires on `predict` and silently vanishes on `predict_batch`.
+* **A stale abstention flag is cleared on re-evaluation.** Re-running the gate on a reused result dict with a more permissive threshold used to leave `low_confidence: True` behind, so downstream callers treated the answer as permanently abstained (#910).
+* **`predict_long` runs its scan after the hook chain** rather than as a start hook, so laya's own forward pass no longer executes inside `dispatch()` and inherits the caller's hook machinery.
+* **Abstention thresholds are fitted on the scale the gate reads.** With a histogram-binning map installed, the runtime reports a binned confidence; `fit_abstention_thresholds` now fits against that instead of the temperature-scaled value, so a fitted cut and the gate agree.
+* **Selective-classification metrics no longer split tied confidences.** `selective_accuracy` and `aurc` cut at a row index, so with ties the result depended on dataset order. Ties are the normal case for `answer_confidence`, not a corner.
+* **Java.** `laya-java/` is a JVM inference package with the same live parity gate the .NET port uses: fixtures generated from the Python package by a committed script, a drift check, and a skip guard so a missing artifact fails rather than passes. The lane is advisory for the same reason the .NET one is.
+* **French email.** Device footers with ordinary spacing are matched, not only the tight spacing the original samples happened to have.
+* **MPS autocast, measured on an M1 Pro.** `mps_amp_min_rows` has defaulted to 5 since #109 on the strength of one M5 measurement, hedged for M1 to M5. `BENCHMARKS.md` now carries paired fp32-against-fp16 numbers on an M1 Pro, with the script that produces them.
+
+9 pull requests from 7 contributors.
+
+---
+
 ## What's new in 0.3.26
 
 A small release: one new SDK, one TypeScript port, and the dependency bumps.
