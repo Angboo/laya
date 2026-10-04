@@ -155,13 +155,16 @@ def encode_state(tok, state: Any, max_len: int) -> List[int]:
 
 
 def make_item(tok, q: Dict[str, Any], target: Sequence[float], state_ids: List[int],
-              head_max_len: int) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+              head_max_len: int, max_len: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """`(item, None)`, or `(None, reason)` when the question cannot be trained on as written.
 
     `q` is an internal question (`to_internal`). The reasons are `target_mismatch` (the target
-    does not have one entry per option) and `options_collapsed` (the head budget left two options
-    with the same token span, #538). Training on either would teach the model to tell apart
-    options it cannot see as different.
+    does not have one entry per option), `options_collapsed` (the head budget left two options
+    with the same token span, #538) and, when `max_len` is given, `options_beyond_max_len` (the
+    head is longer than `max_len`, so `build_sequence` drops the markers of the last options --
+    the case `Agent` refuses at inference with "only N of its M option markers fit"). Training on
+    any of them would teach the model to tell apart options it cannot see as different, or crash
+    the batch on a target longer than its markers.
     """
     k = len(render_options(q))
     if len(target) != k:
@@ -169,6 +172,8 @@ def make_item(tok, q: Dict[str, Any], target: Sequence[float], state_ids: List[i
     _ids, markers, stats = build_head(tok, q, head_max_len)
     if len(markers) != k or stats["options_distinct"] < stats["options"]:
         return None, "options_collapsed"
+    if max_len is not None and markers and markers[-1] >= max_len:
+        return None, "options_beyond_max_len"
     return {"q": q, "state_ids": state_ids, "target": [float(v) for v in target],
             "qtype": QTYPES[q["t"]], "k": k}, None
 
@@ -179,7 +184,7 @@ def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
 
     `skipped` counts, by reason, questions that were labelled but could not become an item:
     `invalid_question` and `invalid_target` (a `ValueError` from `to_internal` or
-    `target_from_gold`), plus the two reasons `make_item` gives. Questions with no gold entry
+    `target_from_gold`), plus the reasons `make_item` gives. Questions with no gold entry
     are not counted -- the row simply does not label them.
     """
     items, skipped = [], {}
@@ -200,7 +205,7 @@ def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
                 except (ValueError, TypeError, KeyError):
                     reason = "invalid_target"
             if reason is None:
-                item, reason = make_item(tok, q, target, state_ids, head_max_len)
+                item, reason = make_item(tok, q, target, state_ids, head_max_len, max_len)
             if reason is None:
                 items.append(item)
             else:
