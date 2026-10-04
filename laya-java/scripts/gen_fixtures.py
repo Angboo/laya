@@ -20,7 +20,6 @@ Phase 0 families (no model weights needed -- these are the tables and the text t
 import argparse
 import json
 import os
-import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -402,7 +401,6 @@ def decode_answers():
     magnitudes that would overflow a naive `exp`, and the language override -- and so the fixture
     does not need a 1.2 GB graph to regenerate.
     """
-    import math
     import os
 
     import numpy as np

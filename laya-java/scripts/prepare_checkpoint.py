@@ -6,9 +6,9 @@ part of a CI run (minutes), while regenerating the fixtures from the Python code
 must happen on every commit (seconds). Splitting them lets the workflow cache the first and never
 cache the second.
 
-Writes
-    <repo>/checkpoints-java/<name>/            the checkpoint, as `Agent.open` expects it
-    <repo>/onnx-java/<name>/laya.onnx          the fused graph, as `LayaSession.open` expects it
+Writes, under `laya-java/.work/` so the repository root stays clean and one `.gitignore` covers it
+    laya-java/.work/checkpoints/<name>/        the checkpoint, as `Agent.open` expects it
+    laya-java/.work/onnx/<name>/laya.onnx      the fused graph, as `LayaSession.open` expects it
 
 Usage:
     python laya-java/scripts/prepare_checkpoint.py --checkpoint multilingual
@@ -29,13 +29,27 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 HF_REPO = "convaiinnovations/laya"
 HF_REVISION = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
 
-# What `Agent.open` reads, plus what the exporter needs to trace the model.
-WANTED = ("rl_agent_config.json", "model.safetensors", "config.json",
-          "tokenizer.json", "tokenizer/*", "encoder/*")
+# What `Agent.open` and the fixture generator read: the budgets, the fitted temperatures and the
+# tokenizer. No weights.
+WANTED_LIGHT = ("rl_agent_config.json", "config.json", "tokenizer.json", "tokenizer/*")
+# Plus what the exporter needs to trace the model.
+WANTED = WANTED_LIGHT + ("model.safetensors", "encoder/*")
 
 
-def snapshot(name, revision):
-    """The pinned checkpoint directory in the Hugging Face cache, downloading on first use."""
+def fetch(name, revision, destination, with_weights=True):
+    """Materialise exactly the wanted files of one checkpoint at `destination`.
+
+    `local_dir`, not the shared cache. `snapshot_download` returns the cache ROOT, and
+    `allow_patterns` governs only what it DOWNLOADS -- anything already cached from another run is
+    still sitting there. The english checkpoint has no subfolder, so its directory IS the
+    repository root and contains `multilingual/` and `typed-decisions/` as children: copying that
+    root produced a 2.2 GB "tokenizer only" checkpoint, which is how this was found.
+
+    `with_weights=False` fetches only what the tokenizer and sequence fixtures need. Three of the
+    fixture families cover BOTH checkpoints in one document, so a parity run has to hold both -- but
+    only the one the end-to-end golden was recorded from needs a graph, and therefore weights. The
+    other is a few megabytes this way instead of a few gigabytes.
+    """
     from huggingface_hub import snapshot_download
 
     sys.path.insert(0, REPO)
@@ -51,9 +65,25 @@ def snapshot(name, revision):
             "HF_REVISION here and in laya-dotnet/tools/regen_golden.py together"
             % (name, repo, HF_REPO))
     prefix = (subfolder + "/") if subfolder else ""
-    root = snapshot_download(repo, revision=revision,
-                             allow_patterns=[prefix + pattern for pattern in WANTED])
-    return os.path.join(root, subfolder) if subfolder else root
+    wanted = WANTED if with_weights else WANTED_LIGHT
+
+    staging = destination + ".partial"
+    for path in (staging, destination):
+        if os.path.exists(path):
+            shutil.rmtree(path)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    snapshot_download(repo, revision=revision, local_dir=staging,
+                      allow_patterns=[prefix + pattern for pattern in wanted])
+    source = os.path.join(staging, subfolder) if subfolder else staging
+    if not os.path.isfile(os.path.join(source, "rl_agent_config.json")):
+        raise SystemExit(
+            "the download produced no rl_agent_config.json at %s; the pinned revision's layout "
+            "may have changed" % source)
+    # Moved rather than copied, so a checkpoint is never on disk twice.
+    os.replace(source, destination)
+    if os.path.exists(staging):
+        shutil.rmtree(staging)
+    return destination
 
 
 def main(argv=None):
@@ -62,21 +92,28 @@ def main(argv=None):
     parser.add_argument("--revision", default=HF_REVISION)
     parser.add_argument("--force", action="store_true",
                         help="re-export even when the graph is already present")
+    parser.add_argument("--no-graph", action="store_true",
+                        help="fetch only the tokenizer and config, and do not export a graph: "
+                             "enough for the tokenizer and sequence fixtures, which cover both "
+                             "checkpoints, without paying for weights this run will not trace")
     args = parser.parse_args(argv)
 
-    model_dir = os.path.join(REPO, "checkpoints-java", args.checkpoint)
-    graph_dir = os.path.join(REPO, "onnx-java", args.checkpoint)
+    work = os.path.join(REPO, "laya-java", ".work")
+    model_dir = os.path.join(work, "checkpoints", args.checkpoint)
+    graph_dir = os.path.join(work, "onnx", args.checkpoint)
     graph = os.path.join(graph_dir, "laya.onnx")
 
-    print("downloading %s at %s" % (args.checkpoint, args.revision[:12]), flush=True)
-    cached = snapshot(args.checkpoint, args.revision)
-    # Copied out of the cache rather than used in place: the cache path contains the revision and
-    # the tests take a plain directory, and a copy keeps a cached export from pointing into a
-    # directory a later `snapshot_download` may garbage-collect.
-    if os.path.exists(model_dir):
-        shutil.rmtree(model_dir)
-    shutil.copytree(cached, model_dir, symlinks=False)
-    print("  checkpoint at %s" % os.path.relpath(model_dir, REPO))
+    print("downloading %s at %s%s" % (args.checkpoint, args.revision[:12],
+                                      " (tokenizer and config only)" if args.no_graph else ""),
+          flush=True)
+    fetch(args.checkpoint, args.revision, model_dir, with_weights=not args.no_graph)
+    size = sum(os.path.getsize(os.path.join(root, f))
+               for root, _dirs, files in os.walk(model_dir) for f in files)
+    print("  checkpoint at %s (%.1f MB)" % (os.path.relpath(model_dir, REPO), size / 1e6))
+
+    if args.no_graph:
+        print("  --no-graph: no export, as asked")
+        return 0
 
     if os.path.exists(graph) and os.path.getsize(graph) > 0 and not args.force:
         print("  graph already exported at %s (use --force to redo it)"
