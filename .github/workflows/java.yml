@@ -70,7 +70,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 390 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 440 --allow-aborted
 
       # LAST, deliberately. This gate and the tests are independent signals -- the tests compare
       # against the COMMITTED fixture, this compares the committed fixture against a fresh
@@ -172,7 +172,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 540
+          laya-java/laya-java/build/test-results/test --min-tests 590
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}

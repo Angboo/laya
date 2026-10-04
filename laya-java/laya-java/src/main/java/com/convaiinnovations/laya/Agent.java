@@ -40,7 +40,7 @@ import java.util.Map;
  * <p>One session is not safe for concurrent {@code predict} calls unless ONNX Runtime is
  * configured for it; hold one {@code Agent} per worker, or serialise access.
  */
-public final class Agent implements AutoCloseable {
+public final class Agent implements AutoCloseable, Predictor {
 
     private final Tokenizer tokenizer;
     private final AgentConfig config;

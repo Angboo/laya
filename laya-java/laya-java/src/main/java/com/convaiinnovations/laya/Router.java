@@ -39,7 +39,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>This class decides; it does not load. {@link #route} runs no model and touches no disk, so it
  * is safe to call on every request and to test without a checkpoint.
  */
-public final class Router implements AutoCloseable {
+public final class Router implements AutoCloseable, Predictor {
 
     /** The hub repository that bundles all three checkpoints. */
     public static final String BUNDLE_REPO = "convaiinnovations/laya";

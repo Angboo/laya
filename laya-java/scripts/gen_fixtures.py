@@ -791,6 +791,297 @@ def router():
         "question_schema": [[schema, mod._question_schema(schema)] for schema in schemas],
         "routes": [dict(route_case(options), name=name) for name, options in cases],
     }
+# A deterministic stand-in for a real embedder, so the ranking can be gated across languages.
+# FNV-1a over the UTF-8 bytes of "text:component", mapped into [-1, 1). Chosen because it is
+# exactly reproducible in any language with 64-bit integer arithmetic -- no floating point, no
+# library, no seeded PRNG whose stream differs between runtimes. A real bi-encoder cannot be put
+# in a fixture; what needs gating is the ranking, the tie order and the passthrough rule, and those
+# do not care where the vectors came from.
+_FNV_OFFSET = 0xCBF29CE484222325
+_FNV_PRIME = 0x100000001B3
+_FNV_MASK = 0xFFFFFFFFFFFFFFFF
+_EMBED_DIM = 8
+
+
+def _fnv1a(data: bytes) -> int:
+    value = _FNV_OFFSET
+    for byte in data:
+        value = ((value ^ byte) * _FNV_PRIME) & _FNV_MASK
+    return value
+
+
+def _stub_embed(texts):
+    import numpy as np
+
+    rows = []
+    for text in texts:
+        row = []
+        for component in range(_EMBED_DIM):
+            key = ("%s:%d" % ("" if text is None else text, component)).encode("utf-8")
+            row.append((_fnv1a(key) % 2000) / 1000.0 - 1.0)
+        rows.append(row)
+    return np.asarray(rows, dtype=np.float64)
+
+
+class _FakeAgent:
+    """Records what `predict_shortlist` actually asked, which is the thing to gate."""
+
+    def __init__(self):
+        self.seen = None
+
+    def predict(self, state, questions, **kwargs):
+        self.seen = {
+            "questions": {qid: dict(qdef) for qid, qdef in questions.items()},
+            "kwargs": {k: v for k, v in sorted(kwargs.items())},
+        }
+        return {"answers": {qid: {"stub": True} for qid in questions}, "model": "stub"}
+
+
+def shortlist():
+    """`laya.shortlist`'s ranking, its edge cases, and what it hands to `predict`.
+
+    Choice options share one `head_max_len`, so a large label set leaves a few tokens per label.
+    Shortlisting embeds the state and each option, keeps the top k, and runs ONE predict on the
+    reduced set. The parts that need gating are not the embedding -- a caller supplies that -- but
+    the ranking rules around it, and each of them is a place a port goes wrong silently:
+
+      * the sort is STABLE and descending, so a tie keeps the earlier label. `argsort` without
+        `kind="mergesort"` reorders ties, which changes which labels survive at the cut.
+      * the score is a SIGNED cosine, not a similarity floor. A label scoring 0 -- no signal, or a
+        non-finite vector treated as none -- outranks one scoring negative, and k drops the
+        negatives first.
+      * a zero-norm query scores everything 0, so the kept set is the first k in criteria order.
+      * non-finite components become 0 rather than propagating or raising.
+      * k >= the label count is a passthrough: the labels come back in criteria order, scores are
+        None, and the embedder is NEVER called.
+    """
+    from laya import shortlist as mod
+
+    criteria_small = {"refund": "money back", "technical": "a bug", "billing": "an invoice"}
+    criteria_large = {
+        "card_arrival": "where is my new card",
+        "card_delivery_estimate": "when will the card arrive",
+        "card_not_working": "the card is declined",
+        "cash_withdrawal_charge": "charged for an ATM withdrawal",
+        "declined_card_payment": "a payment was declined",
+        "direct_debit_payment_not_recognised": "an unrecognised direct debit",
+        "exchange_rate": "what rate was applied",
+        "failed_transfer": "a transfer did not arrive",
+        "lost_or_stolen_card": "the card is gone",
+        "pending_card_payment": "a payment is still pending",
+        "refund_not_showing_up": "a refund has not arrived",
+        "request_refund": "I want money back",
+        "reverted_card_payment": "a payment was reversed",
+        "top_up_failed": "a top up did not work",
+        "transfer_fee_charged": "charged a fee for a transfer",
+        "verify_my_identity": "identity verification",
+        "wrong_amount_of_cash_received": "the ATM gave the wrong amount",
+    }
+    criteria_tied = {"a": None, "b": None, "c": None, "d": None}
+    criteria_one = {"only": "the only option"}
+
+    states = {
+        "string": "My card was charged twice for the same order last Tuesday.",
+        "structured": {"subject": "duplicate charge", "body": "billed twice in March"},
+        "empty": "",
+        "none": None,
+        "non_latin": "注文が届きません",
+    }
+
+    cases = []
+
+    def record(name, state, criteria, k, instructions=None):
+        labels, scores = mod.shortlist_choice(
+            state, criteria, _stub_embed, k, instructions=instructions, return_scores=True)
+        items = mod._criteria_items(criteria)
+        cases.append({
+            "name": name,
+            "state": _state_repr(state),
+            "criteria": criteria,
+            "k": k,
+            "instructions": instructions,
+            "query_text": mod._query_text(state, instructions),
+            "option_texts": mod._option_texts(items),
+            "labels": list(labels),
+            "scores": None if scores is None else [_round_score(v) for v in scores],
+            "passthrough": scores is None,
+            "n": len(items),
+            "subset_criteria": (None if scores is None
+                                else mod._subset_criteria(criteria, labels)),
+        })
+
+    record("large-top-5", states["string"], criteria_large, 5)
+    record("large-top-1", states["string"], criteria_large, 1)
+    record("large-top-16-of-17", states["string"], criteria_large, 16)
+    record("large-k-equals-n", states["string"], criteria_large, 17)
+    record("large-k-over-n", states["string"], criteria_large, 99)
+    record("small-k-2", states["string"], criteria_small, 2)
+    record("one-option-k-1", states["string"], criteria_one, 1)
+    record("structured-state", states["structured"], criteria_large, 4)
+    record("empty-state", states["empty"], criteria_large, 4)
+    record("none-state", states["none"], criteria_large, 4)
+    record("non-latin-state", states["non_latin"], criteria_large, 4)
+    record("with-instructions", states["string"], criteria_large, 4,
+           "What does the customer want in `body`?")
+    record("instructions-empty-string", states["string"], criteria_large, 4, "")
+    # criteria with no descriptions: the option text is the bare label
+    record("no-descriptions", states["string"], criteria_tied, 2)
+    # a list of labels is a legal choice criteria in the reference
+    record("list-criteria", states["string"], ["alpha", "beta", "gamma", "delta"], 2)
+
+    # --- the cosine itself, on the vectors a port gets wrong
+    import numpy as np
+
+    cosine_cases = []
+    for name, query, docs in [
+        ("ordinary", [1.0, 0.0], [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+        ("zero-query", [0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]]),
+        ("zero-doc", [1.0, 0.0], [[0.0, 0.0], [1.0, 0.0]]),
+        ("all-zero", [0.0, 0.0], [[0.0, 0.0]]),
+        ("negatives", [1.0, 1.0], [[-1.0, -1.0], [1.0, 1.0], [0.0, 0.0]]),
+        ("needs-clipping", [1e-200, 1e-200], [[1e-200, 1e-200]]),
+        ("large-magnitudes", [1e200, 1e200], [[1e200, 1e200], [-1e200, 1e200]]),
+        ("no-docs", [1.0, 1.0], []),
+        # A query whose norm UNDERFLOWS to zero while its dot product does not. Without the
+        # zero-norm guard the score would be 1.4e-200 instead of 0 -- a difference no rounded
+        # comparison can see, which is why the port asserts this one exactly.
+        ("underflowing-query", [1e-200, 1e-200], [[1.0, 1.0]]),
+        # A vector whose self-cosine computes just ABOVE 1, so the clamp is observable. Also
+        # invisible to a rounded comparison: 1.0000000000000002 and 1.0 agree to twelve decimals.
+        ("self-cosine-over-one", [1.0 / 3.0, 1.0 / 3.0, 8.0 / 3.0],
+         [[1.0 / 3.0, 1.0 / 3.0, 8.0 / 3.0]]),
+    ]:
+        q = np.asarray(query, dtype=np.float64)
+        d = np.asarray(docs, dtype=np.float64).reshape(len(docs), len(query) if docs else 0)
+        if not docs:
+            d = np.zeros((0, len(query)), dtype=np.float64)
+        # Tagged, not written bare: a vector whose norm overflows gives inf/inf, so the
+        # reference's cosine really does return NaN here -- and `NaN` is not JSON. Writing it
+        # bare produced a fixture that Python reads back happily and a strict reader rejects.
+        cosine_cases.append({"name": name, "query": query, "docs": docs,
+                             "sims": [_round_score(v) for v in mod._cosine(q, d)]})
+
+    # --- non-finite components must become zero, not propagate
+    nonfinite = []
+    for name, rows in [
+        ("nan", [[float("nan"), 1.0], [1.0, 0.0]]),
+        ("posinf", [[float("inf"), 1.0], [1.0, 0.0]]),
+        ("neginf", [[float("-inf"), 1.0], [1.0, 0.0]]),
+        ("all-nan", [[float("nan"), float("nan")], [1.0, 0.0]]),
+    ]:
+        cleaned = mod._embeddings(lambda texts, rows=rows: np.asarray(rows, dtype=np.float64),
+                                 ["q", "d"])
+        nonfinite.append({"name": name, "rows": [[_json_float(v) for v in row] for row in rows],
+                          "cleaned": [[float(v) for v in row] for row in cleaned]})
+
+    # --- refusals: every input the reference rejects, and the message it rejects it with
+    refusals = []
+    for name, call in [
+        ("k-zero", lambda: mod.shortlist_choice("s", criteria_small, _stub_embed, 0)),
+        ("k-negative", lambda: mod.shortlist_choice("s", criteria_small, _stub_embed, -1)),
+        ("k-bool", lambda: mod.shortlist_choice("s", criteria_small, _stub_embed, True)),
+        ("criteria-empty-dict", lambda: mod.shortlist_choice("s", {}, _stub_embed, 2)),
+        ("criteria-empty-list", lambda: mod.shortlist_choice("s", [], _stub_embed, 2)),
+        ("criteria-wrong-type", lambda: mod.shortlist_choice("s", "nope", _stub_embed, 2)),
+        ("criteria-duplicate-label",
+         lambda: mod.shortlist_choice("s", ["a", "a"], _stub_embed, 1)),
+        ("embed-not-callable", lambda: mod.shortlist_choice("s", criteria_small, None, 2)),
+        ("embed-wrong-rows",
+         lambda: mod.shortlist_choice("s", criteria_small, lambda t: [[1.0]], 2)),
+        ("embed-one-dimensional",
+         lambda: mod.shortlist_choice("s", criteria_small, lambda t: [1.0] * (len(t)), 2)),
+        ("questions-not-dict",
+         lambda: mod.predict_shortlist(_FakeAgent(), "s", [], _stub_embed, 2)),
+        ("choice-without-criteria",
+         lambda: mod.predict_shortlist(_FakeAgent(), "s",
+                                       {"q": {"type": "choice"}}, _stub_embed, 2)),
+    ]:
+        try:
+            call()
+            refusals.append({"name": name, "error": None})
+        except Exception as failure:
+            refusals.append({"name": name, "error": type(failure).__name__,
+                             "message": str(failure)})
+
+    # --- what predict_shortlist hands to predict, which is the whole point of the module
+    predicts = []
+    for name, questions, k in [
+        ("choice-reduced", {"intent": {"type": "choice",
+                                       "instructions": "What does the customer want?",
+                                       "criteria": criteria_large}}, 4),
+        ("choice-passthrough", {"intent": {"type": "choice", "instructions": "x",
+                                           "criteria": criteria_small}}, 20),
+        ("mixed-questions", {
+            "intent": {"type": "choice", "instructions": "What?", "criteria": criteria_large},
+            "urgent": {"type": "noul", "instructions": "Is this urgent?"},
+            "severity": {"type": "score", "instructions": "How bad?",
+                         "criteria": ["low", "high"]},
+        }, 3),
+        ("two-choices", {
+            "a": {"type": "choice", "instructions": "A?", "criteria": criteria_large},
+            "b": {"type": "choice", "instructions": "B?", "criteria": criteria_small},
+        }, 2),
+    ]:
+        agent = _FakeAgent()
+        original = {qid: dict(qdef) for qid, qdef in questions.items()}
+        result = mod.predict_shortlist(agent, states["string"], questions, _stub_embed, k)
+        predicts.append({
+            "name": name,
+            "k": k,
+            "questions": original,
+            "asked": agent.seen["questions"],
+            "shortlist": result["shortlist"],
+            "caller_questions_unmutated": original == {qid: dict(q)
+                                                       for qid, q in questions.items()},
+        })
+
+    return {
+        "notes": shortlist.__doc__,
+        "score_decimals": _SCORE_DECIMALS,
+        "default_k": mod.DEFAULT_SHORTLIST_K,
+        "embed_dim": _EMBED_DIM,
+        "embed_probe": {text: [float(v) for v in _stub_embed([text])[0]]
+                        for text in ["", "a", "refund: money back", states["string"]]},
+        "cases": cases,
+        "cosine": cosine_cases,
+        "nonfinite": nonfinite,
+        "refusals": refusals,
+        "predicts": predicts,
+    }
+
+
+# How many decimals of a cosine are safe to record. The reference computes its scores with
+# `np.dot(matrix, vector)`, a BLAS matrix-vector product, and how BLAS blocks that accumulation
+# differs between implementations -- measured here: on Apple Accelerate one row of a four-row
+# product differs from the same row computed on its own, in the last bit. So the raw score is not
+# reproducible across machines, let alone across languages: recording it verbatim would make this
+# fixture disagree with itself between a developer's macOS and CI's Linux, and the drift gate would
+# fail for a reason that has nothing to do with any port.
+#
+# Twelve decimals is about four orders of magnitude tighter than any porting error that has ever
+# shown up in this repository, and about four orders LOOSER than the 1e-16 BLAS spread, so it
+# separates the two cleanly. What stays exact is the LABEL ORDER, which is the only thing a
+# consumer can observe -- and the thing a ranking bug actually changes.
+_SCORE_DECIMALS = 12
+
+
+def _round_score(value):
+    """A cosine rounded to a precision BLAS blocking cannot move, or tagged when non-finite."""
+    value = float(value)
+    if value != value or value in (float("inf"), float("-inf")):
+        return _json_float(value)
+    return round(value, _SCORE_DECIMALS)
+
+
+def _json_float(value):
+    """NaN and the infinities have no JSON spelling, so they are tagged for a port to rebuild."""
+    if value != value:
+        return "nan"
+    if value == float("inf"):
+        return "inf"
+    if value == float("-inf"):
+        return "-inf"
+    return value
 
 def tokenizer_ids():
     """Exact token ids per checkpoint for a corpus designed to break a port.
@@ -1385,6 +1676,7 @@ FAMILIES = {
     "lang_detect.json": lang_detect,
     "presets.json": presets,
     "router.json": router,
+    "shortlist.json": shortlist,
     "tokenizer_ids.json": tokenizer_ids,
     "sequences.json": sequences,
     "decode.json": decode_answers,
