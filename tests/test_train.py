@@ -432,15 +432,16 @@ class CalibrationReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             make_checkpoint(root / "base", make_tokenizer())
-            data = root / "train.jsonl"
-            data.write_text("\n".join(json.dumps(r) for r in rows(2)), encoding="utf-8")
             config = TrainConfig(epochs=1, micro_batch=8, grad_accum=1, calib_frac=0.2, log_every=0)
+            # The rows go straight to finetune through read_jsonl rather than through a file: nothing
+            # here needs the JSONL parsing, which the end-to-end tests above already cover.
             # warnings.catch_warnings, not assertWarns: assertWarns walks every loaded module, and
             # transformers' lazy modules then try to import optional packages such as torchvision.
             with patch("huggingface_hub.snapshot_download", side_effect=AssertionError("unexpected download")), \
+                    patch("laya.train.read_jsonl", return_value=rows(2)), \
                     warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                report = finetune(str(data), str(root / "base"), str(root / "out"), config, device="cpu")
+                report = finetune("rows.jsonl", str(root / "base"), str(root / "out"), config, device="cpu")
             saved = json.loads((root / "out" / "rl_agent_config.json").read_text())
         messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
         self.assertTrue(any(re.match(r"laya\.train: \w+ calibration: not fitted", m) for m in messages), messages)
