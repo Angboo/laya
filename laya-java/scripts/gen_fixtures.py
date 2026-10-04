@@ -447,6 +447,43 @@ def presets():
                 continue
         if isinstance(value, dict):
             out[name] = value
+
+    # `state_field` is the other half of the module and was not recorded: it reads the backtick
+    # convention out of each preset's instructions, so a port that retyped one instruction without
+    # its backticks would still match the question dicts above and then silently report that the
+    # preset names no field. Recorded per preset, plus the inputs that must answer None -- a spec
+    # that names nothing, one that names two different fields, and the empty mapping.
+    hostile = {
+        "no-backticks": {"q": {"type": "noul", "instructions": "Is this urgent?"}},
+        "two-fields": {
+            "a": {"type": "noul", "instructions": "Does `message` ask for a refund?"},
+            "b": {"type": "noul", "instructions": "Is `body` urgent?"},
+        },
+        "same-field-twice": {
+            "a": {"type": "noul", "instructions": "Does `message` ask for a refund?"},
+            "b": {"type": "noul", "instructions": "Is `message` urgent?"},
+        },
+        "empty": {},
+        "missing-instructions": {"q": {"type": "noul"}},
+        "null-instructions": {"q": {"type": "noul", "instructions": None}},
+        "non-word-backticks": {"q": {"type": "noul", "instructions": "Read `a-b` and `c d`."}},
+        "underscored-field": {"q": {"type": "noul", "instructions": "Read `customer_message`."}},
+        "backtick-in-criteria-only": {
+            "q": {"type": "choice", "instructions": "Pick one.",
+                  "criteria": {"x": "look at `message`"}},
+        },
+    }
+    out["state_field"] = {name: mod.state_field(spec) for name, spec in out.items()
+                          if isinstance(spec, dict)}
+    out["state_field_hostile"] = {name: mod.state_field(spec)
+                                  for name, spec in hostile.items()}
+    out["hostile_specs"] = hostile
+    # `email_questions` is the one preset that takes an argument, and a caller's categories must
+    # replace the defaults rather than merge with them.
+    out["email_questions_custom"] = mod.email_questions(
+        {"ops": "incidents and deploys", "legal": "contracts and compliance"})
+    out["email_questions_empty_categories"] = mod.email_questions({}) \
+        if mod.email_questions({}) is not None else None
     return out
 
 
