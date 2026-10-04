@@ -31,7 +31,10 @@ env:
 
 jobs:
   build:
-    name: build + model-free tests
+    # Prefixed, because `dotnet.yml` already has jobs called "build + model-free tests" and
+    # "parity (english)": without a prefix the pull request's checks list shows each name twice
+    # and a reader cannot tell which lane failed.
+    name: jvm build + model-free tests
     runs-on: ubuntu-latest
     continue-on-error: true   # advisory: see the header
     timeout-minutes: 25
@@ -53,9 +56,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install "torch==2.14.0" --index-url https://download.pytorch.org/whl/cpu
           pip install -r laya-dotnet/tools/requirements-regen.txt
-      - name: Model-free fixture drift vs. committed
-        run: python laya-java/scripts/gen_fixtures.py --check --only python_json.json
-
       # -Werror is on, so this fails on a warning as well as an error.
       - name: Build (warnings are errors)
         working-directory: laya-java
@@ -72,6 +72,14 @@ jobs:
           python laya-java/scripts/check_test_results.py
           laya-java/laya-java/build/test-results/test --min-tests 80 --allow-aborted
 
+      # LAST, deliberately. This gate and the tests are independent signals -- the tests compare
+      # against the COMMITTED fixture, this compares the committed fixture against a fresh
+      # recording -- and running it first meant a stale fixture skipped the build and the tests
+      # entirely, so the run said nothing about whether the code worked.
+      - name: Model-free fixture drift vs. committed
+        if: ${{ !cancelled() }}
+        run: python laya-java/scripts/gen_fixtures.py --check --only python_json.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
         with:
@@ -79,7 +87,7 @@ jobs:
           path: laya-java/laya-java/build/reports
 
   parity:
-    name: parity (${{ matrix.checkpoint }})
+    name: jvm parity (${{ matrix.checkpoint }})
     runs-on: ubuntu-latest
     continue-on-error: true   # advisory: see the header
     timeout-minutes: 75

@@ -523,8 +523,14 @@ def python_json():
     Doubles are carried as raw 64-bit patterns rather than as decimal text: the point of the
     fixture is the SPELLING of a double, so round-tripping the operand through a decimal literal
     would lose the very thing being measured.
+
+    **Nothing here may go through libm.** `math.exp`, and `10 ** n` for a large negative n, are C
+    library calls, and those are not bit-identical across platforms: this family regenerated
+    differently on Linux than on macOS and CI reported the committed copy as stale. Every value is
+    now produced by an exact route -- a decimal literal (correctly rounded by strtod), IEEE
+    arithmetic, integer division, or a raw bit pattern -- so the file is a property of the seed
+    rather than of the machine that ran the generator.
     """
-    import math
     import random
     import struct
 
@@ -536,19 +542,28 @@ def python_json():
     hostile = [0.0, -0.0, 1.0, -1.0, 2.0, 0.5, 1.0 / 3, 2.0 / 3, 0.1, 0.2, 0.3,
                1e-5, 1e-4, 0.0001, 1e15, 1e16, 1e17, 1e23, 1e100, 1e-100, 1e308, 5e-324,
                2.2250738585072014e-308, 1.7976931348623157e308, 9007199254740993.0,
-               1e7, 1e-3, 123456789.123456789, math.pi, math.e,
+               1e7, 1e-3, 123456789.123456789,
+               # pi and e as literals rather than `math.pi` / `math.e`: the constants are
+               # identical everywhere, but writing them out keeps this family free of any `math`
+               # reference at all, which is the rule the docstring states.
+               3.141592653589793, 2.718281828459045,
                float("inf"), float("-inf"), float("nan")]
     rng = random.Random(1091)
     doubles = list(hostile)
     # Enough random draws to cover the exponent range and the raw bit patterns, kept small enough
     # that the committed file stays reviewable: the hostile list above is what actually
     # discriminates a wrong implementation, and these are the sweep behind it.
+    #
+    # `random()` is exact -- it scales Mersenne Twister integers by a power of two -- and a raw bit
+    # pattern is exact by construction and reaches the subnormals, the infinities and the NaNs that
+    # arithmetic would not. The previous version multiplied by `10 ** rng.randint(-320, 300)`,
+    # which is a libm `pow`, and that is what made this file machine-dependent.
     for _ in range(500):
         kind = rng.randrange(3)
         if kind == 0:
-            doubles.append(rng.uniform(-1, 1))
+            doubles.append(rng.random())
         elif kind == 1:
-            doubles.append(rng.choice([1, -1]) * 10 ** rng.randint(-320, 300) * rng.random())
+            doubles.append(-rng.random())
         else:
             doubles.append(struct.unpack("<d", struct.pack("<Q", rng.getrandbits(64)))[0])
 
@@ -563,16 +578,20 @@ def python_json():
         "a plain string", 123456789012345678901234567890, -7, True, None, [], {},
     ]
 
-    # Rounding: real softmax output, and the exactly-representable halfway values a half-up
+    # Rounding: probability-shaped values, and the exactly-representable halfway values a half-up
     # implementation gets wrong. Both groups are kept separate so a failure says which kind broke.
-    rounding = {"softmax": [], "halfway": [], "uniform": []}
+    #
+    # The distributions are built by integer division rather than by an actual softmax: `math.exp`
+    # is libm and would make the committed file machine-dependent. `weight / total` is one
+    # correctly-rounded IEEE division of two exact integers, so it is identical everywhere, and it
+    # still produces the normalised, unevenly-spread values a softmax produces -- which is all the
+    # rounding rule cares about.
+    rounding = {"distribution": [], "halfway": [], "uniform": []}
     for _ in range(100):
         k = rng.randint(2, 20)
-        z = [rng.gauss(0, 2) for _ in range(k)]
-        top = max(z)
-        exponentials = [math.exp(v - top) for v in z]
-        total = sum(exponentials)
-        rounding["softmax"].extend(v / total for v in exponentials)
+        weights = [rng.getrandbits(20) + 1 for _ in range(k)]
+        total = sum(weights)
+        rounding["distribution"].extend(weight / total for weight in weights)
     # Every 53rd step rather than every 7th: the step size does not matter, only that the values
     # are exact halves at the fourth decimal, and roughly a fifth of them discriminate half-up from
     # half-even -- which is ample at this size.

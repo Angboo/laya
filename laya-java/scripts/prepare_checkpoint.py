@@ -87,9 +87,17 @@ def main(argv=None):
     started = time.perf_counter()
     print("exporting the fused graph (this is the slow part)", flush=True)
     # The repository's own exporter, so the graph the Java tests run is the graph laya ships.
+    #
+    # PYTHONPATH, not just cwd: a script's `sys.path[0]` is the SCRIPT's directory, so
+    # `scripts/export_onnx.py` gets `<repo>/scripts` and `import laya` fails with
+    # ModuleNotFoundError even when the subprocess runs from the repository root. Setting it here
+    # rather than installing the package keeps the export measuring the working tree.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [REPO] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     subprocess.run([sys.executable, os.path.join(REPO, "scripts", "export_onnx.py"),
                     "--model", model_dir, "--output", graph],
-                   check=True, cwd=REPO)
+                   check=True, cwd=REPO, env=env)
     if not os.path.exists(graph) or os.path.getsize(graph) == 0:
         raise SystemExit("the exporter reported success but wrote no graph at %s" % graph)
     print("  %s (%.1f MB) in %.1f s"

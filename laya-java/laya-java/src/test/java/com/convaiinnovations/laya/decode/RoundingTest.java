@@ -13,9 +13,14 @@ import org.junit.jupiter.api.Test;
  * Every number in an answer goes through {@code round(value, 4)}, and Python rounds half to EVEN
  * on the exact binary value.
  *
- * <p>The fixture separates real softmax output from exactly-representable halfway values, because
- * the two groups say different things: on softmax output a half-up implementation also agrees, so
- * only the halfway group can tell the two rules apart. A failure names which group broke.
+ * <p>The fixture separates probability-shaped values from exactly-representable halfway values,
+ * because the two groups say different things: on ordinary values a half-up implementation also
+ * agrees, so only the halfway group can tell the two rules apart. A failure names which group
+ * broke.
+ *
+ * <p>The distribution group is built by integer division rather than by a real softmax: {@code exp}
+ * is a C library call and is not bit-identical across platforms, which made the committed fixture
+ * regenerate differently on Linux than on macOS and CI report it as stale.
  */
 final class RoundingTest {
 
@@ -36,16 +41,16 @@ final class RoundingTest {
     }
 
     @Test
-    @DisplayName("the laya-ts spelling agrees on softmax output and disagrees on halfway values")
+    @DisplayName("the laya-ts spelling agrees on ordinary values and disagrees on halfway ones")
     @SuppressWarnings("unchecked")
     void halfUpAgreesOnlyWhereItCan() {
         Map<String, Object> groups = (Map<String, Object>) Fixtures.load("python_json.json").get("round4");
-        int softmaxMismatches = countMismatches((List<Object>) groups.get("softmax"));
+        int ordinaryMismatches = countMismatches((List<Object>) groups.get("distribution"));
         int halfwayMismatches = countMismatches((List<Object>) groups.get("halfway"));
         // This is the measurement that justified departing from `laya-ts` here, kept as a test so
         // the claim cannot rot into a comment that is no longer true.
-        assertEquals(0, softmaxMismatches,
-                "half-up should match CPython on real softmax output");
+        assertEquals(0, ordinaryMismatches,
+                "half-up should match CPython on ordinary distribution values");
         assertTrue(halfwayMismatches > 0,
                 "the halfway group must actually discriminate the two rounding rules");
     }

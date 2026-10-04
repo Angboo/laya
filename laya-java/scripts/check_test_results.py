@@ -38,8 +38,15 @@ def main(argv=None):
 
     if os.path.isdir(args.results):
         files = sorted(glob.glob(os.path.join(args.results, "**", "*.xml"), recursive=True))
-    else:
+    elif os.path.isfile(args.results):
         files = [args.results]
+    else:
+        # Reached whenever an earlier step failed and the test step was skipped, because this
+        # check runs under `if: !cancelled()`. Crashing with a FileNotFoundError here buried the
+        # real failure under a stack trace from the wrong script.
+        print("check_test_results: %r does not exist, so no tests ran. The failure is in an "
+              "earlier step -- look there, not here." % args.results, file=sys.stderr)
+        return 1
     if not files:
         print("check_test_results: no JUnit XML under %r; the test task did not run"
               % args.results, file=sys.stderr)
