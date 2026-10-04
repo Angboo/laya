@@ -12,7 +12,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from laya.calibrate import fit_abstention_thresholds  # noqa: E402
+from laya.calibrate import (  # noqa: E402
+    apply_binning_map,
+    fit_abstention_thresholds,
+    fit_binning_map,
+)
 from laya.confidence import (  # noqa: E402
     check_min_confidence,
     check_min_confidence_map,
@@ -144,6 +148,61 @@ check_raises("validate/map non-string key rejected", ValueError,
              lambda: check_min_confidence_map({2: 0.9}))
 
 
+
+# --------------------------------------------------------------- thresholds vs a binning map
+# A histogram-binning map recalibrates `answer_confidence` at runtime (`Agent._decode_answers`),
+# so a cut fitted on the temperature-scaled scale gates a quantity the runtime no longer reports:
+# the same number admits far more than its target error. Fitting with the map puts both on one
+# scale, and then the order the two were fitted in stops mattering.
+import numpy as np  # noqa: E402
+
+_rng = np.random.default_rng(7)
+_binning_records = []
+for _ in range(1200):
+    _true = int(_rng.integers(12))
+    _z = _rng.normal(0.0, 1.0, 12)
+    _z[_true] += 2.2                        # usually right, sometimes not: a continuous spread
+    _t = [0.0] * 12
+    _t[_true] = 1.0
+    _binning_records.append((0, _z.tolist(), _t, 12))
+
+_temps, _tbo = [1.0, 1.0, 1.0], {}
+_bmap = fit_binning_map(_binning_records, _temps, _tbo)
+_cut_raw = fit_abstention_thresholds(_binning_records, _temps, _tbo, target_error=0.10)["choice:11+"]
+_cut_binned = fit_abstention_thresholds(_binning_records, _temps, _tbo, binning_map=_bmap,
+                                        target_error=0.10)["choice:11+"]
+
+
+def _gate_error(cut, binned):
+    """Coverage and error among accepted, when the runtime reports binned (or raw) confidences."""
+    accepted = wrong = 0
+    for qt, z, t, k in _binning_records:
+        p = np.exp(np.asarray(z) - max(z))
+        p = p / p.sum()
+        conf = float(p.max())
+        if binned:
+            conf = apply_binning_map(conf, "choice:11+", _bmap)
+        if conf >= cut:
+            accepted += 1
+            wrong += int(int(p.argmax()) != int(np.argmax(t)))
+    return accepted, (wrong / accepted if accepted else 0.0)
+
+
+_acc_raw, _err_raw = _gate_error(_cut_raw, binned=False)
+_acc_mismatch, _err_mismatch = _gate_error(_cut_raw, binned=True)
+_acc_fit, _err_fit = _gate_error(_cut_binned, binned=True)
+
+check_true("binning/an un-binned cut holds its target on its own scale", _err_raw <= 0.12,
+           "cut=%.4f accepted=%d error=%.3f" % (_cut_raw, _acc_raw, _err_raw))
+check_true("binning/the same cut stops gating once the runtime bins", _err_mismatch > 0.2,
+           "cut=%.4f accepted=%d error=%.3f" % (_cut_raw, _acc_mismatch, _err_mismatch))
+check_true("binning/fitting with the map restores the target", _err_fit <= 0.12,
+           "cut=%.4f accepted=%d error=%.3f" % (_cut_binned, _acc_fit, _err_fit))
+check_true("binning/the two cuts genuinely differ", abs(_cut_binned - _cut_raw) > 1e-9,
+           "raw=%.4f binned=%.4f" % (_cut_raw, _cut_binned))
+check("binning/no map leaves the fit unchanged",
+      fit_abstention_thresholds(_binning_records, _temps, _tbo, binning_map=None,
+                                target_error=0.10)["choice:11+"], _cut_raw)
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)
