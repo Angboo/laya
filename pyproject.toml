@@ -81,6 +81,7 @@ laya = "laya.cli:main"
 laya-serve = "laya.serve:main"
 laya-evals = "laya.evals_cli:main"
 laya-mcp-server = "laya.mcp.server:main"
+laya-train = "laya.train_cli:main"
 
 [project.urls]
 Homepage = "https://huggingface.co/convaiinnovations/laya"

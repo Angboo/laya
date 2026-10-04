@@ -88,6 +88,11 @@ class TrainConfig:
     amp: Optional[bool] = None
     gradient_checkpointing: Optional[bool] = None
     log_every: int = 100
+    label_smoothing: float = 0.0
+    text_column: str = "text"
+    label_column: str = "label"
+    question_id: str = "label"
+    instructions: Optional[str] = None
 
     def validate(self) -> None:
         if self.loss not in LOSSES:
@@ -101,6 +106,8 @@ class TrainConfig:
                 raise ValueError("%s must be a positive integer, got %r" % (name, value))
         if not 0.0 <= self.calib_frac < 1.0:
             raise ValueError("calib_frac must be in [0, 1), got %r" % (self.calib_frac,))
+        if isinstance(self.label_smoothing, bool) or not (0.0 <= self.label_smoothing < 1.0):
+            raise ValueError("label_smoothing must be in [0, 1), got %r" % (self.label_smoothing,))
 
 
 # ------------------------------------------------------------------------------------- data
@@ -148,6 +155,78 @@ def target_from_gold(q: Dict[str, Any], gold_q: Dict[str, Any]) -> List[float]:
     return [1.0 / len(target)] * len(target)
 
 
+def target_from_expected(q: Dict[str, Any], expected_val: Any,
+                         label_smoothing: float = 0.0) -> List[float]:
+    """The normalised target distribution from a single expected answer, in option order.
+
+    `expected_val` is:
+    - a choice label (str or value matching a criterion) for choice questions
+    - a boolean for noul questions
+    - an integer level index or level string for score questions
+
+    When `label_smoothing > 0`, smooths probability mass uniformly:
+    target[i] = (1 - eps) * one_hot[i] + eps / K.
+    """
+    if isinstance(label_smoothing, bool) or not (0.0 <= label_smoothing < 1.0):
+        raise ValueError("label_smoothing must be in [0, 1), got %r" % (label_smoothing,))
+
+    t, crit = q["t"], q["crit"]
+    k = len(render_options(q))
+    idx = None
+
+    if t == "choice":
+        keys = list(crit.keys())
+        if expected_val in crit:
+            idx = keys.index(expected_val)
+        else:
+            str_expected = str(expected_val)
+            for i, key in enumerate(keys):
+                if str(key) == str_expected:
+                    idx = i
+                    break
+        if idx is None:
+            raise ValueError("expected answer %r not found in choice options %r" % (expected_val, keys))
+    elif t == "noul":
+        if isinstance(expected_val, bool):
+            idx = 1 if expected_val else 0
+        elif isinstance(expected_val, (int, float)):
+            if expected_val in (0, 1) or expected_val in (0.0, 1.0):
+                idx = int(expected_val)
+            else:
+                raise ValueError("numeric noul expected answer must be 0 or 1, got %r" % (expected_val,))
+        elif isinstance(expected_val, str):
+            lower = expected_val.strip().lower()
+            if lower in ("true", "1", "yes"):
+                idx = 1
+            elif lower in ("false", "0", "no"):
+                idx = 0
+        if idx is None:
+            raise ValueError("expected answer %r cannot be parsed as a noul boolean" % (expected_val,))
+    else:  # score
+        keys = list(crit.keys()) if isinstance(crit, dict) else [str(i) for i in range(len(crit))]
+        try:
+            if not isinstance(expected_val, bool):
+                num = int(expected_val)
+                if 0 <= num < len(keys):
+                    idx = num
+        except (ValueError, TypeError):
+            pass
+        if idx is None:
+            str_val = str(expected_val)
+            for i, key in enumerate(keys):
+                if str(key) == str_val:
+                    idx = i
+                    break
+        if idx is None:
+            raise ValueError("expected answer %r not found in score levels %r" % (expected_val, keys))
+
+    target = [1.0 if i == idx else 0.0 for i in range(k)]
+    if label_smoothing > 0.0:
+        smooth_val = label_smoothing / k
+        target = [(1.0 - label_smoothing) * v + smooth_val for v in target]
+    return target
+
+
 def encode_state(tok, state: Any, max_len: int) -> List[int]:
     """State token ids, capped at `max_len`: no sequence can hold more of the state than that."""
     text = serialize_state(state).replace(tok.mask_token, " ")
@@ -174,29 +253,34 @@ def make_item(tok, q: Dict[str, Any], target: Sequence[float], state_ids: List[i
 
 
 def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
-                    head_max_len: int) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Items from `{state, questions, gold}` rows; returns `(items, skipped)`.
+                    head_max_len: int,
+                    label_smoothing: float = 0.0) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Items from `{state, questions, gold}` or `{state, questions, expected}` rows; returns `(items, skipped)`.
 
     `skipped` counts, by reason, questions that were labelled but could not become an item:
-    `invalid_question` and `invalid_target` (a `ValueError` from `to_internal` or
-    `target_from_gold`), plus the two reasons `make_item` gives. Questions with no gold entry
-    are not counted -- the row simply does not label them.
+    `invalid_question` and `invalid_target` (a `ValueError` from `to_internal`, `target_from_gold` or
+    `target_from_expected`), plus the two reasons `make_item` gives (`options_collapsed` and `target_mismatch`).
+    Questions with neither `gold` nor `expected` entry are not counted -- the row simply does not label them.
     """
     items, skipped = [], {}
     for row in rows:
         state_ids = encode_state(tok, row["state"], max_len)
         for qid, question in row["questions"].items():
-            gold_q = row["gold"].get(qid)
-            if gold_q is None:
+            gold_q = row.get("gold", {}).get(qid) if isinstance(row.get("gold"), dict) else None
+            expected_q = row.get("expected", {}).get(qid) if isinstance(row.get("expected"), dict) else None
+            if gold_q is None and expected_q is None:
                 continue
             reason = None
             try:
                 q = to_internal(qid, question)
-            except ValueError:
+            except (ValueError, TypeError, KeyError):
                 reason = "invalid_question"
             if reason is None:
                 try:
-                    target = target_from_gold(q, gold_q)
+                    if gold_q is not None:
+                        target = target_from_gold(q, gold_q)
+                    else:
+                        target = target_from_expected(q, expected_q, label_smoothing=label_smoothing)
                 except (ValueError, TypeError, KeyError):
                     reason = "invalid_target"
             if reason is None:
@@ -206,6 +290,77 @@ def items_from_rows(tok, rows: Iterable[Dict[str, Any]], max_len: int,
             else:
                 skipped[reason] = skipped.get(reason, 0) + 1
     return items, skipped
+
+
+def rows_from_csv(path: str, text_column: str = "text", label_column: str = "label",
+                  question_id: str = "label",
+                  instructions: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Read a CSV file with one labelled column per row into `{state, questions, expected}` rows.
+
+    Discovers distinct labels in `label_column` (preserving order of appearance) and
+    builds a choice question with those labels as criteria.
+    """
+    import csv
+
+    rows_raw = []
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError("%s is an empty CSV file" % (path,))
+        if text_column not in reader.fieldnames:
+            raise ValueError("CSV file %s missing text column %r (available: %r)"
+                             % (path, text_column, reader.fieldnames))
+        if label_column not in reader.fieldnames:
+            raise ValueError("CSV file %s missing label column %r (available: %r)"
+                             % (path, label_column, reader.fieldnames))
+        for r in reader:
+            rows_raw.append(r)
+
+    if not rows_raw:
+        raise ValueError("%s has no rows" % (path,))
+
+    labels = []
+    seen = set()
+    for r in rows_raw:
+        val = r.get(label_column, "").strip()
+        if val and val not in seen:
+            seen.add(val)
+            labels.append(val)
+
+    if len(labels) < 2:
+        raise ValueError("CSV file %s must contain at least 2 distinct labels in %r, found %r"
+                         % (path, label_column, labels))
+
+    instr = instructions or ("Classify the input into one of: %s" % (", ".join(labels)))
+    questions = {
+        question_id: {
+            "type": "choice",
+            "instructions": instr,
+            "criteria": {lbl: lbl for lbl in labels},
+        }
+    }
+
+    output_rows = []
+    for r in rows_raw:
+        text = r.get(text_column, "")
+        lbl = r.get(label_column, "").strip()
+        if text and lbl:
+            output_rows.append({
+                "state": text,
+                "questions": questions,
+                "expected": {question_id: lbl},
+            })
+    return output_rows
+
+
+def read_data(path: str, text_column: str = "text", label_column: str = "label",
+              question_id: str = "label",
+              instructions: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Read training/eval rows from either a JSONL file or a CSV file."""
+    if path.lower().endswith(".csv"):
+        return rows_from_csv(path, text_column=text_column, label_column=label_column,
+                             question_id=question_id, instructions=instructions)
+    return read_jsonl(path)
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -309,13 +464,47 @@ def resolve_device(device: Optional[str] = "auto") -> torch.device:
     return torch.device("cpu")
 
 
+def resolve_checkpoint_dir(model_id_or_path: str, token: Optional[str] = None) -> str:
+    """Resolve a local path, model alias ('multilingual', 'english') or Hub repo ID to a local directory."""
+    if os.path.isdir(model_id_or_path) and os.path.exists(os.path.join(model_id_or_path, "rl_agent_config.json")):
+        return model_id_or_path
+
+    if model_id_or_path.startswith(("/", "./", "../")) or os.path.isabs(model_id_or_path):
+        if not os.path.isdir(model_id_or_path):
+            raise FileNotFoundError("Local model path not found: %r" % (model_id_or_path,))
+        return model_id_or_path
+
+    from .router import resolve_model_spec
+    spec = resolve_model_spec(model_id_or_path)
+    subfolder = None
+    if spec is not None:
+        model_id_or_path, subfolder = spec
+
+    from huggingface_hub import snapshot_download
+    prefix = f"{subfolder}/" if subfolder else ""
+    kw = {
+        "token": token or os.environ.get("HF_TOKEN") or None,
+        "allow_patterns": [prefix + name for name in (
+            "rl_agent_config.json", "model.safetensors", "tokenizer/*", "encoder/*",
+        )],
+    }
+    model_dir = snapshot_download(model_id_or_path, **kw)
+    if subfolder:
+        model_dir = os.path.join(model_dir, subfolder)
+    if not os.path.isdir(model_dir) or not os.path.exists(os.path.join(model_dir, "rl_agent_config.json")):
+        raise FileNotFoundError("Checkpoint directory not found for %r (resolved to %r)"
+                                % (model_id_or_path, model_dir))
+    return model_dir
+
+
 def load_checkpoint(model_dir: str):
-    """`(model, tokenizer, cfg)` from a local checkpoint directory, model on CPU in fp32."""
+    """`(model, tokenizer, cfg)` from a local checkpoint directory or Hub ID, model on CPU in fp32."""
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
 
     from .agent import _fix_tokenizer_config
 
+    model_dir = resolve_checkpoint_dir(model_dir)
     _fix_tokenizer_config(model_dir)
     with open(os.path.join(model_dir, "rl_agent_config.json"), encoding="utf-8") as f:
         cfg = json.load(f)
@@ -456,7 +645,8 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
              device: Optional[str] = "auto") -> Dict[str, Any]:
     """Preprocess, train, calibrate and save; returns a summary of the run.
 
-    `data` is a JSONL file of `{state, questions, gold}` rows (the schema in `docs/finetune.md`).
+    `data` is a JSONL file of `{state, questions, gold}` or `{state, questions, expected}` rows,
+    or a CSV file with text and label columns.
     `model_dir` is a local checkpoint directory -- the layout `laya.load` reads. The result in
     `output_dir` loads with `laya.load(output_dir)`.
     """
@@ -467,7 +657,10 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
     max_len = config.max_len or cfg.get("max_len", 512)
     head_max_len = config.head_max_len or cfg.get("head_max_len", 192)
 
-    items, skipped = items_from_rows(tok, read_jsonl(data), max_len, head_max_len)
+    rows = read_data(data, text_column=config.text_column, label_column=config.label_column,
+                     question_id=config.question_id, instructions=config.instructions)
+    items, skipped = items_from_rows(tok, rows, max_len, head_max_len,
+                                     label_smoothing=config.label_smoothing)
     if not items:
         raise ValueError("%s produced no training items (skipped: %r)" % (data, skipped))
     train_items, calib_items = split_calibration(items, config.calib_max, config.calib_frac, config.calib_seed)

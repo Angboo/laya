@@ -46,13 +46,17 @@ from laya.train import (  # noqa: E402
     finetune,
     items_from_rows,
     make_item,
+    read_data,
+    rows_from_csv,
     rlcd_loss,
     soft_ce_loss,
     split_calibration,
+    target_from_expected,
     target_from_gold,
     to_internal,
     train_model,
 )
+from laya.train_cli import build_parser as build_train_parser, main as train_cli_main  # noqa: E402
 
 WORDS = ["refund", "invoice", "charged", "twice", "crash", "error", "app", "screen", "please",
          "billing", "technical", "other", "is", "it", "urgent", "low", "high", "level", "question",
@@ -135,6 +139,105 @@ class DataTests(unittest.TestCase):
         for bad in ({"billing": -1.0}, {"billing": float("nan")}, {"billing": "high"}):
             with self.assertRaises(ValueError):
                 target(DEPARTMENT, bad)
+
+    def test_target_from_expected_choice(self):
+        def target(question, exp, smoothing=0.0):
+            return target_from_expected(to_internal("q", question), exp, label_smoothing=smoothing)
+
+        self.assertEqual(target(DEPARTMENT, "billing"), [1.0, 0.0, 0.0])
+        self.assertEqual(target(DEPARTMENT, "technical"), [0.0, 1.0, 0.0])
+        self.assertEqual(target(DEPARTMENT, "other"), [0.0, 0.0, 1.0])
+        # Non-string labels matching keys
+        self.assertEqual(target({"type": "choice", "instructions": "which ?", "criteria": {1: "a", 2: "b"}}, 1),
+                         [1.0, 0.0])
+
+    def test_target_from_expected_noul(self):
+        def target(question, exp, smoothing=0.0):
+            return target_from_expected(to_internal("q", question), exp, label_smoothing=smoothing)
+
+        self.assertEqual(target(URGENT, True), [0.0, 1.0])
+        self.assertEqual(target(URGENT, False), [1.0, 0.0])
+        self.assertEqual(target(URGENT, "true"), [0.0, 1.0])
+        self.assertEqual(target(URGENT, "false"), [1.0, 0.0])
+
+    def test_target_from_expected_score(self):
+        def target(question, exp, smoothing=0.0):
+            return target_from_expected(to_internal("q", question), exp, label_smoothing=smoothing)
+
+        self.assertEqual(target(LEVEL, 0), [1.0, 0.0])
+        self.assertEqual(target(LEVEL, 1), [0.0, 1.0])
+        self.assertEqual(target(LEVEL, "1"), [0.0, 1.0])
+
+    def test_target_from_expected_label_smoothing(self):
+        res = target_from_expected(to_internal("q", DEPARTMENT), "billing", label_smoothing=0.1)
+        self.assertAlmostEqual(res[0], 0.9 + 0.1 / 3)
+        self.assertAlmostEqual(res[1], 0.1 / 3)
+        self.assertAlmostEqual(res[2], 0.1 / 3)
+        self.assertAlmostEqual(sum(res), 1.0)
+
+        res_noul = target_from_expected(to_internal("q", URGENT), True, label_smoothing=0.2)
+        self.assertAlmostEqual(res_noul[0], 0.1)
+        self.assertAlmostEqual(res_noul[1], 0.9)
+        self.assertAlmostEqual(sum(res_noul), 1.0)
+
+    def test_target_from_expected_rejects_invalid(self):
+        with self.assertRaises(ValueError):
+            target_from_expected(to_internal("q", DEPARTMENT), "unknown_choice")
+        with self.assertRaises(ValueError):
+            target_from_expected(to_internal("q", URGENT), "not_a_bool")
+        for bad_num in (-3, 7, 0.5, -0.1, 2):
+            with self.assertRaises(ValueError):
+                target_from_expected(to_internal("q", URGENT), bad_num)
+        with self.assertRaises(ValueError):
+            target_from_expected(to_internal("q", LEVEL), 99)
+        for bad_smooth in (-0.1, 1.0, 1.5, True):
+            with self.assertRaises(ValueError):
+                target_from_expected(to_internal("q", DEPARTMENT), "billing", label_smoothing=bad_smooth)
+
+    def test_resolve_checkpoint_dir(self):
+        from laya.train import resolve_checkpoint_dir
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir)
+            (p / "rl_agent_config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(resolve_checkpoint_dir(str(p)), str(p))
+            with self.assertRaises(FileNotFoundError):
+                resolve_checkpoint_dir(str(p / "nonexistent"))
+
+    def test_rows_from_csv_and_read_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "tickets.csv"
+            csv_path.write_text("body,department\nrefund my invoice,billing\napp crash on startup,technical\n",
+                                encoding="utf-8")
+            data = read_data(str(csv_path), text_column="body", label_column="department")
+            self.assertEqual(len(data), 2)
+            self.assertEqual(data[0]["state"], "refund my invoice")
+            self.assertEqual(data[0]["expected"]["label"], "billing")
+            q = data[0]["questions"]["label"]
+            self.assertEqual(q["type"], "choice")
+            self.assertEqual(list(q["criteria"].keys()), ["billing", "technical"])
+
+    def test_rows_from_csv_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "bad.csv"
+            p.write_text("text,dept\nhi,billing\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                rows_from_csv(str(p), text_column="body", label_column="dept")
+            p.write_text("text,dept\nhi,billing\nhello,billing\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                rows_from_csv(str(p), text_column="text", label_column="dept")
+
+    def test_items_from_rows_supports_expected(self):
+        exp_rows = [
+            {"state": "please refund invoice", "questions": {"department": DEPARTMENT},
+             "expected": {"department": "billing"}},
+            {"state": "app crash", "questions": {"department": DEPARTMENT},
+             "expected": {"department": "technical"}},
+        ]
+        items, skipped = items_from_rows(self.tok, exp_rows, 64, 40)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(skipped, {})
+        self.assertEqual(items[0]["target"], [1.0, 0.0, 0.0])
+        self.assertEqual(items[1]["target"], [0.0, 1.0, 0.0])
 
     def test_questions_are_rendered_exactly_as_inference_renders_them(self):
         # The sequence a training item produces must be the one `Agent` builds for the same
@@ -390,6 +493,47 @@ class EndToEndTests(unittest.TestCase):
     def test_train_model_rejects_empty_input(self):
         with self.assertRaises(ValueError):
             train_model(None, self.tok, [], TrainConfig(), torch.device("cpu"), 64, 40)
+
+    def test_laya_train_cli_parser_and_validation(self):
+        parser = build_train_parser()
+        args = parser.parse_args(["--data", "train.csv", "--out", "./out", "--label-smoothing", "0.1",
+                                 "--shuffle-options", "--freeze-encoder"])
+        self.assertEqual(args.data, "train.csv")
+        self.assertEqual(args.output_dir, "./out")
+        self.assertEqual(args.label_smoothing, 0.1)
+        self.assertTrue(args.shuffle_options)
+        self.assertTrue(args.freeze_encoder)
+
+    def test_laya_train_cli_runs_on_csv(self):
+        csv_path = self.root / "tickets.csv"
+        lines = ["text,department"]
+        for s in BILLING_STATES:
+            lines.append(f"{s},billing")
+        for s in TECH_STATES:
+            lines.append(f"{s},technical")
+        csv_path.write_text("\n".join(lines), encoding="utf-8")
+
+        out_dir = self.root / "out_cli"
+        code = train_cli_main([
+            "--data", str(csv_path),
+            "--base", str(self.root / "base"),
+            "--out", str(out_dir),
+            "--text-column", "text",
+            "--label-column", "department",
+            "--epochs", "1",
+            "--micro-batch", "4",
+            "--grad-accum", "1",
+            "--loss", "soft-ce",
+            "--label-smoothing", "0.05",
+            "--device", "cpu",
+        ])
+        self.assertEqual(code, 0)
+        self.assertTrue((out_dir / "model.safetensors").exists())
+        self.assertTrue((out_dir / "rl_agent_config.json").exists())
+        agent = load(str(out_dir), device="cpu")
+        ans = agent.predict("please refund invoice", {"label": {"type": "choice", "instructions": "Classify",
+                                                               "criteria": ["billing", "technical"]}})
+        self.assertIn(ans["answers"]["label"]["choice"], ["billing", "technical"])
 
 
 if __name__ == "__main__":
