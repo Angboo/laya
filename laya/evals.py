@@ -232,10 +232,26 @@ def _library_version() -> Optional[str]:
     return getattr(laya, "__version__", None)
 
 
+#: Which definition of the coverage metrics (`aurc`, `selective_accuracy@*`) produced a report.
+#: Bumped when a cut's meaning changes, which is not a schema change -- the keys and their types
+#: are identical, only the arithmetic behind two of them moves. Version 2 cuts on a confidence
+#: THRESHOLD, so a cut never splits a group of equal confidences; version 1 (every report written
+#: before this existed, and recognised by the key's ABSENCE) cut at a row index and therefore
+#: depended on the order the dataset happened to arrive in.
+#:
+#: A relative gate rule subtracts a baseline's number from this run's. Across definitions that
+#: subtraction is meaningless, and it is unsafe in the PASS direction: a baseline recorded at 0.0333
+#: by version 1 -- a value version 2 reports as 0.5167 for the same rows -- lets a candidate that
+#: truly regressed by 0.2167 clear a `max_drop` of 0.05. `_eval_policy` refuses that comparison
+#: rather than performing the arithmetic; see `check_policy`.
+COVERAGE_METRIC_DEFINITION = 2
+
+
 def _run_identity(dataset: "Dataset") -> Dict[str, Any]:
     """The `config` keys this module can fill in on its own, with no knowledge of the CLI."""
     identity: Dict[str, Any] = {"schema": REPORT_SCHEMA,
-                                "questions_sha256": questions_fingerprint(dataset)}
+                                "questions_sha256": questions_fingerprint(dataset),
+                                "coverage_metric_definition": COVERAGE_METRIC_DEFINITION}
     version = _library_version()
     if version is not None:
         identity["laya_version"] = version
@@ -359,18 +375,78 @@ def brier(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[fl
     return float(np.mean((c - y) ** 2))
 
 
-def _risk_coverage(confidences: Sequence[float], corrects: Sequence[bool]):
-    """(coverage, risk) over the most-confident-first ordering; coverage k/n, risk = error@top-k."""
-    order = np.argsort(-np.asarray(confidences, dtype=float), kind="mergesort")  # desc, stable
-    y = np.asarray(corrects, dtype=bool)[order].astype(float)
+def _threshold_accepts(sorted_desc, k: int) -> int:
+    """How many rows a confidence threshold placed at `sorted_desc[k - 1]` accepts.
+
+    The end of the tie group the cut landed in, which is what makes a coverage number independent
+    of the order a dataset happened to arrive in. Never fewer than `k`: a threshold accepts at
+    least the rows the coverage asked for.
+
+    NaN is handled explicitly rather than left to the comparison. Every comparison against a NaN is
+    false, so `sorted_desc >= nan` accepts nothing and the cut would fall back to "whichever rows
+    came first" -- the exact order-dependence this exists to remove, for the input a custom runner
+    is most likely to hand over by accident. NaNs sort last and form one group, so a cut inside
+    them accepts all of them.
+    """
+    cut = sorted_desc[k - 1]
+    if cut != cut:                                     # NaN
+        return len(sorted_desc)
+    return max(k, int(np.count_nonzero(sorted_desc >= cut)))
+
+
+def _levels(confidences: Sequence[float], corrects: Sequence[bool]):
+    """`(accepted, risk, n)` at each distinct confidence level, most confident first.
+
+    One row per LEVEL, not per answer. A coverage cut is bought with a confidence threshold, and a
+    threshold accepts every answer at its own confidence -- `calibrate._select_abstention_threshold`
+    already says exactly this about the error it judges ("a tie group's errors must all be counted
+    before the level is judged"), and it is the same rule here.
+
+    Cutting at a row index instead reports whichever tie members the dataset happened to list
+    first. A stable sort makes that reproducible, not order-independent, and ties are the normal
+    case rather than a corner: `answer_confidence`'s own docstring records that the shipped
+    `choice:11+` bucket "returns a point mass at 1.0". Permuting a JSONL of 8 rows, all tied, 4
+    correct, moved `aurc` from 0.1827 to 0.8173 and `selective_accuracy@50` from 1.000 to 0.000.
+
+    `accepted[i]` is how many answers a threshold at level `i` accepts, which is what lets `aurc`
+    weight a level by the answers it spans rather than counting a 1-answer level and a 999-answer
+    level alike.
+    """
+    # `atleast_1d`: a 0-dimensional input (a bare scalar) answered before this change, and indexing
+    # it with an argsort result raises.
+    c = np.atleast_1d(np.asarray(confidences, dtype=float))
+    y = np.atleast_1d(np.asarray(corrects, dtype=bool).astype(float))
     n = len(y)
-    k = np.arange(1, n + 1)
-    risk = 1.0 - np.cumsum(y) / k
-    return k / n, risk
+    if n == 0:
+        return np.empty(0), np.empty(0), 0
+    order = np.argsort(-c, kind="mergesort")            # desc, stable; NaN sorts last
+    c, y = c[order], y[order]
+    # The last answer of each tie group: where the next confidence differs, plus the final one.
+    #
+    # `isnan` on both sides as well as `!=`, because NaN != NaN is true: without it every NaN
+    # confidence becomes a level of its own, the running total walks them in dataset order, and the
+    # order-dependence this exists to remove survives for exactly the input a custom runner is most
+    # likely to hand over by accident. All NaNs are one group, ranked last.
+    nan_pair = np.isnan(c[1:]) & np.isnan(c[:-1])
+    last = np.flatnonzero(np.concatenate(((c[1:] != c[:-1]) & ~nan_pair, [True])))
+    accepted = last.astype(float) + 1.0
+    risk = 1.0 - np.cumsum(y)[last] / accepted
+    return accepted, risk, n
+
+
+def _risk_coverage(confidences: Sequence[float], corrects: Sequence[bool]):
+    """`(coverage, risk)` at each distinct confidence level.
+
+    `_levels` with coverage as the x axis, for callers that want the curve rather than its area.
+    """
+    accepted, risk, n = _levels(confidences, corrects)
+    if n == 0:
+        return np.empty(0), np.empty(0)
+    return accepted / n, risk
 
 
 def aurc(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[float]:
-    """Area Under the Risk-Coverage curve (mean selective risk over every coverage). Lower is better.
+    """Area Under the Risk-Coverage curve: selective risk integrated over coverage. Lower is better.
 
     A classifier whose confidence perfectly ranks right from wrong drives AURC toward the overall
     error rate's area under the ideal curve; a confidence no better than random leaves it at the
@@ -378,24 +454,56 @@ def aurc(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[flo
     """
     if not confidences:
         return None
-    _coverage, risk = _risk_coverage(confidences, corrects)
-    return float(np.mean(risk))
+    accepted, risk, n = _levels(confidences, corrects)
+    if n == 0:
+        return None
+    # Each level's risk weighted by the ANSWERS it spans, which is what keeps this an area rather
+    # than an average of unevenly sized points: with 999 answers at one confidence and 1 at another,
+    # an unweighted mean of the two risks reports 5e-4 where the area is 1e-6.
+    #
+    # `sum(risk * rows) / n`, not `sum(risk * width)`: with no ties every level holds one answer, so
+    # this reduces to the same pairwise sum over the same denominator and is bit-identical to the
+    # per-answer mean it replaces. Dividing inside the sum instead loses that in the last bits.
+    rows_per_level = np.diff(np.concatenate(([0.0], accepted)))
+    return float(np.sum(risk * rows_per_level) / n)
 
 
 def selective_accuracy(confidences: Sequence[float], corrects: Sequence[bool],
                        coverage: float) -> Optional[float]:
-    """Accuracy over the most-confident `coverage` fraction of answers (0 < coverage <= 1)."""
+    """Accuracy over the most-confident `coverage` fraction of answers (0 < coverage <= 1).
+
+    The cut is a confidence threshold, so it cannot land inside a group of equal confidences: when
+    `coverage * n` falls within one, every member of that group is included and the reported
+    coverage is the group's upper edge rather than the fraction asked for. That is the only
+    order-independent reading -- see `_risk_coverage` -- and it is what makes this comparable
+    across two permutations of the same dataset. Without ties, `k` is unchanged.
+    """
     if not confidences or not 0.0 < coverage <= 1.0:
         return None
     import math as _math
-    order = np.argsort(-np.asarray(confidences, dtype=float), kind="mergesort")
-    y = np.asarray(corrects, dtype=bool)[order].astype(float)
+    c = np.atleast_1d(np.asarray(confidences, dtype=float))
+    order = np.argsort(-c, kind="mergesort")
+    c = c[order]
+    y = np.atleast_1d(np.asarray(corrects, dtype=bool))[order].astype(float)
     k = max(1, int(_math.ceil(coverage * len(y))))
+    # Extend through the tie group the cut fell in -- see `_threshold_accepts`, which both this
+    # and the risk-coverage curve go through, so the two cannot disagree about what a cut
+    # accepts, and neither falls back to dataset order when the cut lands on a NaN.
+    k = _threshold_accepts(c, k)
     return float(np.mean(y[:k]))
 
 
 #: Coverage points reported as `selective_accuracy@NN`.
 SELECTIVE_COVERAGES = (0.5, 0.8)
+
+
+def is_coverage_metric(name: str) -> bool:
+    """True for a metric whose value depends on where a coverage cut falls.
+
+    `ece` and `brier` read the same `(confidence, correct)` pairs but do not cut, so a change to
+    what a cut accepts cannot move them and a baseline that predates it stays comparable.
+    """
+    return name == "aurc" or name.startswith("selective_accuracy@")
 
 
 def is_confidence_metric(name: str) -> bool:

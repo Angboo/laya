@@ -4,6 +4,9 @@ Run: python -m pytest tests/test_evals.py -q
 """
 import json
 import re
+import warnings
+
+import numpy as np
 
 import pytest
 
@@ -116,6 +119,295 @@ def test_selective_metrics_on_known_inputs():
     for name in ("ece", "brier", "aurc", "selective_accuracy@50"):
         assert is_confidence_metric(name)
     assert not is_confidence_metric("choice_accuracy")
+
+
+def test_coverage_cut_does_not_split_a_tie_group():
+    """A coverage cut is a confidence threshold, so permuting the dataset cannot move it.
+
+    Before this was fixed, a stable sort made the result reproducible but not order-independent:
+    `y[:k]` took whichever tie members the dataset listed first. Ties are the normal case, not a
+    corner -- `common.answer_confidence`'s own docstring records that the shipped `choice:11+`
+    bucket "returns a point mass at 1.0".
+    """
+    conf = [1.0] * 8
+    correct_first = [True, True, True, True, False, False, False, False]
+    wrong_first = [False, False, False, False, True, True, True, True]
+    interleaved = [True, False, True, False, True, False, True, False]
+    # 8 rows, 4 correct, every confidence identical: the only honest answer is the group's own
+    # accuracy, whatever order the rows arrive in. Before: 1.000 / 0.000 / 0.500 for sel@50.
+    for y in (correct_first, wrong_first, interleaved):
+        assert selective_accuracy(conf, y, 0.5) == pytest.approx(0.5)
+        assert selective_accuracy(conf, y, 0.8) == pytest.approx(0.5)
+        assert aurc(conf, y) == pytest.approx(0.5)
+    # `brier` and `ece` do not cut, so a change to what a cut accepts cannot move them. Asserted on
+    # DISTINCT, deliberately unsorted confidences and by comparing two orderings to each other: on
+    # the all-tied data above, any confidence-sorting rewrite is the identity, so a mutant that
+    # permuted the rows by confidence passed every one of these.
+    jumbled_conf = [0.3, 0.95, 0.6, 0.1, 0.8]
+    jumbled_corr = [False, True, True, False, False]
+    order = [3, 0, 4, 2, 1]
+    other_conf = [jumbled_conf[i] for i in order]
+    other_corr = [jumbled_corr[i] for i in order]
+    assert brier(jumbled_conf, jumbled_corr) == pytest.approx(
+        brier(other_conf, other_corr), abs=1e-12)
+    assert ece(jumbled_conf, jumbled_corr) == pytest.approx(
+        ece(other_conf, other_corr), abs=1e-12)
+    # and the values themselves, so a rewrite that made both sides equally wrong is still caught
+    assert brier(jumbled_conf, jumbled_corr) == pytest.approx(
+        sum((c - y) ** 2 for c, y in zip(jumbled_conf, jumbled_corr)) / 5, abs=1e-12)
+
+
+def test_coverage_cut_extends_through_the_tie_it_lands_in():
+    """The threshold is the confidence at the cut, and it accepts every row at that confidence."""
+    # two groups: 0.9 (both correct) and 0.5 (two correct of four). The FIRST member of the 0.5
+    # group is wrong on purpose: with a correct one there, accepting a row below the threshold
+    # cannot change the mean, and an implementation that over-accepts passes unnoticed.
+    conf = [0.9, 0.9, 0.5, 0.5, 0.5, 0.5]
+    corr = [True, True, False, True, True, False]
+    # coverage 1/3 -> k = ceil(2.0) = 2, the cut is 0.9, and nothing at 0.5 is accepted. If one
+    # were, this would be 2/3 rather than 1.0.
+    assert selective_accuracy(conf, corr, 1 / 3) == pytest.approx(1.0)
+    # coverage 0.5 -> k = ceil(3.0) = 3, which lands inside the 0.5 group, so the threshold is
+    # 0.5 and all six rows are accepted: 4 correct of 6. The figure therefore covers the group's
+    # upper edge (6 answers) rather than the 3 asked for -- the only order-independent reading.
+    assert selective_accuracy(conf, corr, 0.5) == pytest.approx(4 / 6)
+    assert selective_accuracy(conf, corr, 0.8) == pytest.approx(4 / 6)
+    # aurc integrates one risk per distinct level over the ROWS that level spans: 0.9 -> 2 rows
+    # accepted, 0 errors, risk 0; 0.5 -> 6 accepted, 2 errors, risk 2/6, spanning the other 4 rows.
+    # Weighted, not averaged: an unweighted mean of the two risks would weight a 2-row level the
+    # same as a 4-row one, which is how a 999-row level and a 1-row level came to count alike.
+    assert aurc(conf, corr) == pytest.approx((0.0 * 2 + (2 / 6) * 4) / 6)
+
+
+def test_coverage_metrics_are_unchanged_without_ties():
+    """Distinct confidences must produce exactly what they always did, to the last bit.
+
+    The fix is only allowed to move a number a permutation of the same dataset could already
+    move. With no ties there is one level per row, so every point of the risk-coverage curve --
+    and `k` itself -- is what it was before.
+    """
+    conf, corr = [0.9, 0.8, 0.2, 0.1], [True, True, False, False]
+    # the hand-computed values from `test_selective_metrics_on_known_inputs`, restated as floats
+    # so this fails if the definition drifts rather than if that test is edited
+    assert aurc(conf, corr) == pytest.approx((0 + 0 + 1 / 3 + 1 / 2) / 4, abs=1e-12)
+    assert selective_accuracy(conf, corr, 0.5) == pytest.approx(1.0, abs=1e-12)
+    assert selective_accuracy(conf, corr, 0.75) == pytest.approx(2 / 3, abs=1e-12)
+    assert selective_accuracy(conf, corr, 1.0) == pytest.approx(0.5, abs=1e-12)
+    # a single row, and a coverage that rounds below one row, still report that row
+    assert selective_accuracy([0.4], [True], 0.01) == pytest.approx(1.0)
+    assert aurc([0.4], [False]) == pytest.approx(1.0)
+    # `coverage * n` is rarely an integer, and the fraction rounds UP so the answer covers at
+    # least the fraction asked for. Five rows at 0.5 means three, not two -- every case above
+    # happens to land on a whole row, so nothing here could see a floor in place of the ceiling.
+    five, corr5 = [0.9, 0.8, 0.7, 0.6, 0.5], [True, True, False, True, True]
+    assert selective_accuracy(five, corr5, 0.5) == pytest.approx(2 / 3)     # ceil(2.5) = 3 rows
+    # 0.3 -> ceil(1.5) = 2 rows. The second row is WRONG, so a floor (1 row) would report 1.0.
+    five_mixed = [0.9, 0.8, 0.7, 0.6, 0.5]
+    corr_mixed = [True, False, True, True, True]
+    assert selective_accuracy(five_mixed, corr_mixed, 0.3) == pytest.approx(0.5)
+    assert selective_accuracy(five, corr5, 0.7) == pytest.approx(3 / 4)     # ceil(3.5) = 4 rows
+
+
+def test_non_finite_confidences_are_order_independent_too():
+    """A NaN confidence must not reintroduce the order-dependence this change removes.
+
+    Confidences come from whatever a runner returns, so NaN and infinities are reachable --
+    `_eval_policy._finite_number` exists because this codebase already expects that. `NaN != NaN`,
+    so a boundary test written on `!=` alone would make every NaN row its own level and walk them
+    in dataset order: the headline defect, surviving for exactly the input a custom runner is most
+    likely to hand over by accident. All NaNs are one group, ranked last.
+
+    These VALUES differ from what the old definition reported. They have to: the old ones were
+    whichever rows the dataset listed first. `docs/evals.md` says so.
+    """
+    nan, inf = float("nan"), float("inf")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                # a RuntimeWarning here fails the test
+        # all NaN: one group, so every coverage reports the group's own accuracy
+        for y in ([True, False, True], [True, True, False], [False, True, True]):
+            assert selective_accuracy([nan] * 3, y, 0.5) == pytest.approx(2 / 3)
+            assert aurc([nan] * 3, y) == pytest.approx(1 / 3)
+        # a NaN among finite values: the finite ones rank above it, the NaN group below
+        assert selective_accuracy([0.9, nan, 0.5], [True, False, True], 0.5) == pytest.approx(1.0)
+        # infinities are ordinary numbers to a comparison, and keep ranking normally
+        assert selective_accuracy([inf, 0.5, -inf], [True, True, False], 0.5) == pytest.approx(1.0)
+        assert aurc([0.9, 0.7, nan, 0.2], [True, False, True, True]) == pytest.approx(
+            (0 * 1 + 0.5 * 1 + (1 - 2 / 3) * 1 + (1 - 3 / 4) * 1) / 4, abs=1e-12)
+
+    # and the whole report, through `evaluate()`, with only the NaN rows reordered
+    def report_for(rows):
+        examples = [Example("s%d" % i, Q, {"intent": "a"}) for i, _ in enumerate(rows)]
+        answers = {"s%d" % i: {"intent": dict(choice_answer("a" if ok else "b", conf),
+                                              answer_confidence=conf)}
+                   for i, (conf, ok) in enumerate(rows)}
+        rep = evaluate(StubRunner(answers), Dataset(examples), evaluators=[ChoiceAccuracy()])
+        return {n: rep.overall[n] for n in ("aurc", "selective_accuracy@50",
+                                           "selective_accuracy@80")}
+
+    finite = [(0.9, True), (0.8, True), (0.7, True), (0.6, True)]
+    block = [(nan, True), (nan, False), (nan, True), (nan, False), (nan, True), (nan, False)]
+    assert report_for(finite + block) == report_for(finite + block[::-1])
+
+
+def test_confidences_group_on_exact_equality():
+    """Two confidences that differ by one ULP are two levels, not one.
+
+    A threshold comparison is exact, so grouping has to be too. Nothing else in this file puts two
+    confidences closer together than 0.1, which let a tolerance window or an `isclose` boundary
+    pass every check while changing which answers a cut accepts. The shipped agents round
+    confidence to 4 decimals, so this is reachable only from a custom runner -- which is also true
+    of every NaN case above.
+    """
+    one = 1.0
+    just_below = 1.0 - 2 ** -52                      # the next double below 1.0
+    assert just_below != one and round(just_below, 4) == round(one, 4)
+    # two levels: the correct answer ranks first and the 50% cut takes only it
+    assert selective_accuracy([one, just_below], [True, False], 0.5) == pytest.approx(1.0)
+    assert aurc([one, just_below], [True, False]) == pytest.approx((0.0 * 1 + 0.5 * 1) / 2)
+    # one level, were they treated as equal, would report the pair's own accuracy instead
+    assert selective_accuracy([one, one], [True, False], 0.5) == pytest.approx(0.5)
+
+
+def test_corrects_are_read_as_booleans():
+    """`corrects` is a correctness flag, not a count.
+
+    `_levels` reads it through `dtype=bool`; reading it as a float lets a value outside {0, 1}
+    produce a NEGATIVE risk, and `brier` already reads the same argument as a float, so the two
+    readings were unpinned and mutually inconsistent.
+    """
+    assert aurc([0.9, 0.8], [2, 0]) == pytest.approx(aurc([0.9, 0.8], [True, False]))
+    assert aurc([0.9, 0.8], [2, 0]) >= 0.0
+    assert selective_accuracy([0.9, 0.8], [2, 0], 1.0) == pytest.approx(0.5)
+
+
+def test_a_0d_confidence_still_answers():
+    """A bare scalar used to answer, and indexing it with an argsort result raises.
+
+    Reachable only from the library entry point, and `_aggregate` always builds lists -- but an
+    `IndexError` escaping `laya-evals` exits 1, which is the code that means "the model regressed".
+    """
+    assert selective_accuracy(np.float64(0.5), np.True_, 0.5) == pytest.approx(1.0)
+    assert aurc(np.float64(0.5), np.False_) == pytest.approx(1.0)
+
+
+def test_report_metrics_survive_a_permuted_dataset():
+    """The gate reads these through `evaluate()`, so permuting a JSONL must not move them.
+
+    `_eval_policy.check_policy` gates a slice on whatever metric a policy names, and
+    `evals.is_confidence_metric` recognises `aurc` and `selective_accuracy@*` by name -- so a
+    coverage metric that depended on row order meant a shuffled dataset could pass or fail a
+    release gate on nothing at all.
+    """
+    examples = [Example("s%d" % i, Q, {"intent": "a"}) for i in range(1, 9)]
+    # every answer at the same confidence, half of them wrong: the tie case, through the report
+    answers = {"s%d" % i: {"intent": choice_answer("a" if i <= 4 else "b", 1.0)}
+               for i in range(1, 9)}
+    names = ("aurc", "selective_accuracy@50", "selective_accuracy@80", "ece", "brier")
+
+    def metrics(order):
+        report = evaluate(StubRunner(answers), Dataset([examples[i] for i in order]),
+                          evaluators=[ChoiceAccuracy()])
+        return {n: report.overall[n] for n in names}
+
+    forward = metrics(range(8))
+    assert metrics(range(7, -1, -1)) == forward
+    assert metrics([4, 0, 5, 1, 6, 2, 7, 3]) == forward
+    # and the values are the tie group's own accuracy, not whichever half came first
+    assert forward["selective_accuracy@50"] == pytest.approx(0.5)
+    assert forward["aurc"] == pytest.approx(0.5)
+
+
+def test_a_relative_rule_refuses_a_baseline_from_the_old_coverage_definition(tmp_path):
+    """A `max_drop` across definitions is unsafe in the PASS direction, so it must not be computed.
+
+    The two definitions disagree by as much as 0.48 on the same answers. A slice recorded at 0.033
+    by the old one reads 0.517 under this one, so subtracting them lets a candidate that genuinely
+    dropped 0.217 clear a `max_drop` of 0.05 -- a real regression shipping because a baseline is
+    stale. `comparable_to` cannot see it: the dataset bytes and the question schema are identical,
+    and its "a key missing on either side is unknown" rule exists so a patch release cannot
+    invalidate a baseline. A definition change is not a patch release, so this refuses on the
+    key's ABSENCE.
+    """
+    from laya import _eval_policy
+
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "selective_accuracy@50",
+                   "min_count": 5, "max_drop": 0.05}))
+    candidate = EvalReport(**_coverage_gate_report(0.30, evals.COVERAGE_METRIC_DEFINITION))
+
+    stale = _coverage_gate_report(0.033333, None)
+    failures = _eval_policy.check_policy(candidate, policy, stale)
+    assert any("regenerate the baseline" in f for f in failures), failures
+    assert any("definition 1 (unrecorded)" in f for f in failures), failures
+    # an explicit version 1 is refused the same way
+    assert any("regenerate the baseline" in f for f in
+               _eval_policy.check_policy(candidate, policy, _coverage_gate_report(0.033333, 1)))
+
+    # regenerated under this definition, the same gate CATCHES the regression it was hiding
+    fresh = _coverage_gate_report(0.516667, evals.COVERAGE_METRIC_DEFINITION)
+    failures = _eval_policy.check_policy(candidate, policy, fresh)
+    assert any("max_drop" in f and "exceeded" in f for f in failures), failures
+    assert not any("regenerate" in f for f in failures), failures
+
+
+def test_the_refusal_is_limited_to_metrics_a_cut_can_move(tmp_path):
+    """`ece` and `brier` do not cut, so a baseline that predates the change stays comparable.
+
+    Sweeping them into the refusal would break every committed baseline for no reason.
+    """
+    from laya import _eval_policy
+
+    candidate = EvalReport(**_coverage_gate_report(0.10, evals.COVERAGE_METRIC_DEFINITION,
+                                                   metric="ece"))
+    stale = _coverage_gate_report(0.11, None, metric="ece")
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "ece",
+                   "min_count": 5, "max_drop": 0.05}))
+    assert _eval_policy.check_policy(candidate, policy, stale) == []
+    assert evals.is_coverage_metric("aurc")
+    assert evals.is_coverage_metric("selective_accuracy@80")
+    assert not evals.is_coverage_metric("ece")
+    assert not evals.is_coverage_metric("brier")
+    assert not evals.is_coverage_metric("choice_accuracy")
+
+
+def test_an_absolute_rule_needs_no_baseline_and_is_unaffected(tmp_path):
+    """Only the relative comparison is across definitions; a `min` reads this run alone."""
+    from laya import _eval_policy
+
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "selective_accuracy@50",
+                   "min_count": 5, "min": 0.2}))
+    candidate = EvalReport(**_coverage_gate_report(0.30, evals.COVERAGE_METRIC_DEFINITION))
+    assert _eval_policy.check_policy(candidate, policy, None) == []
+
+
+def test_every_report_records_which_coverage_definition_produced_it():
+    report = evaluate(StubRunner({"s1": {"intent": choice_answer("a")}}),
+                      Dataset([Example("s1", Q, {"intent": "a"})]))
+    assert report.config["coverage_metric_definition"] == evals.COVERAGE_METRIC_DEFINITION
+    assert evals.COVERAGE_METRIC_DEFINITION == 2
+
+
+def test_aurc_is_bit_identical_to_the_per_answer_mean_without_ties():
+    """Not `approx`: the claim is bit-identity, and only an exact comparison can hold it.
+
+    With no ties every level holds one answer, so weighting by rows and dividing once at the end
+    reduces to the same pairwise sum over the same denominator. Weighting by the coverage width
+    instead -- mathematically the same area -- loses the last bits on about half of all datasets,
+    which would quietly move every committed number that has no tie in it.
+    """
+    import random
+
+    random.seed(5)
+    for _ in range(200):
+        n = random.randint(1, 40)
+        conf = random.sample([i / 10000 for i in range(1, 9999)], n)
+        corr = [random.random() < 0.6 for _ in range(n)]
+        order = np.argsort(-np.asarray(conf, dtype=float), kind="mergesort")
+        y = np.asarray(corr, dtype=bool)[order].astype(float)
+        per_answer = 1.0 - np.cumsum(y) / np.arange(1, n + 1)
+        assert aurc(conf, corr) == float(np.mean(per_answer))
 
 
 def test_selective_metrics_reach_the_report():
@@ -1749,6 +2041,22 @@ def _slice_gate_report(en_correct, zh_correct):
             "slices": {"language": {"en": {"choice_accuracy": en_correct / 180},
                                     "zh": {"choice_accuracy": zh_correct / 20}}},
             "cases": cases}
+
+
+def _coverage_gate_report(value, definition, metric="selective_accuracy@50"):
+    """A slice-gate report carrying a coverage metric and a definition stamp.
+
+    `definition=None` is a report written before `coverage_metric_definition` existed, which is
+    exactly what every committed baseline is.
+    """
+    cases = [{"language": "zh", "scores": {}, "confidence": 0.8, "correct": True}
+             for _ in range(20)]
+    config = {"schema": evals.REPORT_SCHEMA, "dataset_sha256": "a" * 64,
+              "questions_sha256": "b" * 64}
+    if definition is not None:
+        config["coverage_metric_definition"] = definition
+    return {"config": config, "overall": {metric: value},
+            "slices": {"language": {"zh": {metric: value}}}, "cases": cases}
 
 
 def _write_gate_policy(tmp_path, rule):

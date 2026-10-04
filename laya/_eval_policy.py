@@ -106,6 +106,35 @@ def _value(report: evals.EvalReport, dimension: str, value: str,
     return float(result)
 
 
+def _stale_coverage_baseline(baseline: Any, metric: str) -> Optional[str]:
+    """Why a relative rule on a coverage metric must not be computed against `baseline`, or None.
+
+    A `max_drop` / `max_increase` rule subtracts the baseline's number from this run's. That is
+    only meaningful if both were measured by the same definition of a coverage cut. Version 2 cuts
+    on a confidence threshold, so a cut never splits a group of equal confidences; version 1 cut at
+    a row index and depended on the order the dataset arrived in. The two disagree by as much as
+    0.48 on the same rows, so the subtraction is not merely noisy -- it is unsafe in the PASS
+    direction, letting a real regression through.
+
+    The absence of the key IS the old definition: every report written since it existed carries it.
+    That is why this refuses instead of following `comparable_to`'s "a key missing on either side is
+    unknown rather than a conflict" rule, which exists so a patch release cannot invalidate a
+    committed baseline. A definition change is not a patch release.
+
+    `ece` and `brier` are untouched by the cut, so a rule on either keeps comparing as before.
+    """
+    if not evals.is_coverage_metric(metric):
+        return None
+    config = baseline.get("config") if isinstance(baseline, dict) else None
+    recorded = config.get("coverage_metric_definition") if isinstance(config, dict) else None
+    if recorded == evals.COVERAGE_METRIC_DEFINITION:
+        return None
+    return ("baseline reports coverage-metric definition %s, this run uses %s -- regenerate the "
+            "baseline before gating %r on a relative limit" %
+            ("1 (unrecorded)" if recorded is None else recorded,
+             evals.COVERAGE_METRIC_DEFINITION, metric))
+
+
 def check_policy(report: evals.EvalReport, policy: Dict[str, Any],
                  baseline: Optional[Dict[str, Any]] = None) -> List[str]:
     """Return actionable failures. Missing measurements never count as a pass."""
@@ -147,6 +176,12 @@ def check_policy(report: evals.EvalReport, policy: Dict[str, Any],
         comparator = next(name for name in _LIMITS if name in rule)
         limit = rule[comparator]
         if comparator in _RELATIVE:
+            # the raw baseline document, not `base_report`: that is rebuilt as an
+            # `EvalReport` and carries only what `_identity_of` kept
+            stale = _stale_coverage_baseline(baseline, metric)
+            if stale is not None:
+                failures.append("%s: %s" % (label, stale))
+                continue
             previous = _value(base_report, dimension, value, metric)
             previous_count = _count(base_report, dimension, value, metric)
             if previous is None:
