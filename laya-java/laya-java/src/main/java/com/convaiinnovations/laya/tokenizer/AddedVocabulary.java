@@ -85,12 +85,12 @@ final class AddedVocabulary {
             if (hit.lstrip()) {
                 // Absorb whitespace to the left, but never back past text already emitted: a
                 // previous added token's span is settled and must not be swallowed.
-                while (start > plainFrom && Character.isWhitespace(text.charAt(start - 1))) {
+                while (start > plainFrom && Unicode.isWhiteSpace(text.charAt(start - 1))) {
                     start--;
                 }
             }
             if (hit.rstrip()) {
-                while (stop < text.length() && Character.isWhitespace(text.charAt(stop))) {
+                while (stop < text.length() && Unicode.isWhiteSpace(text.charAt(stop))) {
                     stop++;
                 }
             }
@@ -134,8 +134,8 @@ final class AddedVocabulary {
      * that did set it would otherwise be tokenized wrongly with no signal at all.
      */
     private static boolean standsAlone(String text, int start, int stop) {
-        boolean leftClear = start == 0 || !Character.isLetterOrDigit(text.charAt(start - 1));
-        boolean rightClear = stop >= text.length() || !Character.isLetterOrDigit(text.charAt(stop));
+        boolean leftClear = start == 0 || !Unicode.isAlphanumeric(text.charAt(start - 1));
+        boolean rightClear = stop >= text.length() || !Unicode.isAlphanumeric(text.charAt(stop));
         return leftClear && rightClear;
     }
 }

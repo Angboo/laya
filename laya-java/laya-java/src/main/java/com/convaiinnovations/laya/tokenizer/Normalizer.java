@@ -125,10 +125,10 @@ abstract class Normalizer {
     private static String strip(String text, boolean left, boolean right) {
         int from = 0;
         int to = text.length();
-        while (left && from < to && Character.isWhitespace(text.charAt(from))) {
+        while (left && from < to && Unicode.isWhiteSpace(text.charAt(from))) {
             from++;
         }
-        while (right && to > from && Character.isWhitespace(text.charAt(to - 1))) {
+        while (right && to > from && Unicode.isWhiteSpace(text.charAt(to - 1))) {
             to--;
         }
         return text.substring(from, to);

@@ -209,7 +209,13 @@ public final class SequenceBuilder {
                 new Stats(optionIds.size(), distinct.size(), tokensPerOption));
     }
 
-    /** The state as text: a String passes through, anything else becomes Python-compatible JSON. */
+    /**
+     * The state as text: a String passes through, anything else becomes Python-compatible JSON.
+     *
+     * <p>A null state is not an error: Python's {@code serialize_state} hands {@code None} to
+     * {@code json.dumps}, which writes the four characters {@code null}, and the model is asked
+     * about that. Reproduced rather than refused, so the two runtimes answer the same question.
+     */
     public static String serializeState(Object state) {
         return state instanceof String ? (String) state : PythonJson.dumps(state);
     }

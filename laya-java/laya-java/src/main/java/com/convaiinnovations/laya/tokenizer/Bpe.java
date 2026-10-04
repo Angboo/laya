@@ -16,11 +16,19 @@ import java.util.Map;
  * identical ids on the majority -- the worst failure shape there is: a parity suite that passes on
  * prose and diverges on a customer's data.
  *
- * <p>Complexity: each pass over a piece of {@code k} symbols costs O(k) lookups and each merge
- * removes one symbol, so a piece costs O(k²) lookups worst case. Pieces are words, not documents,
- * so the quadratic term is bounded by the longest word. {@code laya-ts} hit exactly this shape and
- * fixed it upstream (5.5 s to 3 ms at 16k characters), which is why the per-pass scan stays over a
- * flat list rather than rebuilding structures per merge.
+ * <p><b>Complexity.</b> Done the obvious way -- rescan every adjacent pair, merge the best, repeat
+ * -- a piece of {@code k} symbols costs O(k²) lookups. That is fine for words and ruinous for the
+ * long unspaced runs real text contains: on a corpus with a 2,000-character run and a
+ * 1,000-character CJK run it measured <b>24.5 ms</b> against {@code laya-ts}'s 1.4 ms, a 17x
+ * regression against another SDK of the same model. {@code laya-ts} had the same shape and fixed
+ * it; this is the same fix.
+ *
+ * <p>So there are two routes to one rule. Short pieces take the rescan, which allocates nothing and
+ * costs one pass. Long pieces take a min-heap of candidate pairs over a doubly-linked list of
+ * surviving slots, which makes merge SELECTION O(log k) and the piece O(k log k). A heap entry is
+ * never removed when it goes stale -- it carries the slot's version and is discarded on the way
+ * out -- because deleting from the middle of a heap costs more than skipping on pop.
+ * {@code test_bpe_routes_agree} sweeps the two against each other so they cannot drift apart.
  */
 final class Bpe {
 
@@ -112,6 +120,15 @@ final class Bpe {
         return ids;
     }
 
+    /**
+     * Pieces at or above this many symbols go through the heap instead of the rescan.
+     *
+     * <p>A threshold, because the heap's setup -- four int arrays and a linked list -- costs more
+     * than a rescan of a short word, and most pieces a pre-tokenizer emits are short words. The
+     * value is measured, not guessed: see the throughput figures in the class note.
+     */
+    static final int HEAP_MIN_LENGTH = 32;
+
     /** Token ids for one pre-tokenized piece, appended to {@code out}. */
     void encodePiece(String piece, List<Integer> out) {
         if (piece.isEmpty()) {
@@ -133,18 +150,22 @@ final class Bpe {
         }
 
         List<String> symbols = initialSymbols(piece);
-        mergeAll(symbols);
+        if (symbols.size() >= HEAP_MIN_LENGTH) {
+            mergeWithHeap(symbols);
+        } else {
+            mergeByRescan(symbols);
+        }
         emit(symbols, out);
     }
 
     /**
-     * Applies merges to {@code symbols} in place, lowest rank first, re-scanning after each.
+     * Applies merges in place, lowest rank first, re-scanning after each. For short pieces.
      *
      * <p>Re-scanning is not an optimisation choice: merging a pair creates a new symbol whose
      * neighbours may form a <i>lower</i>-ranked pair than anything that existed before, and a
      * single left-to-right pass would miss it.
      */
-    private void mergeAll(List<String> symbols) {
+    void mergeByRescan(List<String> symbols) {
         while (symbols.size() > 1) {
             int bestRank = Integer.MAX_VALUE;
             int bestIndex = -1;
@@ -168,6 +189,180 @@ final class Bpe {
             }
             symbols.set(bestIndex, symbols.get(bestIndex) + symbols.get(bestIndex + 1));
             symbols.remove(bestIndex + 1);
+        }
+    }
+
+    /**
+     * The same rule in O(k log k): pairs chosen from a min-heap over a linked list of the slots.
+     *
+     * <p>The result is identical to {@link #mergeByRescan} -- same rule, same tie-breaking (the
+     * heap orders on rank then on slot, so the leftmost of two equal-ranked pairs wins, which is
+     * what a left-to-right rescan picks). Only the cost differs.
+     */
+    void mergeWithHeap(List<String> symbols) {
+        int n = symbols.size();
+        if (n <= 1) {
+            return;
+        }
+        String[] token = symbols.toArray(new String[0]);
+        int[] next = new int[n];
+        int[] previous = new int[n];
+        int[] version = new int[n];
+        boolean[] dead = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            previous[i] = i - 1;
+            next[i] = i + 1 < n ? i + 1 : -1;
+        }
+        // 3n is a bound, not a hope: at most n-1 pairs are offered up front, every merge kills
+        // exactly one slot so there are at most n-1 merges, and each offers at most two pairs.
+        PairHeap heap = new PairHeap(3 * n);
+        for (int i = 0; i < n; i++) {
+            offer(heap, token, next, version, i);
+        }
+        while (heap.size > 0) {
+            int slot = heap.peekSlot();
+            int seen = heap.peekVersion();
+            heap.pop();
+            // Stale entries are skipped on the way out rather than deleted on the way in: a slot
+            // that has since merged or died has a different version, and removing from the middle
+            // of a heap costs more than discarding here.
+            if (dead[slot] || version[slot] != seen) {
+                continue;
+            }
+            int right = next[slot];
+            if (right < 0 || dead[right]) {
+                continue;
+            }
+            token[slot] = token[slot] + token[right];
+            dead[right] = true;
+            next[slot] = next[right];
+            if (next[right] >= 0) {
+                previous[next[right]] = slot;
+            }
+            version[slot]++;
+            offer(heap, token, next, version, slot);
+            int left = previous[slot];
+            if (left >= 0) {
+                // The left neighbour's version must be bumped too, not just re-offered. Its old
+                // heap entry still names this slot as its right-hand side, and that symbol has
+                // just changed -- so the entry carries a rank for a pair that no longer exists.
+                // Without this increment the stale entry still looks current, gets popped, and
+                // merges at the wrong point in the order: one corpus entry out of forty came out
+                // different from the rescan, which is how this was caught.
+                version[left]++;
+                offer(heap, token, next, version, left);
+            }
+        }
+        symbols.clear();
+        for (int i = 0; i >= 0 && i < n; i = next[i]) {
+            if (!dead[i]) {
+                symbols.add(token[i]);
+            }
+        }
+    }
+
+    /** Offers the pair starting at {@code slot}, when it has a right neighbour and a rank. */
+    private void offer(PairHeap heap, String[] token, int[] next, int[] version, int slot) {
+        int right = next[slot];
+        if (right < 0) {
+            return;
+        }
+        Map<String, Integer> fromLeft = merges.get(token[slot]);
+        if (fromLeft == null) {
+            return;
+        }
+        Integer rank = fromLeft.get(token[right]);
+        if (rank == null) {
+            return;
+        }
+        heap.push(rank, slot, version[slot]);
+    }
+
+    /**
+     * A min-heap of candidate pairs, ordered by merge rank and then by slot.
+     *
+     * <p>Three parallel {@code int} arrays rather than objects, so a push allocates nothing. The
+     * secondary ordering on slot is not cosmetic: it is what makes the heap pick the same pair a
+     * left-to-right rescan picks when two pairs share a rank.
+     */
+    private static final class PairHeap {
+
+        private int[] rank;
+        private int[] slot;
+        private int[] version;
+        private int size;
+
+        PairHeap(int capacity) {
+            int initial = Math.max(8, capacity);
+            rank = new int[initial];
+            slot = new int[initial];
+            version = new int[initial];
+        }
+
+        void push(int pairRank, int pairSlot, int pairVersion) {
+            if (size == rank.length) {
+                // The 3n bound is a proof, but an out-of-bounds write here would be a wrong token
+                // rather than an error, so the growth stays.
+                rank = java.util.Arrays.copyOf(rank, size * 2);
+                slot = java.util.Arrays.copyOf(slot, size * 2);
+                version = java.util.Arrays.copyOf(version, size * 2);
+            }
+            int child = size++;
+            while (child > 0) {
+                int parent = (child - 1) >>> 1;
+                if (less(rank[parent], slot[parent], pairRank, pairSlot)) {
+                    break;
+                }
+                rank[child] = rank[parent];
+                slot[child] = slot[parent];
+                version[child] = version[parent];
+                child = parent;
+            }
+            rank[child] = pairRank;
+            slot[child] = pairSlot;
+            version[child] = pairVersion;
+        }
+
+        int peekSlot() {
+            return slot[0];
+        }
+
+        int peekVersion() {
+            return version[0];
+        }
+
+        void pop() {
+            size--;
+            if (size == 0) {
+                return;
+            }
+            int movedRank = rank[size];
+            int movedSlot = slot[size];
+            int movedVersion = version[size];
+            int hole = 0;
+            while (true) {
+                int left = hole * 2 + 1;
+                if (left >= size) {
+                    break;
+                }
+                int child = left + 1 < size
+                        && less(rank[left + 1], slot[left + 1], rank[left], slot[left])
+                        ? left + 1 : left;
+                if (less(movedRank, movedSlot, rank[child], slot[child])) {
+                    break;
+                }
+                rank[hole] = rank[child];
+                slot[hole] = slot[child];
+                version[hole] = version[child];
+                hole = child;
+            }
+            rank[hole] = movedRank;
+            slot[hole] = movedSlot;
+            version[hole] = movedVersion;
+        }
+
+        private static boolean less(int rankA, int slotA, int rankB, int slotB) {
+            return rankA != rankB ? rankA < rankB : slotA < slotB;
         }
     }
 

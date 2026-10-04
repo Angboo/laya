@@ -74,7 +74,7 @@ public final class Question {
      * values and render as {@code "label: 0"} and {@code "label: false"}.
      */
     public static Question choice(String instructions, Map<String, Object> criteria) {
-        require(instructions != null, "a question needs instructions");
+        requireInstructions(instructions);
         require(criteria != null && !criteria.isEmpty(), "a choice question needs criteria");
         return new Question(Type.CHOICE, instructions, new LinkedHashMap<>(criteria), null,
                 null, null);
@@ -82,8 +82,15 @@ public final class Question {
 
     /** A score over ordered levels, rendered as {@code "level <i>: <criterion>"}. */
     public static Question score(String instructions, List<Object> levels) {
-        require(instructions != null, "a question needs instructions");
+        requireInstructions(instructions);
         require(levels != null && !levels.isEmpty(), "a score question needs levels");
+        for (int i = 0; i < levels.size(); i++) {
+            // A null level rendered as the literal text "level 0: null" into the model's input and
+            // came back in the legend as a null value, so the question silently asked about a word
+            // the caller never wrote. Python refuses it; so does this.
+            require(levels.get(i) != null,
+                    "score level " + i + " is null; give every level a description, index 0 first");
+        }
         return new Question(Type.SCORE, instructions, null, new ArrayList<>(levels), null, null);
     }
 
@@ -101,7 +108,7 @@ public final class Question {
      */
     public static Question noul(String instructions, Object falseCriterion, Object trueCriterion,
                                 Map<String, String> labels) {
-        require(instructions != null, "a question needs instructions");
+        requireInstructions(instructions);
         String falseLabel = "false";
         String trueLabel = "true";
         if (labels != null) {
@@ -220,6 +227,18 @@ public final class Question {
      */
     public static String renderCriterion(Object value) {
         return value instanceof String ? (String) value : PythonJson.dumps(value);
+    }
+
+    /**
+     * Instructions must be present and not blank.
+     *
+     * <p>Blank is refused, not just null: an empty or whitespace-only instruction produces the
+     * text {@code "choice question: "} and the model is asked nothing, which it answers anyway with
+     * a confident-looking distribution over the options. Python refuses the same input.
+     */
+    private static void requireInstructions(String instructions) {
+        require(instructions != null && !instructions.isBlank(),
+                "instructions must not be empty; add the text the model should answer");
     }
 
     private static void require(boolean condition, String message) {

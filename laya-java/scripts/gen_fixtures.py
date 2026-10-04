@@ -204,6 +204,17 @@ def tokenizer_ids():
                 "pre_tokenizer": (raw.get("pre_tokenizer") or {}).get("type"),
                 "normalizer": (raw.get("normalizer") or {}).get("type"),
                 "unk_token": raw["model"].get("unk_token"),
+                "added_tokens": len(raw.get("added_tokens") or []),
+                # The english checkpoint keeps 88 of its added tokens OUT of `model.vocab`, with
+                # ids above the vocabulary's own maximum -- `[MASK]` among them. A port that built
+                # its id map from `model.vocab` alone would have no id for masked prediction, so
+                # the count is part of the checkpoint's identity rather than a detail.
+                "added_tokens_outside_vocab": sum(
+                    1 for a in (raw.get("added_tokens") or [])
+                    if a["content"] not in raw["model"].get("vocab", {})),
+                "byte_fallback": raw["model"].get("byte_fallback"),
+                "ignore_merges": raw["model"].get("ignore_merges"),
+                "fuse_unk": raw["model"].get("fuse_unk"),
             },
             "special_ids": {
                 "cls": tok.cls_token_id, "sep": tok.sep_token_id,
@@ -504,12 +515,173 @@ def decode_answers():
     return out
 
 
+def python_json():
+    """CPython's `json.dumps(ensure_ascii=False)` and `round(v, 4)` on values a port gets wrong.
+
+    Needs no checkpoint, so these are the parity tests CI can run without downloading a model.
+
+    Doubles are carried as raw 64-bit patterns rather than as decimal text: the point of the
+    fixture is the SPELLING of a double, so round-tripping the operand through a decimal literal
+    would lose the very thing being measured.
+    """
+    import math
+    import random
+    import struct
+
+    def bits(value):
+        return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+    # Values where Java's own spelling differs from Python's, plus the boundaries of the
+    # fixed/scientific switch, the subnormal floor, and both infinities.
+    hostile = [0.0, -0.0, 1.0, -1.0, 2.0, 0.5, 1.0 / 3, 2.0 / 3, 0.1, 0.2, 0.3,
+               1e-5, 1e-4, 0.0001, 1e15, 1e16, 1e17, 1e23, 1e100, 1e-100, 1e308, 5e-324,
+               2.2250738585072014e-308, 1.7976931348623157e308, 9007199254740993.0,
+               1e7, 1e-3, 123456789.123456789, math.pi, math.e,
+               float("inf"), float("-inf"), float("nan")]
+    rng = random.Random(1091)
+    doubles = list(hostile)
+    # Enough random draws to cover the exponent range and the raw bit patterns, kept small enough
+    # that the committed file stays reviewable: the hostile list above is what actually
+    # discriminates a wrong implementation, and these are the sweep behind it.
+    for _ in range(500):
+        kind = rng.randrange(3)
+        if kind == 0:
+            doubles.append(rng.uniform(-1, 1))
+        elif kind == 1:
+            doubles.append(rng.choice([1, -1]) * 10 ** rng.randint(-320, 300) * rng.random())
+        else:
+            doubles.append(struct.unpack("<d", struct.pack("<Q", rng.getrandbits(64)))[0])
+
+    quote, back, newline, tab = chr(34), chr(92), chr(10), chr(9)
+    structured = [
+        {"b": 1, "a": 2, "z": [1, "x", None, True, 2.5]},
+        {"nested": {"k": {"deep": [1.5, -0.0]}}},
+        ["a", "b" + quote + "c", "d" + back + "e", "f" + newline + "g" + tab + "h",
+         chr(0) + chr(31) + chr(1), chr(0x2028) + chr(0x2029), "/",
+         chr(0xE9) + chr(0x4E2D) + chr(0x1F600)],
+        {chr(0x4E2D) + chr(0x6587): chr(0x503C), "emoji " + chr(0x1F600): [1e16, 1e-05]},
+        "a plain string", 123456789012345678901234567890, -7, True, None, [], {},
+    ]
+
+    # Rounding: real softmax output, and the exactly-representable halfway values a half-up
+    # implementation gets wrong. Both groups are kept separate so a failure says which kind broke.
+    rounding = {"softmax": [], "halfway": [], "uniform": []}
+    for _ in range(100):
+        k = rng.randint(2, 20)
+        z = [rng.gauss(0, 2) for _ in range(k)]
+        top = max(z)
+        exponentials = [math.exp(v - top) for v in z]
+        total = sum(exponentials)
+        rounding["softmax"].extend(v / total for v in exponentials)
+    # Every 53rd step rather than every 7th: the step size does not matter, only that the values
+    # are exact halves at the fourth decimal, and roughly a fifth of them discriminate half-up from
+    # half-even -- which is ample at this size.
+    rounding["halfway"] = [i / 20000.0 for i in range(0, 20000, 53)]
+    rounding["uniform"] = [rng.random() for _ in range(300)]
+
+    return {
+        "doubles": [{"bits": bits(v), "repr": json.dumps(v)} for v in doubles],
+        "structured": [{"value": v, "dumps": json.dumps(v, ensure_ascii=False)}
+                       for v in structured],
+        "round4": {name: [{"bits": bits(v), "r4": round(v, 4)} for v in values]
+                   for name, values in rounding.items()},
+    }
+
+
+# States and questions for the model-backed golden. Public question schema, because this one goes
+# through `ONNXAgent.predict` rather than straight into `build_sequence`.
+PREDICT_CASES = [
+    ("billing-mixed", "We were billed twice for March and want a refund today.", None, {
+        "intent": {"type": "choice", "instructions": "What does the customer want?",
+                   "criteria": {"refund": "money back for a duplicate charge",
+                                "replace": "a replacement unit", "info": "an explanation only"}},
+        "urgency": {"type": "score", "instructions": "How urgent is this?",
+                    "criteria": ["not urgent", "somewhat", "urgent", "critical"]},
+        "duplicate": {"type": "noul", "instructions": "The customer was charged more than once."},
+    }),
+    ("cjk", "\u6211\u4eec\u4e09\u6708\u4efd\u88ab\u91cd\u590d\u6263\u8d39\u4e86\u4e24\u6b21\uff0c\u8bf7\u4eca\u5929\u9000\u8fd8\u3002", "zh", {
+        "intent": {"type": "choice", "instructions": "\u5ba2\u6237\u60f3\u8981\u4ec0\u4e48\uff1f",
+                   "criteria": {"refund": "\u9000\u6b3e", "replace": "\u66f4\u6362"}},
+        "holds": {"type": "noul", "instructions": "\u5ba2\u6237\u88ab\u91cd\u590d\u6263\u8d39\u3002"},
+    }),
+    ("many-options", "The reply was polite but arrived nine days late.", None, {
+        "grade": {"type": "choice", "instructions": "Grade the reply.",
+                  "criteria": {("g%02d" % i): ("grade band number %d" % i) for i in range(14)}},
+    }),
+    ("structured-state", {"order": 1182, "items": ["widget", "case"], "charged": 2,
+                          "currency": "NGN", "note": None}, None, {
+        "double": {"type": "noul", "instructions": "This order was charged twice."},
+        "band": {"type": "score", "instructions": "Rate the severity.",
+                 "criteria": [{"d": "none"}, "minor", 3]},
+    }),
+    ("long-state", "evidence sentence number one about the duplicate charge. " * 120, None, {
+        "intent": {"type": "choice", "instructions": "What should we do?",
+                   "criteria": {"refund": "send money back", "escalate": "pass to a human"}},
+    }),
+    ("unicode-mixed", "Refund \u9000\u6b3e \u0627\u0633\u062a\u0631\u062f\u0627\u062f \u0935\u093e\u092a\u0938\u0940 \U0001f600 now!", "ar", {
+        "intent": {"type": "choice", "instructions": "Pick one.",
+                   "criteria": {"a": "first", "b": "second"}},
+    }),
+]
+
+
+def predict_golden():
+    """`ONNXAgent.predict` and `predict_batch` output on a real graph, for the end-to-end gate.
+
+    Needs an exported graph, which this repository does not ship, so it records `skipped` when
+    `LAYA_ONNX_GRAPH` is unset and the Java test skips in turn. CI exports the checkpoint and
+    regenerates this, the way the .NET lane regenerates its goldens, so a Python-side change shows
+    up here as drift rather than as silence.
+
+    The numbers are model-derived and therefore platform-sensitive in their last reported digit.
+    The Java test compares structure exactly and probabilities within a stated tolerance; it is the
+    test's tolerance that is the gate, not byte equality of this file.
+    """
+    import os
+
+    graph = os.environ.get("LAYA_ONNX_GRAPH")
+    model = os.environ.get("LAYA_PREDICT_MODEL", "multilingual")
+    rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
+                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+    if not graph or not os.path.exists(graph):
+        return {"skipped": "set LAYA_ONNX_GRAPH to an exported laya.onnx to record this family"}
+    from laya.onnx_agent import ONNXAgent
+    agent = ONNXAgent(os.path.join(rig, model), onnx_path=graph)
+    single = {}
+    for cid, state, lang, questions in PREDICT_CASES:
+        result = agent.predict(state, questions, lang=lang)
+        single[cid] = {"state": state, "lang": lang, "questions": questions,
+                       "model": result["model"], "answers": result["answers"],
+                       "usage": result["usage"]}
+    batch_states = [c[1] for c in PREDICT_CASES] + ["short one", "another short state", ""]
+    batch_questions = {
+        "intent": {"type": "choice", "instructions": "What should we do?",
+                   "criteria": {"refund": "send money back", "escalate": "pass to a human",
+                                "ignore": "no action"}},
+        "urgent": {"type": "noul", "instructions": "This needs a human today."},
+    }
+    batches = []
+    for batch_size, sort_by_length in ((None, False), (2, False), (3, True)):
+        kwargs = {"sort_by_length": sort_by_length}
+        if batch_size is not None:
+            kwargs["batch_size"] = batch_size
+        results = agent.predict_batch(batch_states, batch_questions, **kwargs)
+        batches.append({"batch_size": batch_size, "sort_by_length": sort_by_length,
+                        "states": batch_states, "questions": batch_questions,
+                        "results": [{"model": r["model"], "answers": r["answers"],
+                                     "usage": r["usage"]} for r in results]})
+    return {"checkpoint": model, "graph": os.path.basename(graph),
+            "single": single, "batch": batches}
+
+
 FAMILIES = {
     "lang_tables.json": lang_tables,
     "presets.json": presets,
     "tokenizer_ids.json": tokenizer_ids,
     "sequences.json": sequences,
     "decode.json": decode_answers,
+    "python_json.json": python_json,
+    "predict.json": predict_golden,
 }
 
 
@@ -527,21 +699,54 @@ def render(payload):
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
 
+def unverifiable(payload):
+    """True when regeneration produced nothing but skip markers.
+
+    A family that needs a checkpoint or an exported graph records `{"skipped": ...}` when it cannot
+    reach one. That must never be mistaken for data:
+
+    * in write mode it would REPLACE a good committed fixture with a skip marker, so running this
+      script on a machine without the checkpoints would silently delete the parity expectations;
+    * in `--check` mode it would be reported as drift against the committed file, so the gate would
+      fail for the one reason that is not a problem.
+
+    Both are refused below. `--strict` turns "could not verify" into an error, which is what a CI
+    lane that DID download the checkpoints should pass -- there, a skip means the download failed.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if "skipped" in payload:
+        return True
+    # ANY section, not all of them. `tokenizer_ids.json` carries a `corpus_text` section that is
+    # always present, so requiring every section to be skipped let a payload through whose two
+    # per-checkpoint halves were both skip markers -- and the write replaced a 107 KB fixture with
+    # a 9 KB one. Partial regeneration is still unsafe to write.
+    return any("skipped" in value
+               for value in payload.values() if isinstance(value, dict))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true",
                         help="do not write; exit 1 if a committed fixture would change")
     parser.add_argument("--only", action="append", metavar="FILE",
                         help="restrict to one fixture file (repeatable)")
+    parser.add_argument("--strict", action="store_true",
+                        help="treat a family that cannot be regenerated as an error, for a lane "
+                             "that is supposed to have the checkpoints")
     args = parser.parse_args(argv)
 
     os.makedirs(FIXTURES, exist_ok=True)
-    stale, written = [], []
+    stale, written, unverified = [], [], []
     for filename, build in sorted(FAMILIES.items()):
         if args.only and filename not in args.only:
             continue
         path = os.path.join(FIXTURES, filename)
-        fresh = render(build())
+        payload = build()
+        fresh = render(payload)
+        if unverifiable(payload) and os.path.exists(path):
+            unverified.append(filename)
+            continue
         if args.check:
             try:
                 with open(path, "r", encoding="utf-8") as handle:
@@ -556,6 +761,14 @@ def main(argv=None):
                 handle.write(fresh)
             written.append("%s (%d bytes)" % (filename, len(fresh)))
 
+    for filename in unverified:
+        print("gen_fixtures: %s left alone: it needs a checkpoint or an exported graph this run "
+              "could not reach" % filename, file=sys.stderr)
+    if unverified and args.strict:
+        print("gen_fixtures: --strict was asked for, so a family this run could not regenerate is "
+              "an error: the checkpoints were expected to be present", file=sys.stderr)
+        return 1
+
     if args.check:
         for line in stale:
             print("gen_fixtures: " + line, file=sys.stderr)
@@ -563,7 +776,8 @@ def main(argv=None):
             print("gen_fixtures: run laya-java/scripts/gen_fixtures.py and commit the result",
                   file=sys.stderr)
             return 1
-        print("gen_fixtures: fixtures match laya")
+        print("gen_fixtures: fixtures match laya%s"
+              % (" (%d family/families unverified)" % len(unverified) if unverified else ""))
         return 0
     for line in written:
         print("wrote " + line)

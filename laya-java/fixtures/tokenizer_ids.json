@@ -7,7 +7,12 @@
       "merges": 50009,
       "pre_tokenizer": "ByteLevel",
       "normalizer": "NFC",
-      "unk_token": null
+      "unk_token": null,
+      "added_tokens": 116,
+      "added_tokens_outside_vocab": 88,
+      "byte_fallback": false,
+      "ignore_merges": false,
+      "fuse_unk": false
     },
     "special_ids": {
       "cls": 50281,
@@ -3496,7 +3501,12 @@
       "merges": 580604,
       "pre_tokenizer": "Metaspace",
       "normalizer": "Replace",
-      "unk_token": "<unk>"
+      "unk_token": "<unk>",
+      "added_tokens": 249,
+      "added_tokens_outside_vocab": 0,
+      "byte_fallback": true,
+      "ignore_merges": false,
+      "fuse_unk": true
     },
     "special_ids": {
       "cls": 2,

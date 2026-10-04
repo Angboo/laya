@@ -4,6 +4,7 @@ import java.math.BigInteger;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Serialises a value the way CPython's {@code json.dumps(..., ensure_ascii=False)} does.
@@ -39,11 +40,14 @@ public final class PythonJson {
     /** The compact form: {@code ", "} between items and {@code ": "} after a key. */
     public static String dumps(Object value) {
         StringBuilder out = new StringBuilder();
-        write(out, value);
+        // The identity set tracks the containers currently being written, so a cycle is refused
+        // rather than recursed into. The state is caller-supplied and a cycle used to arrive as a
+        // StackOverflowError -- an Error, which a server's `catch (Exception)` does not contain.
+        write(out, value, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
         return out.toString();
     }
 
-    private static void write(StringBuilder out, Object value) {
+    private static void write(StringBuilder out, Object value, Set<Object> open) {
         if (value == null) {
             out.append("null");
         } else if (value instanceof String) {
@@ -59,9 +63,13 @@ public final class PythonJson {
             // integer criterion must not be narrowed on the way through.
             out.append(value.toString());
         } else if (value instanceof Map) {
-            writeObject(out, (Map<?, ?>) value);
+            enter(open, value);
+            writeObject(out, (Map<?, ?>) value, open);
+            open.remove(value);
         } else if (value instanceof List) {
-            writeArray(out, (List<?>) value);
+            enter(open, value);
+            writeArray(out, (List<?>) value, open);
+            open.remove(value);
         } else {
             throw new Json.JsonException(
                     "cannot serialise " + value.getClass().getName() + " the way Python's json "
@@ -69,7 +77,15 @@ public final class PythonJson {
         }
     }
 
-    private static void writeObject(StringBuilder out, Map<?, ?> map) {
+    /** Refuses a container that is already being written, which is what a cycle looks like. */
+    private static void enter(Set<Object> open, Object container) {
+        if (!open.add(container)) {
+            // CPython's wording, because a caller who hits this is reading both messages.
+            throw new Json.JsonException("Circular reference detected");
+        }
+    }
+
+    private static void writeObject(StringBuilder out, Map<?, ?> map, Set<Object> open) {
         out.append('{');
         boolean first = true;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -77,28 +93,53 @@ public final class PythonJson {
                 out.append(", ");
             }
             first = false;
-            Object key = entry.getKey();
-            if (!(key instanceof String)) {
-                // Python coerces int/bool/None keys; laya never produces them, and guessing which
-                // coercion applied is how a port starts inventing text.
-                throw new Json.JsonException(
-                        "only string keys are supported, got "
-                        + (key == null ? "null" : key.getClass().getName()));
-            }
-            writeString(out, (String) key);
+            writeString(out, key(entry.getKey()));
             out.append(": ");
-            write(out, entry.getValue());
+            write(out, entry.getValue(), open);
         }
         out.append('}');
     }
 
-    private static void writeArray(StringBuilder out, List<?> list) {
+    /**
+     * A mapping key, coerced the way CPython coerces one.
+     *
+     * <p>CPython writes a non-string key as text rather than refusing it: {@code {1: "x"}} becomes
+     * {@code {"1": "x"}}, {@code True} becomes {@code "true"} and {@code None} becomes
+     * {@code "null"}. This used to throw instead, on the stated grounds that laya never produces
+     * such a key -- which is true of laya and not of the <b>caller-supplied</b> state that reaches
+     * here, so a {@code Map<Integer, ?>} state was refused where Python answers.
+     *
+     * <p>A key CPython itself refuses (a list, a map, an arbitrary object) is still refused here.
+     */
+    private static String key(Object key) {
+        if (key instanceof String) {
+            return (String) key;
+        }
+        if (key == null) {
+            return "null";
+        }
+        if (key instanceof Boolean) {
+            return ((Boolean) key) ? "true" : "false";
+        }
+        if (key instanceof Double || key instanceof Float) {
+            return repr(((Number) key).doubleValue());
+        }
+        if (key instanceof Integer || key instanceof Long || key instanceof Short
+                || key instanceof Byte || key instanceof BigInteger) {
+            return key.toString();
+        }
+        throw new Json.JsonException(
+                "keys must be a string, a number, a boolean or null, as CPython requires; got "
+                + key.getClass().getName());
+    }
+
+    private static void writeArray(StringBuilder out, List<?> list, Set<Object> open) {
         out.append('[');
         for (int i = 0; i < list.size(); i++) {
             if (i > 0) {
                 out.append(", ");
             }
-            write(out, list.get(i));
+            write(out, list.get(i), open);
         }
         out.append(']');
     }
