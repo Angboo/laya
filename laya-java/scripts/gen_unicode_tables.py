@@ -35,6 +35,7 @@ TARGET = os.path.join(
     "UnicodeTables.java")
 
 WORD = re.compile(r"[^\W\d_]", re.UNICODE)
+DIGIT = re.compile(r"\d", re.UNICODE)
 MAX = 0x110000
 SURROGATES = range(0xD800, 0xE000)
 
@@ -78,6 +79,9 @@ def render():
     alpha = ranges(lambda cp: chr(cp).isalpha())
     word = ranges(lambda cp: WORD.fullmatch(chr(cp)) is not None)
     combining = ranges(lambda cp: unicodedata.combining(chr(cp)) != 0)
+    digit = ranges(lambda cp: DIGIT.fullmatch(chr(cp)) is not None)
+    upper = ranges(lambda cp: chr(cp).isupper())
+    lower = ranges(lambda cp: chr(cp).islower())
 
     # Every code point whose lowercase is more than one code point. In Unicode 15 there is
     # exactly one, and `laya/lang.py` depends on it: it replaces U+0130 before lowering, because
@@ -132,6 +136,14 @@ public final class UnicodeTables {
         + "\n"
         + table("COMBINING", combining,
                 "Code points with a non-zero canonical combining class.")
+        + "\n"
+        + table("DIGIT", digit,
+                "Python's {@code \\\\d}: the Nd category. Needed because Python's {@code \\\\w} is\n"
+                "     * letters plus every numeric category, and the regexes subtract {@code \\\\d} from it.")
+        + "\n"
+        + table("UPPER", upper, "Python's {@code str.isupper()} for one character.")
+        + "\n"
+        + table("LOWER", lower, "Python's {@code str.islower()} for one character.")
     )
 
     multi_cases = "\n".join(
@@ -151,6 +163,86 @@ public final class UnicodeTables {
     /** Whether {@code unicodedata.combining} would return non-zero for this code point. */
     public static boolean isCombining(int codePoint) {
         return contains(COMBINING, codePoint);
+    }
+
+    /** Python's {@code \\d}: the Nd category. The JDK misses 30 of these at Unicode 13. */
+    public static boolean isDigit(int codePoint) {
+        return contains(DIGIT, codePoint);
+    }
+
+    /**
+     * Python's {@code \\w} for a str: alphanumeric or underscore.
+     *
+     * <p>Spelled out because the regexes in {@code laya/lang.py} subtract from it --
+     * {@code [^\\W\\d_]} is this minus digits and underscore, {@code [^\\W_]} is this minus
+     * underscore -- and Java's own {@code \\w} is a different set again (it admits combining
+     * marks and join controls, which Python's does not).
+     */
+    public static boolean isPythonWordChar(int codePoint) {
+        return codePoint == '_' || isWordChar(codePoint) || isDigit(codePoint);
+    }
+
+    /** Python's {@code [^\\W_]}: a word character that is not the underscore. */
+    public static boolean isWordOrDigit(int codePoint) {
+        return isWordChar(codePoint) || isDigit(codePoint);
+    }
+
+    /**
+     * Python's {@code str.isupper()} for one code point.
+     *
+     * <p>A table, because {@code Character.isUpperCase} misses 40 of these and
+     * {@code Character.isLowerCase} misses 200 at Unicode 13 -- U+10FC, a Georgian modifier
+     * letter Python calls lowercase through Other_Lowercase, among them. Detection reads the case
+     * of the first letter of a non-Latin run to tell a proper noun from a request, so a letter
+     * whose case the JDK does not know would change that decision.
+     */
+    public static boolean isUpper(int codePoint) {
+        return contains(UPPER, codePoint);
+    }
+
+    /** Python's {@code str.islower()} for one code point. */
+    public static boolean isLower(int codePoint) {
+        return contains(LOWER, codePoint);
+    }
+
+    /** Whether a code point has case at all, which is what {@code str.isupper()} requires one of. */
+    public static boolean isCased(int codePoint) {
+        return isUpper(codePoint) || isLower(codePoint)
+                || Character.getType(codePoint) == Character.TITLECASE_LETTER;
+    }
+
+    /**
+     * Python's {@code str.isupper()} for a whole string: at least one cased code point, and every
+     * cased code point uppercase.
+     */
+    public static boolean isUpperString(String text) {
+        boolean sawCased = false;
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            i += Character.charCount(codePoint);
+            if (!isCased(codePoint)) {
+                continue;
+            }
+            if (!isUpper(codePoint)) {
+                return false;
+            }
+            sawCased = true;
+        }
+        return sawCased;
+    }
+
+    /** Whether any code point of {@code text} is lowercase, as Python's {@code islower} sees it. */
+    public static boolean hasLower(String text) {
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            i += Character.charCount(codePoint);
+            if (isLower(codePoint)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
