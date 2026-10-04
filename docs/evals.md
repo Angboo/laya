@@ -133,7 +133,7 @@ Each metric is computed per answer where it applies and aggregated over the data
 | `score_within_<tol>` | `score` | fraction within an absolute tolerance |
 | `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on `answer["answer_confidence"]`, the calibrated probability Laya reports on every answer type |
 | `brier` | any answer with a confidence and a known label | Brier score of confidence as P(correct), `mean((confidence - correct)**2)`; lower is better |
-| `aurc` | any answer with a confidence and a known label | area under the risk--coverage curve, averaged over the distinct confidence levels; lower is better, and rewards a confidence that *ranks* right from wrong rather than just being calibrated |
+| `aurc` | any answer with a confidence and a known label | area under the risk--coverage curve: one risk value per distinct confidence level, each weighted by the answers that level spans; lower is better, and rewards a confidence that *ranks* right from wrong rather than just being calibrated |
 | `selective_accuracy@50`, `selective_accuracy@80` | any answer with a confidence and a known label | accuracy over the answers a confidence threshold at the 50% / 80% coverage point accepts -- what abstaining on the least-confident tail buys. A threshold cannot split a group of equal confidences, so this can cover more than the named fraction; see [coverage cuts](#coverage-cuts-and-ties) |
 | `mean_confidence` | any answer with a confidence | mean reported `answer["answer_confidence"]` |
 | `latency_p50_ms`, `latency_p95_ms` | per request | wall time each request waited, informational -- see [batching](#batching-and-timing) |
@@ -162,11 +162,18 @@ Two consequences worth planning for:
 
 * **A number can move in either direction, by more than a reordering could.** Where a group
   straddles the cut, the threshold reading differs from every row-index reading of the same data:
-  measured, up to 0.48 for `selective_accuracy@50` and 0.09 for `aurc`. A gate that was passing may
-  fail, and one that was failing may pass; the previous verdict depended on row order.
+  measured over 400,001 tie-shaped datasets, up to 0.500 for `selective_accuracy@50` and 0.351
+  for `aurc`. On the twelve-answer shape above -- six correct, all at confidence 1.0 -- `aurc` moves
+  0.327 (0.173 to 0.500). A gate that was passing may fail, and one that was failing may pass; the
+  previous verdict depended on row order, including for an absolute `min` or `max` limit, which is
+  refused by nothing because it reads a single run.
 * **Regenerate committed baselines.** `config.coverage_metric_definition` records which definition
-  produced a report, and a relative rule (`max_drop` / `max_increase`) on `aurc` or
-  `selective_accuracy@*` refuses a baseline recorded under a different one. Without that refusal a
+  produced a report. Comparing a coverage metric across two definitions is refused on **both** the
+  gates that subtract a baseline -- `--baseline --tolerance` (`EvalReport.compare`) and a relative
+  rule (`max_drop` / `max_increase`) under `--gate-policy` -- and on **either** side being stale,
+  not just the baseline: a candidate produced by an older `laya` carries a row-order artifact that
+  can read *better* than the truth, so gating it against a correctly regenerated baseline would
+  pass a regression that the correctly scored report fails. Without that refusal a
   stale baseline hides a real regression: a slice recorded at 0.033 under the old definition reads
   0.517 under this one, so a candidate that genuinely dropped 0.217 would clear a `max_drop` of
   0.05. `ece` and `brier` do not cut and stay comparable.

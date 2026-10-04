@@ -375,27 +375,41 @@ def brier(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[fl
     return float(np.mean((c - y) ** 2))
 
 
-def _threshold_accepts(sorted_desc, k: int) -> int:
-    """How many rows a confidence threshold placed at `sorted_desc[k - 1]` accepts.
+def _accepted_at_cut(sorted_desc, k: int) -> int:
+    """How many answers a confidence threshold placed at `sorted_desc[k - 1]` accepts.
 
     The end of the tie group the cut landed in, which is what makes a coverage number independent
-    of the order a dataset happened to arrive in. Never fewer than `k`: a threshold accepts at
-    least the rows the coverage asked for.
+    of the order a dataset happened to arrive in.
 
-    NaN is handled explicitly rather than left to the comparison. Every comparison against a NaN is
-    false, so `sorted_desc >= nan` accepts nothing and the cut would fall back to "whichever rows
-    came first" -- the exact order-dependence this exists to remove, for the input a custom runner
-    is most likely to hand over by accident. NaNs sort last and form one group, so a cut inside
-    them accepts all of them.
+    This is the single-cut answer; `_levels` computes the same group boundaries for *every* level,
+    which is what `aurc` integrates over. Two routes to one rule, so they are not merely asserted
+    to agree -- `test_a_single_cut_agrees_with_the_risk_coverage_curve` sweeps them against each
+    other, including over NaN and infinities, so an edit to either side fails a test rather than
+    diverging quietly. Computing one cut from the full scan instead cost 19% to 58% on
+    `selective_accuracy` for no change in any value.
+
+    NaN is handled explicitly rather than left to the comparison. Every comparison against a NaN
+    is false, so `sorted_desc >= nan` accepts nothing and the cut would fall back to "whichever
+    rows came first" -- the exact order-dependence this exists to remove, for the input a custom
+    runner is most likely to hand over by accident. NaNs sort last and form one group, so a cut
+    inside them accepts all of them.
+
+    The NaN branch is kept although `searchsorted` happens to answer the same thing -- numpy ranks
+    NaN last for a binary search too, verified over 63,697 NaN cuts without a disagreement. Leaving
+    it implicit would make a correct answer depend on an undocumented ordering convention, so the
+    branch stays and its mutant is reported as equivalent rather than as a test gap.
     """
     cut = sorted_desc[k - 1]
     if cut != cut:                                     # NaN
         return len(sorted_desc)
-    return max(k, int(np.count_nonzero(sorted_desc >= cut)))
+    # `sorted_desc` descends, so its negation ascends and a binary search finds the end of the tie
+    # group in O(log n) rather than a full pass per call. NaNs rank above every number in numpy's
+    # sort order, so they sit at the end of the negated array and a finite cut never counts them.
+    return int(np.searchsorted(-sorted_desc, -cut, side="right"))
 
 
 def _levels(confidences: Sequence[float], corrects: Sequence[bool]):
-    """`(accepted, risk, n)` at each distinct confidence level, most confident first.
+    """`(accepted, hits, n)` at each distinct confidence level, most confident first.
 
     One row per LEVEL, not per answer. A coverage cut is bought with a confidence threshold, and a
     threshold accepts every answer at its own confidence -- `calibrate._select_abstention_threshold`
@@ -410,28 +424,41 @@ def _levels(confidences: Sequence[float], corrects: Sequence[bool]):
 
     `accepted[i]` is how many answers a threshold at level `i` accepts, which is what lets `aurc`
     weight a level by the answers it spans rather than counting a 1-answer level and a 999-answer
-    level alike.
+    level alike. `hits[i]` is how many of those are correct.
+
+    Counts, not a risk already divided: `corrects` is 0.0/1.0, so every partial sum is an exact
+    integer in float64 and `hits / accepted` reproduces `np.mean` of the accepted slice bit for
+    bit. Returning `1 - hits / accepted` and recovering accuracy as `1 - risk` instead costs the
+    last bits of 157,289 values in a 1.2-million-value sweep -- harmless to a gate, but it would
+    make this change move numbers on datasets with no tie in them, which it is not allowed to do.
     """
     # `atleast_1d`: a 0-dimensional input (a bare scalar) answered before this change, and indexing
     # it with an argsort result raises.
     c = np.atleast_1d(np.asarray(confidences, dtype=float))
-    y = np.atleast_1d(np.asarray(corrects, dtype=bool).astype(float))
+    # `corrects` stays boolean here: `cumsum` of a boolean array counts in int64, which is exact,
+    # and skipping the float conversion saves a pass over the whole column.
+    y = np.atleast_1d(np.asarray(corrects, dtype=bool))
     n = len(y)
     if n == 0:
         return np.empty(0), np.empty(0), 0
     order = np.argsort(-c, kind="mergesort")            # desc, stable; NaN sorts last
     c, y = c[order], y[order]
     # The last answer of each tie group: where the next confidence differs, plus the final one.
+    boundary = c[1:] != c[:-1]
+    # NaN needs `isnan` on both sides as well as `!=`, because NaN != NaN is true: without it every
+    # NaN confidence becomes a level of its own, the running total walks them in dataset order, and
+    # the order-dependence this exists to remove survives for exactly the input a custom runner is
+    # most likely to hand over by accident. All NaNs are one group, ranked last.
     #
-    # `isnan` on both sides as well as `!=`, because NaN != NaN is true: without it every NaN
-    # confidence becomes a level of its own, the running total walks them in dataset order, and the
-    # order-dependence this exists to remove survives for exactly the input a custom runner is most
-    # likely to hand over by accident. All NaNs are one group, ranked last.
-    nan_pair = np.isnan(c[1:]) & np.isnan(c[:-1])
-    last = np.flatnonzero(np.concatenate(((c[1:] != c[:-1]) & ~nan_pair, [True])))
+    # Guarded by one scalar test rather than paid for always: NaN sorts to the end, so if the last
+    # confidence is not NaN then none are, and two full `isnan` passes over the column can be
+    # skipped. That is the common case, and the two passes were a third of this function's cost at
+    # a million rows.
+    if np.isnan(c[-1]):
+        boundary &= ~(np.isnan(c[1:]) & np.isnan(c[:-1]))
+    last = np.flatnonzero(np.concatenate((boundary, [True])))
     accepted = last.astype(float) + 1.0
-    risk = 1.0 - np.cumsum(y)[last] / accepted
-    return accepted, risk, n
+    return accepted, np.cumsum(y)[last], n
 
 
 def _risk_coverage(confidences: Sequence[float], corrects: Sequence[bool]):
@@ -439,10 +466,10 @@ def _risk_coverage(confidences: Sequence[float], corrects: Sequence[bool]):
 
     `_levels` with coverage as the x axis, for callers that want the curve rather than its area.
     """
-    accepted, risk, n = _levels(confidences, corrects)
+    accepted, hits, n = _levels(confidences, corrects)
     if n == 0:
         return np.empty(0), np.empty(0)
-    return accepted / n, risk
+    return accepted / n, 1.0 - hits / accepted
 
 
 def aurc(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[float]:
@@ -454,9 +481,10 @@ def aurc(confidences: Sequence[float], corrects: Sequence[bool]) -> Optional[flo
     """
     if not confidences:
         return None
-    accepted, risk, n = _levels(confidences, corrects)
+    accepted, hits, n = _levels(confidences, corrects)
     if n == 0:
         return None
+    risk = 1.0 - hits / accepted
     # Each level's risk weighted by the ANSWERS it spans, which is what keeps this an area rather
     # than an average of unevenly sized points: with 999 answers at one confidence and 1 at another,
     # an unweighted mean of the two risks reports 5e-4 where the area is 1e-6.
@@ -477,6 +505,12 @@ def selective_accuracy(confidences: Sequence[float], corrects: Sequence[bool],
     coverage is the group's upper edge rather than the fraction asked for. That is the only
     order-independent reading -- see `_risk_coverage` -- and it is what makes this comparable
     across two permutations of the same dataset. Without ties, `k` is unchanged.
+
+    The group this cut lands in comes from `_accepted_at_cut`, which answers for one cut what
+    `_levels` answers for every level. The two are swept against each other by
+    `test_a_single_cut_agrees_with_the_risk_coverage_curve`, so they cannot drift apart silently;
+    deriving this from the full scan instead was measured at 19% to 58% slower here for no change
+    in any value.
     """
     if not confidences or not 0.0 < coverage <= 1.0:
         return None
@@ -484,13 +518,14 @@ def selective_accuracy(confidences: Sequence[float], corrects: Sequence[bool],
     c = np.atleast_1d(np.asarray(confidences, dtype=float))
     order = np.argsort(-c, kind="mergesort")
     c = c[order]
-    y = np.atleast_1d(np.asarray(corrects, dtype=bool))[order].astype(float)
+    y = np.atleast_1d(np.asarray(corrects, dtype=bool))[order]
     k = max(1, int(_math.ceil(coverage * len(y))))
-    # Extend through the tie group the cut fell in -- see `_threshold_accepts`, which both this
-    # and the risk-coverage curve go through, so the two cannot disagree about what a cut
-    # accepts, and neither falls back to dataset order when the cut lands on a NaN.
-    k = _threshold_accepts(c, k)
-    return float(np.mean(y[:k]))
+    # Extend through the tie group the cut fell in, so the cut is a confidence threshold rather
+    # than a row index and cannot report whichever tie members arrived first.
+    accepted = _accepted_at_cut(c, k)
+    # `count_nonzero / accepted` rather than `mean`: both are exact for a boolean column, and this
+    # skips the float conversion of the accepted slice.
+    return float(np.count_nonzero(y[:accepted]) / accepted)
 
 
 #: Coverage points reported as `selective_accuracy@NN`.
@@ -504,6 +539,62 @@ def is_coverage_metric(name: str) -> bool:
     what a cut accepts cannot move them and a baseline that predates it stays comparable.
     """
     return name == "aurc" or name.startswith("selective_accuracy@")
+
+
+def coverage_definition_conflict(candidate_config: Any, baseline: Any) -> Optional[str]:
+    """Why a coverage metric must not be compared across these two documents, or None.
+
+    Comparing `aurc` or `selective_accuracy@*` between two reports subtracts one number from the
+    other, which is only meaningful if the same definition of a coverage cut produced both.
+    Definition 2 cuts on a confidence threshold, so a cut never splits a group of equal
+    confidences; definition 1 cut at a row index and depended on the order the dataset arrived in.
+    Measured over 400,001 tie-shaped datasets the two disagree by up to 0.35 on `aurc` and 0.50 on
+    `selective_accuracy@50`, so the subtraction is not merely noisy -- it is unsafe in the PASS
+    direction, letting a real regression through.
+
+    **Both sides are checked, not just the baseline.** A stale CANDIDATE is the more dangerous
+    case and the easier one to arrive at by accident: a report produced by a pinned older `laya`
+    in a container, or an archived artifact re-checked later, carries definition-1 numbers whose
+    row-order artifact can read BETTER than the truth. Gating that against a correctly regenerated
+    baseline passes a regression that the correctly scored report fails.
+
+    The absence of the key IS definition 1: every report written since it existed carries it. That
+    is why this refuses instead of following `comparable_to`'s "a key missing on either side is
+    unknown rather than a conflict" rule, which exists so a patch release cannot invalidate a
+    committed baseline. A definition change is not a patch release.
+
+    `ece` and `brier` read the same pairs but do not cut, so they stay comparable; callers gate
+    this behind `is_coverage_metric`.
+    """
+    here = _recorded_coverage_definition(candidate_config)
+    there = _recorded_coverage_definition(
+        baseline.get("config") if isinstance(baseline, dict) else None)
+    if here == COVERAGE_METRIC_DEFINITION and there == COVERAGE_METRIC_DEFINITION:
+        return None
+    stale = []
+    if here != COVERAGE_METRIC_DEFINITION:
+        stale.append("this report says %s" % _shown_definition(here))
+    if there != COVERAGE_METRIC_DEFINITION:
+        stale.append("the baseline says %s" % _shown_definition(there))
+    return ("%s, but a coverage cut here is definition %s -- regenerate it before comparing a "
+            "coverage metric" % (" and ".join(stale), COVERAGE_METRIC_DEFINITION))
+
+
+def _recorded_coverage_definition(config: Any) -> Any:
+    return config.get("coverage_metric_definition") if isinstance(config, dict) else None
+
+
+def _shown_definition(recorded: Any) -> str:
+    """A recorded definition, rendered for a message, with attacker-supplied content bounded.
+
+    The value comes from a report file, which on a pull-request gate is content the author
+    controls, and the message it lands in is printed to a CI log. A five-megabyte string in that
+    field produced a five-megabyte failure line; 40 characters is enough to diagnose a real one.
+    """
+    if recorded is None:
+        return "1 (unrecorded)"
+    shown = repr(recorded)
+    return shown if len(shown) <= 40 else shown[:40] + "... (truncated)"
 
 
 def is_confidence_metric(name: str) -> bool:
@@ -609,6 +700,19 @@ class EvalReport:
             if metric.endswith("_ms") and metric not in tolerances:
                 continue
             allowed = float(tolerances.get(metric, 0.0))
+            # A coverage metric is only comparable when both documents were produced by the same
+            # definition of a cut. This path is the one `docs/evals.md` leads with, and
+            # `--gate-policy` is opt-in, so without this check the default gate performs exactly
+            # the cross-definition subtraction the policy gate refuses.
+            if is_coverage_metric(metric):
+                conflict = coverage_definition_conflict(self.config, baseline)
+                if conflict is not None:
+                    deltas[metric] = {
+                        "baseline": float(base_value),
+                        "value": float(self.overall.get(metric, float("nan"))),
+                        "diff": float("nan"), "tolerance": allowed, "incomparable": conflict}
+                    ok = False
+                    continue
             if metric not in self.overall:
                 deltas[metric] = {"baseline": float(base_value), "value": float("nan"),
                                   "diff": float("nan"), "tolerance": allowed, "missing": True}

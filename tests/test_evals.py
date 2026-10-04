@@ -320,7 +320,7 @@ def test_report_metrics_survive_a_permuted_dataset():
 def test_a_relative_rule_refuses_a_baseline_from_the_old_coverage_definition(tmp_path):
     """A `max_drop` across definitions is unsafe in the PASS direction, so it must not be computed.
 
-    The two definitions disagree by as much as 0.48 on the same answers. A slice recorded at 0.033
+    The two definitions disagree by up to 0.500 on the same answers. A slice recorded at 0.033
     by the old one reads 0.517 under this one, so subtracting them lets a candidate that genuinely
     dropped 0.217 clear a `max_drop` of 0.05 -- a real regression shipping because a baseline is
     stale. `comparable_to` cannot see it: the dataset bytes and the question schema are identical,
@@ -337,10 +337,10 @@ def test_a_relative_rule_refuses_a_baseline_from_the_old_coverage_definition(tmp
 
     stale = _coverage_gate_report(0.033333, None)
     failures = _eval_policy.check_policy(candidate, policy, stale)
-    assert any("regenerate the baseline" in f for f in failures), failures
-    assert any("definition 1 (unrecorded)" in f for f in failures), failures
+    assert any("regenerate it before comparing" in f for f in failures), failures
+    assert any("the baseline says 1 (unrecorded)" in f for f in failures), failures
     # an explicit version 1 is refused the same way
-    assert any("regenerate the baseline" in f for f in
+    assert any("regenerate it before comparing" in f for f in
                _eval_policy.check_policy(candidate, policy, _coverage_gate_report(0.033333, 1)))
 
     # regenerated under this definition, the same gate CATCHES the regression it was hiding
@@ -382,6 +382,81 @@ def test_an_absolute_rule_needs_no_baseline_and_is_unaffected(tmp_path):
     assert _eval_policy.check_policy(candidate, policy, None) == []
 
 
+def test_a_stale_candidate_is_refused_as_well_as_a_stale_baseline(tmp_path):
+    """The dangerous direction: an old-definition CANDIDATE can read BETTER than the truth.
+
+    A report scored by the old definition carries a row-order artifact. Here the same slice reads
+    1.000 under definition 1 (its correct rows happened to be listed first) where definition 2 says
+    0.500, so subtracting it from a correctly regenerated 0.500 baseline shows no drop at all and
+    the gate passes -- while the honestly scored candidate fails. Checking only the baseline leaves
+    this open, and it is the easier of the two to reach by accident: a CI artifact produced by a
+    pinned older `laya`, or an archived report re-checked after the baseline was regenerated.
+    """
+    from laya import _eval_policy
+
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "selective_accuracy@50",
+                   "min_count": 5, "max_drop": 0.05}))
+    fresh_baseline = _coverage_gate_report(0.50, evals.COVERAGE_METRIC_DEFINITION)
+    stale_candidate = EvalReport(**_coverage_gate_report(1.0, None))
+
+    failures = _eval_policy.check_policy(stale_candidate, policy, fresh_baseline)
+    assert any("this report says 1 (unrecorded)" in f for f in failures), failures
+    # Proof the refusal is what stops it: the subtraction itself sees 1.0 against 0.50, which is a
+    # GAIN, so without the refusal there is no `max_drop` failure to catch the regression.
+    assert not any("max_drop" in f for f in failures), failures
+    # both sides stale is refused too, and says so about both
+    both = _eval_policy.check_policy(stale_candidate, policy, _coverage_gate_report(0.50, None))
+    assert any("this report says" in f and "the baseline says" in f for f in both), both
+
+
+def test_compare_refuses_a_coverage_metric_across_definitions():
+    """`EvalReport.compare` is the gate this project's docs lead with, and it also subtracts.
+
+    `--gate-policy` is opt-in; `--baseline --tolerance` is the documented default. A refusal that
+    covered only the policy gate would leave the usual path performing exactly the cross-definition
+    subtraction the policy gate exists to refuse.
+    """
+    report = EvalReport(**_coverage_gate_report(0.50, evals.COVERAGE_METRIC_DEFINITION))
+    stale = _coverage_gate_report(0.47, None)
+
+    ok, deltas = report.compare(stale, {"selective_accuracy@50": 0.10})
+    assert not ok, deltas
+    assert "incomparable" in deltas["selective_accuracy@50"], deltas
+    # Without the refusal this passes: 0.50 against 0.47 is a 0.03 move inside a 0.10 tolerance,
+    # while the regenerated baseline for the same answers is 0.03 and the real move is 0.47.
+    fresh = _coverage_gate_report(0.47, evals.COVERAGE_METRIC_DEFINITION)
+    ok_same_definition, deltas_same = report.compare(fresh, {"selective_accuracy@50": 0.10})
+    assert ok_same_definition, deltas_same
+    assert "incomparable" not in deltas_same["selective_accuracy@50"]
+    # `ece` does not cut, so an unstamped baseline stays comparable
+    ece = EvalReport(**_coverage_gate_report(0.10, evals.COVERAGE_METRIC_DEFINITION, metric="ece"))
+    ok_ece, deltas_ece = ece.compare(_coverage_gate_report(0.11, None, metric="ece"),
+                                     {"ece": 0.05})
+    assert ok_ece, deltas_ece
+
+
+def test_the_refusal_bounds_a_hostile_recorded_definition(tmp_path):
+    """The stamp is read from a report file, which on a pull-request gate the author writes.
+
+    The refusal names the value it found, and that message is printed to a CI log, so the value is
+    attacker-controlled content on its way into a log. Five megabytes in the field produced a
+    five-megabyte failure line before this was bounded.
+    """
+    from laya import _eval_policy
+
+    policy = _eval_policy.load_policy(_write_gate_policy(
+        tmp_path, {"slice": {"language": "zh"}, "metric": "selective_accuracy@50",
+                   "min_count": 5, "max_drop": 0.05}))
+    candidate = EvalReport(**_coverage_gate_report(0.30, evals.COVERAGE_METRIC_DEFINITION))
+
+    failures = _eval_policy.check_policy(candidate, policy,
+                                         _coverage_gate_report(0.03, "x" * 5_000_000))
+    assert failures
+    assert max(len(f) for f in failures) < 400, max(len(f) for f in failures)
+    assert any("truncated" in f for f in failures), failures
+
+
 def test_every_report_records_which_coverage_definition_produced_it():
     report = evaluate(StubRunner({"s1": {"intent": choice_answer("a")}}),
                       Dataset([Example("s1", Q, {"intent": "a"})]))
@@ -408,6 +483,74 @@ def test_aurc_is_bit_identical_to_the_per_answer_mean_without_ties():
         y = np.asarray(corr, dtype=bool)[order].astype(float)
         per_answer = 1.0 - np.cumsum(y) / np.arange(1, n + 1)
         assert aurc(conf, corr) == float(np.mean(per_answer))
+
+
+def test_a_single_cut_agrees_with_the_risk_coverage_curve():
+    """The two routes to one rule must not drift apart, so a test holds them together.
+
+    `selective_accuracy` answers for one cut (`_accepted_at_cut`, a binary search) what `_levels`
+    answers for every level (a full scan, which `aurc` integrates). Deriving the single cut from
+    the full scan was measured 19% to 58% slower for no change in any value, so both exist -- and
+    a comment asserting they agree would be enforced by nothing. This is the enforcement: an edit
+    to either side fails here.
+
+    Exact equality, not `approx`: both routes divide one exact integer count by another, over the
+    same accepted set, so any difference at all is a real divergence rather than rounding.
+    """
+    import math
+    import random
+
+    rng = random.Random(13)
+    pool = [0.0, -0.0, 1.0, 0.5, 0.25, -1.0, 2.0,
+            float("nan"), float("inf"), -float("inf"), 1.0 - 2.0 ** -52]
+    for _ in range(4000):
+        n = rng.randint(1, 14)
+        conf = [rng.choice(pool) for _ in range(n)]
+        corr = [rng.random() < 0.5 for _ in range(n)]
+        accepted, hits, levels_n = evals._levels(conf, corr)
+        assert levels_n == n
+        for coverage in (0.01, 0.25, 0.5, 0.8, 1.0):
+            k = max(1, int(math.ceil(coverage * n)))
+            level = int(np.searchsorted(accepted, k, side="left"))
+            # the two routes must agree on how many answers the cut accepts ...
+            #
+            # Sorted the way `_levels` sorts: `argsort(-c)` ranks NaN LAST, where
+            # `np.sort(c)[::-1]` would rank it first and feed the lookup a different array.
+            column = np.asarray(conf, dtype=float)
+            sorted_desc = column[np.argsort(-column, kind="mergesort")]
+            assert evals._accepted_at_cut(sorted_desc, k) == int(accepted[level]), (
+                n, k, conf)
+            # ... and therefore on the accuracy over them
+            assert selective_accuracy(conf, corr, coverage) == float(hits[level] / accepted[level]), (
+                n, coverage, conf, corr)
+
+
+def test_selective_accuracy_is_bit_identical_to_the_accepted_slice_mean():
+    """Not `approx`: the claim is bit-identity with what this function answered before.
+
+    `selective_accuracy` now reads the same levels `aurc` reads, so it had to be shown that routing
+    it through them does not move a value. It returns `hits / accepted` -- the exact count of
+    correct answers over the exact count accepted -- because `corrects` is 0.0/1.0 and every
+    partial sum is therefore an exact integer in float64.
+
+    Recovering the same number as `1 - risk` instead, from a risk the levels had already divided,
+    round-trips through a subtraction and differs in the last bits on about one value in eight. A
+    gate would not notice; a user diffing two reports of the same no-tie data would, and this
+    change is not allowed to move a number that no tie could move.
+    """
+    import random
+
+    random.seed(11)
+    for _ in range(200):
+        n = random.randint(1, 40)
+        conf = random.sample([i / 10000 for i in range(1, 9999)], n)   # distinct: no ties
+        corr = [random.random() < 0.6 for _ in range(n)]
+        order = np.argsort(-np.asarray(conf, dtype=float), kind="mergesort")
+        y = np.asarray(corr, dtype=bool)[order].astype(float)
+        for coverage in (0.1, 0.25, 0.5, 0.8, 1.0):
+            k = max(1, int(np.ceil(coverage * n)))
+            assert selective_accuracy(conf, corr, coverage) == float(np.mean(y[:k])), (
+                n, coverage, conf, corr)
 
 
 def test_selective_metrics_reach_the_report():
