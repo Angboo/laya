@@ -259,8 +259,14 @@ public final class PythonJson {
      */
     public static String percent0(double fraction) {
         double scaled = 100.0 * fraction;
-        if (Double.isNaN(scaled) || Double.isInfinite(scaled)) {
-            return repr(scaled);
+        if (Double.isNaN(scaled)) {
+            return "nan";
+        }
+        if (Double.isInfinite(scaled)) {
+            // CPython's %-formatting spells these in lower case, which is NOT how `repr` spells
+            // them: `'%.0f' % float('nan')` is "nan" where `repr` gives "NaN". Latent today --
+            // both call sites are finite by construction -- and wrong the moment one is not.
+            return scaled > 0 ? "inf" : "-inf";
         }
         // Math.rint is IEEE ties-to-even, which is the rule; a long keeps a share above 2^31.
         return Long.toString((long) Math.rint(scaled));

@@ -1,5 +1,6 @@
 package com.convaiinnovations.laya;
 
+import com.convaiinnovations.laya.json.PythonJson;
 import com.convaiinnovations.laya.lang.UnicodeTables;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -209,10 +210,17 @@ public final class Presets {
             return null;
         }
         Set<String> named = new LinkedHashSet<>();
-        for (Question question : questions.values()) {
-            if (question != null) {
-                collectBacktickedFields(question.instructions(), named);
+        for (Map.Entry<String, Question> entry : questions.entrySet()) {
+            // A null question is refused rather than skipped. Skipping it would answer with the
+            // field the REMAINING questions name, which looks like a correct answer and is not --
+            // the reference raises here, and a caller who dropped a question by setting it to
+            // null should hear about it rather than get a plausible field name back.
+            if (entry.getValue() == null) {
+                throw new IllegalArgumentException(
+                        "question " + PythonJson.repr(entry.getKey()) + " is null; remove the"
+                        + " entry rather than setting it to null");
             }
+            collectBacktickedFields(entry.getValue().instructions(), named);
         }
         return named.size() == 1 ? named.iterator().next() : null;
     }

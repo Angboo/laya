@@ -78,7 +78,13 @@ jobs:
       # entirely, so the run said nothing about whether the code worked.
       - name: Model-free fixture drift vs. committed
         if: ${{ !cancelled() }}
-        run: python laya-java/scripts/gen_fixtures.py --check --only python_json.json
+        # Every family, not one. `--only python_json.json` left lang_detect, lang_tables,
+        # presets, router and shortlist gated NOWHERE: a change to laya/ could move the contract
+        # those five record and every check stayed green, because the Java tests assert against
+        # the stale committed copy -- exactly the failure the fixtures exist to prevent. The
+        # generator already leaves checkpoint-backed families alone and reports them unverified,
+        # so a bare --check is the right scope.
+        run: python laya-java/scripts/gen_fixtures.py --check
       # The compiled-in Unicode tables are recorded from CPython, so a CPython upgrade that moves
       # them has to show up here rather than as a routing change nobody attributed.
       - name: Unicode tables match CPython

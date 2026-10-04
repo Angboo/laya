@@ -83,6 +83,21 @@ public final class Shortlist {
         public Ranking {
             labels = List.copyOf(labels);
             scores = scores == null ? null : scores.clone();
+            // Validated, because this is public API and the components can contradict each other:
+            // two labels with one score, or a total below the number kept, give any consumer
+            // zipping the two an out-of-bounds or a silently misattributed score.
+            if (total < labels.size()) {
+                throw new IllegalArgumentException(String.format(
+                        "total is %d but %d labels were kept", total, labels.size()));
+            }
+            if (passthrough && scores != null) {
+                throw new IllegalArgumentException("a passthrough ranking has no scores");
+            }
+            if (!passthrough && (scores == null || scores.length != labels.size())) {
+                throw new IllegalArgumentException(String.format(
+                        "%d labels need %d scores, got %s", labels.size(), labels.size(),
+                        scores == null ? "none" : Integer.toString(scores.length)));
+            }
         }
 
         /** The scores, copied, or null when nothing was dropped. */
@@ -96,6 +111,12 @@ public final class Shortlist {
     public record Shortlisted(Prediction prediction, Map<String, Ranking> shortlist) {
 
         public Shortlisted {
+            if (prediction == null) {
+                throw new IllegalArgumentException("prediction must not be null");
+            }
+            if (shortlist == null) {
+                throw new IllegalArgumentException("shortlist must not be null");
+            }
             shortlist = Collections.unmodifiableMap(new LinkedHashMap<>(shortlist));
         }
     }
@@ -232,14 +253,31 @@ public final class Shortlist {
         double[][] matrix = embeddings(embedder, texts);
         double[] sims = cosine(matrix[0], matrix, 1);
 
-        // A stable descending sort: ties keep the earlier label, which decides which labels
-        // survive the cut whenever two score the same -- and with a zero-norm query every label
-        // scores the same.
+        // A stable descending sort, with NaN LAST.
+        //
+        // Both halves of that are load-bearing. Stability makes a tie keep the earlier label,
+        // which decides which labels survive whenever two score the same -- and with a zero-norm
+        // query every label scores the same. And NaN has to be pushed to the end by hand, because
+        // `Double.compare` ranks it as the LARGEST double, which in a descending comparator puts
+        // it FIRST: the opposite end from `np.argsort`, which sorts NaN last. A score is NaN when
+        // a vector's norm overflows to infinity, and getting its position wrong does not merely
+        // misreport a number -- it changes WHICH LABELS survive the cut, so the model is asked a
+        // different question.
         Integer[] order = new Integer[total];
         for (int i = 0; i < total; i++) {
             order[i] = i;
         }
-        Arrays.sort(order, (left, right) -> Double.compare(sims[right], sims[left]));
+        Arrays.sort(order, (left, right) -> {
+            double a = sims[left];
+            double b = sims[right];
+            boolean leftIsNaN = Double.isNaN(a);
+            boolean rightIsNaN = Double.isNaN(b);
+            if (leftIsNaN || rightIsNaN) {
+                // Equal when both are NaN, so the stable sort keeps their original order.
+                return leftIsNaN && rightIsNaN ? 0 : (leftIsNaN ? 1 : -1);
+            }
+            return Double.compare(b, a);
+        });
 
         List<String> kept = new ArrayList<>(checked);
         double[] scores = new double[checked];
@@ -412,6 +450,7 @@ public final class Shortlist {
             }
             double[][] out = new double[keys.size()][];
             Set<String> wanted = new LinkedHashSet<>();
+            int hitsThisCall = 0;
             lock.lock();
             try {
                 for (int i = 0; i < keys.size(); i++) {
@@ -419,28 +458,51 @@ public final class Shortlist {
                     if (row != null) {
                         out[i] = row;
                         hits++;
+                        hitsThisCall++;
                     } else {
                         wanted.add(keys.get(i));
                     }
                 }
-                misses += wanted.size();
+                // Per OCCURRENCE, not per distinct text, which is how the reference counts it.
+                // `hits` is already per occurrence, so counting misses per distinct text would
+                // put the two counters on different bases and `hits + misses` would stop equalling
+                // the number of texts looked up -- which is exactly what anyone sizing a cache
+                // from these numbers assumes.
+                misses += keys.size() - hitsThisCall;
             } finally {
                 lock.unlock();
             }
             if (wanted.isEmpty()) {
-                return out;
+                return copyRows(out);
             }
             // Deduplicated and embedded in ONE call, outside the lock, so a cold cache costs what
             // the unwrapped embedder costs and a slow embed does not block other callers' hits.
             List<String> toEmbed = new ArrayList<>(wanted);
             double[][] fresh = embeddings(delegate, toEmbed);
+
+            // Rows of one width cannot be stacked against rows of another, and `rank` reads the
+            // result as one matrix. A changed embedder -- a swapped or reloaded bi-encoder -- is
+            // the way this happens. The reference REFUSES the call here, before writing anything,
+            // and that ordering is the point: caching the new width first would leave a cache
+            // that fails on every later call touching both widths until someone clears it, which
+            // turns a refused call into a permanently broken cache.
+            int width = fresh.length == 0 ? -1 : fresh[0].length;
             lock.lock();
             try {
+                if (width > 0 && !rows.isEmpty()) {
+                    int held = rows.values().iterator().next().length;
+                    if (width != held) {
+                        throw new IllegalArgumentException(String.format(
+                                "the embedder returned dim %d, but the cache holds dim %d;"
+                                + " call cacheClear() if the model behind it changed",
+                                width, held));
+                    }
+                }
                 for (int i = 0; i < toEmbed.size(); i++) {
                     rows.put(toEmbed.get(i), fresh[i]);
-                }
-                while (rows.size() > maxSize) {
-                    rows.remove(rows.keySet().iterator().next());
+                    while (rows.size() > maxSize) {
+                        rows.remove(rows.keySet().iterator().next());
+                    }
                 }
             } finally {
                 lock.unlock();
@@ -453,6 +515,22 @@ public final class Shortlist {
                 if (out[i] == null) {
                     out[i] = byText.get(keys.get(i));
                 }
+            }
+            return copyRows(out);
+        }
+
+        /**
+         * A fresh row per entry, so a caller cannot reach into the cache.
+         *
+         * <p>The reference stacks its rows into a new array on every return, so its cache is
+         * immune to a caller editing what it handed back. Returning the stored arrays directly
+         * would let one caller's write corrupt every later lookup of that text -- and alias the
+         * same array into several rows when a text repeats within one call.
+         */
+        private static double[][] copyRows(double[][] rows) {
+            double[][] out = new double[rows.length][];
+            for (int i = 0; i < rows.length; i++) {
+                out[i] = rows[i] == null ? null : rows[i].clone();
             }
             return out;
         }

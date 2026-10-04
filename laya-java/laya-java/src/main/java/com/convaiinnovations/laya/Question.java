@@ -1,6 +1,7 @@
 package com.convaiinnovations.laya;
 
 import com.convaiinnovations.laya.json.PythonJson;
+import com.convaiinnovations.laya.lang.UnicodeTables;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -123,8 +124,13 @@ public final class Question {
             trueLabel = labels.get("true");
             require(falseLabel != null && trueLabel != null,
                     "noul labels must map exactly 'false' and 'true' to distinct non-empty strings");
-            falseLabel = falseLabel.trim();
-            trueLabel = trueLabel.trim();
+            // Python's strip, not Java's trim. `trim` removes only code points at or below
+            // U+0020, so a label of a single no-break space would survive it, pass the
+            // non-empty check below, and render into the model's input as whitespace -- a
+            // different token sequence from the one the reference produces, which refuses the
+            // label outright.
+            falseLabel = UnicodeTables.strip(falseLabel);
+            trueLabel = UnicodeTables.strip(trueLabel);
             require(!falseLabel.isEmpty() && !trueLabel.isEmpty() && !falseLabel.equals(trueLabel),
                     "noul labels must map exactly 'false' and 'true' to distinct non-empty strings");
         }
@@ -287,7 +293,11 @@ public final class Question {
      * a confident-looking distribution over the options. Python refuses the same input.
      */
     private static void requireInstructions(String instructions) {
-        require(instructions != null && !instructions.isBlank(),
+        // UnicodeTables.isBlank, not String.isBlank: the reference tests `not ins.strip()`, and
+        // Python's strip treats U+00A0, U+0085, U+2007 and U+202F as whitespace where
+        // Character.isWhitespace does not. An instruction of a single no-break space is
+        // therefore refused by the reference and would have been accepted here.
+        require(instructions != null && !UnicodeTables.isBlank(instructions),
                 "instructions must not be empty; add the text the model should answer");
     }
 

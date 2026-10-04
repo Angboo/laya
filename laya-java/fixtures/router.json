@@ -1,5 +1,4 @@
 {
-  "notes": "Everything `laya.router` decides before a checkpoint is loaded.\n\n    The routing decision is the part of the router that is pure logic, and it is the part that\n    decides whether a request reaches a checkpoint that can read it. The English checkpoint does\n    not degrade gently off English -- 0.100 on 20-option Hindi intent against 0.050 for random,\n    while reporting high confidence -- so a wrong route is a wrong answer delivered confidently.\n\n    The `reason` strings are recorded too, not just the model. They are user-visible, they go into\n    API responses, and they are built with two Python formats that Java spells differently:\n    `%r`, which is CPython's repr, and `%.0f`, which rounds halves to EVEN where\n    `String.format(\"%.0f\", ...)` rounds them up. One of the reasons interpolates the mixed\n    segment, a slice of the caller's own text, so both formats see arbitrary input.\n    ",
   "bundle_repo": "convaiinnovations/laya",
   "default_models": {
     "english": [
@@ -121,6 +120,21 @@
     },
     "multilingual2": {
       "error": "unknown model 'multilingual2'; choose one of ['english', 'multilingual', 'typed-decisions'] (or an alias: ['decisions', 'default', 'en', 'laya', 'laya-multilingual', 'laya-typed-decisions', 'ml', 'multi', 'typed', 'typed_decisions'])"
+    },
+    " english": {
+      "ok": "english"
+    },
+    "english ": {
+      "ok": "english"
+    },
+    "　multilingual": {
+      "ok": "multilingual"
+    },
+    "typed-decisions ": {
+      "ok": "typed-decisions"
+    },
+    "en": {
+      "ok": "english"
     }
   },
   "resolve_model_spec": {
@@ -194,7 +208,27 @@
     "laya-x": null,
     "en-US": null,
     "typed decisions": null,
-    "multilingual2": null
+    "multilingual2": null,
+    " english": [
+      "convaiinnovations/laya",
+      null
+    ],
+    "english ": [
+      "convaiinnovations/laya",
+      null
+    ],
+    "　multilingual": [
+      "convaiinnovations/laya",
+      "multilingual"
+    ],
+    "typed-decisions ": [
+      "convaiinnovations/laya",
+      "typed-decisions"
+    ],
+    "en": [
+      "convaiinnovations/laya",
+      null
+    ]
   },
   "typed_decision_workflows": {
     "agent_trace_observability": [
@@ -460,6 +494,34 @@
     ],
     [
       0,
+      false
+    ],
+    [
+      " en",
+      true
+    ],
+    [
+      "en ",
+      true
+    ],
+    [
+      "en　",
+      true
+    ],
+    [
+      "　en-US",
+      true
+    ],
+    [
+      "C ",
+      null
+    ],
+    [
+      " und",
+      null
+    ],
+    [
+      "fr",
       false
     ]
   ],

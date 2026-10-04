@@ -25,6 +25,12 @@ import sys
 import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Where the checkpoint-backed families look for weights when LAYA_FIXTURE_CHECKPOINTS is unset.
+# Repo-relative on purpose: this was one developer's absolute home directory, which made WHETHER
+# a family regenerates at all a property of whose machine ran the script -- and wrote that path
+# into a committed skip marker in an open-source repository.
+DEFAULT_CHECKPOINT_ROOT = os.path.normpath(
+    os.path.join(HERE, "..", ".work", "checkpoints"))
 FIXTURES = os.path.normpath(os.path.join(HERE, "..", "fixtures"))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 if REPO not in sys.path:
@@ -414,7 +420,6 @@ def lang_detect():
         return row
 
     return {
-        "notes": lang_detect.__doc__,
         "thresholds": {
             "non_en_diacritic_rate": lang.NON_EN_DIACRITIC_RATE,
             "english_rescue_diacritic_rate": lang.ENGLISH_RESCUE_DIACRITIC_RATE,
@@ -482,8 +487,7 @@ def presets():
     # replace the defaults rather than merge with them.
     out["email_questions_custom"] = mod.email_questions(
         {"ops": "incidents and deploys", "legal": "contracts and compliance"})
-    out["email_questions_empty_categories"] = mod.email_questions({}) \
-        if mod.email_questions({}) is not None else None
+    out["email_questions_empty_categories"] = mod.email_questions({})
     return out
 
 
@@ -581,7 +585,12 @@ def router():
     names = ["english", "multilingual", "typed-decisions"]
     aliases = sorted(mod._ALIASES)
     hostile_names = ["", "  ", "ENGLISH", " english ", "English", "nope", "laya-x", "en-US",
-                     "typed decisions", "multilingual2"]
+                     "typed decisions", "multilingual2",
+                     # Padded with whitespace Python strips and Java's String.trim does NOT:
+                     # a no-break space, an ideographic space, a narrow no-break space, NEL.
+                     # A config file pasted from a browser, or a CJK input method, produces these.
+                     "\u00a0english", "english\u00a0", "\u3000multilingual",
+                     "typed-decisions\u202f", "\u0085en"]
 
     def normalise(name):
         try:
@@ -599,6 +608,10 @@ def router():
         "fr", "FR", "pt-BR", "pt_BR.UTF-8", "zh-Hans", "de", "x",
         "c", "C", "POSIX", "C.UTF-8", "und", "zxx", "mul", "UND",
         ".", "-", "_", ".UTF-8", "-US", 1, True, 0,
+        # Padded with whitespace Python strips and Java's String.trim does not. The first is the
+        # one that matters most: "en" plus an ideographic space must still route to English, and
+        # a padded "C" must still abstain rather than pin every request to multilingual.
+        "\u00a0en", "en\u00a0", "en\u3000", "\u3000en-US", "C\u00a0", "\u202fund", "fr\u0085",
     ]
 
     schemas = [
@@ -764,7 +777,6 @@ def router():
         }
 
     return {
-        "notes": router.__doc__,
         "bundle_repo": mod.BUNDLE_REPO,
         "default_models": {k: list(mod._split(v)) for k, v in mod.DEFAULT_MODELS.items()},
         "standalone_models": {k: list(mod._split(v)) for k, v in mod.STANDALONE_MODELS.items()},
@@ -910,6 +922,38 @@ def shortlist():
                                 else mod._subset_criteria(criteria, labels)),
         })
 
+    # A NaN score, which numpy's argsort sorts to the END. Java's Double.compare ranks NaN as
+    # the LARGEST double, so a descending comparator puts it FIRST unless that is handled -- a
+    # different set of labels then survives the cut and the model is asked a different question.
+    def nan_embed(texts):
+        import numpy as np
+        rows = []
+        for text in texts:
+            if text.startswith("a:") or text == "a" or text.endswith(" a"):
+                rows.append([1e200, 1e200])
+            elif ":" in text and text.split(":")[0] == "b":
+                rows.append([1.0, 0.0])
+            elif ":" in text and text.split(":")[0] == "c":
+                rows.append([0.0, 1.0])
+            else:
+                rows.append([1e200, 1e200])
+        return np.asarray(rows, dtype=np.float64)
+
+    nan_criteria = {"a": "A", "b": "B", "c": "C"}
+    nan_labels, nan_scores = mod.shortlist_choice(
+        "state", nan_criteria, nan_embed, 2, return_scores=True)
+    nan_case = {
+        "criteria": nan_criteria,
+        "k": 2,
+        "option_texts": mod._option_texts(mod._criteria_items(nan_criteria)),
+        "query_text": mod._query_text("state", None),
+        "sims": [_round_score(v) for v in mod._cosine(
+            nan_embed([mod._query_text("state", None)])[0],
+            nan_embed(mod._option_texts(mod._criteria_items(nan_criteria))))],
+        "labels": list(nan_labels),
+        "scores": None if nan_scores is None else [_round_score(v) for v in nan_scores],
+    }
+
     record("large-top-5", states["string"], criteria_large, 5)
     record("large-top-1", states["string"], criteria_large, 1)
     record("large-top-16-of-17", states["string"], criteria_large, 16)
@@ -1036,15 +1080,16 @@ def shortlist():
         })
 
     return {
-        "notes": shortlist.__doc__,
         "score_decimals": _SCORE_DECIMALS,
         "default_k": mod.DEFAULT_SHORTLIST_K,
         "embed_dim": _EMBED_DIM,
         "embed_probe": {text: [float(v) for v in _stub_embed([text])[0]]
                         for text in ["", "a", "refund: money back", states["string"]]},
         "cases": cases,
+        "nan_ranking": nan_case,
         "cosine": cosine_cases,
         "nonfinite": nonfinite,
+        "cache_counters": _cache_counter_cases(),
         "refusals": refusals,
         "predicts": predicts,
     }
@@ -1063,6 +1108,26 @@ def shortlist():
 # separates the two cleanly. What stays exact is the LABEL ORDER, which is the only thing a
 # consumer can observe -- and the thing a ranking bug actually changes.
 _SCORE_DECIMALS = 12
+
+
+def _cache_counter_cases():
+    """What `cached_embed_fn`'s counters report, call by call.
+
+    Recorded because the two counters are on the same basis and it is easy to put them on
+    different ones: `hits` counts OCCURRENCES and so does `misses`, so `hits + misses` equals the
+    number of texts looked up. Counting misses per DISTINCT text instead -- which is the obvious
+    reading of "embed each text once" -- breaks that identity on the very first repeated text.
+    """
+    from laya import shortlist as mod
+
+    calls = []
+    embedder = mod.cached_embed_fn(_stub_embed, maxsize=64)
+    for texts in (["a", "a", "b"], ["a", "b", "c"], ["q", "a"]):
+        embedder(list(texts))
+        info = embedder.cache_info()
+        calls.append({"texts": list(texts), "size": info["size"], "maxsize": info["maxsize"],
+                      "hits": info["hits"], "misses": info["misses"]})
+    return calls
 
 
 def _round_score(value):
@@ -1096,7 +1161,7 @@ def tokenizer_ids():
     from laya.common import encode_text
 
     rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
-                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+                         DEFAULT_CHECKPOINT_ROOT)
     out = {}
     for name in ("english", "multilingual"):
         root = os.path.join(rig, name)
@@ -1120,7 +1185,11 @@ def tokenizer_ids():
             if not found:
                 out[name] = {"skipped": "no tokenizer.json under %s" % root}
                 continue
-            directory = os.path.dirname(sorted(found, key=len)[0])
+            # A TOTAL order: `key=len` alone ties on equal-length candidates and the winner
+            # then depends on filesystem walk order -- which decides the tokenizer directory, and
+            # therefore every recorded id in this family. That is the same class of bug the
+            # comment above describes having been hit once already.
+            directory = os.path.dirname(sorted(found, key=lambda path: (len(path), path))[0])
         from transformers import AutoTokenizer
         tok = AutoTokenizer.from_pretrained(directory)
         raw = json.load(open(os.path.join(directory, "tokenizer.json"), encoding="utf-8"))
@@ -1270,7 +1339,7 @@ def sequences():
     from laya.common import build_sequence
 
     rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
-                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+                         DEFAULT_CHECKPOINT_ROOT)
     out = {}
     for name in ("english", "multilingual"):
         root = os.path.join(rig, name)
@@ -1339,7 +1408,7 @@ def decode_answers():
     from laya.common import clamp_temperature, resolve_lang_temperatures
 
     rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
-                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+                         DEFAULT_CHECKPOINT_ROOT)
 
     def row(values):
         return np.asarray(values, dtype=np.float32)
@@ -1639,7 +1708,7 @@ def predict_golden():
     graph = os.environ.get("LAYA_ONNX_GRAPH")
     model = os.environ.get("LAYA_PREDICT_MODEL", "multilingual")
     rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
-                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+                         DEFAULT_CHECKPOINT_ROOT)
     if not graph or not os.path.exists(graph):
         return {"skipped": "set LAYA_ONNX_GRAPH to an exported laya.onnx to record this family"}
     from laya.onnx_agent import ONNXAgent
@@ -1736,11 +1805,24 @@ def main(argv=None):
                              "that is supposed to have the checkpoints")
     args = parser.parse_args(argv)
 
-    os.makedirs(FIXTURES, exist_ok=True)
+    # A --only naming no family used to exit 0 and print "fixtures match laya", so one typo --
+    # a hyphen for an underscore, a renamed file, a family dropped from FAMILIES -- turned the
+    # whole gate into a no-op that actively asserted the opposite.
+    if args.only:
+        unknown = sorted(set(args.only) - set(FAMILIES))
+        if unknown:
+            print("gen_fixtures: no such fixture family: %s\n  known families: %s"
+                  % (", ".join(unknown), ", ".join(sorted(FAMILIES))), file=sys.stderr)
+            return 2
+
+    if not args.check:
+        os.makedirs(FIXTURES, exist_ok=True)
     stale, written, unverified = [], [], []
+    examined = 0
     for filename, build in sorted(FAMILIES.items()):
         if args.only and filename not in args.only:
             continue
+        examined += 1
         path = os.path.join(FIXTURES, filename)
         payload = build()
         fresh = render(payload)
@@ -1776,8 +1858,15 @@ def main(argv=None):
             print("gen_fixtures: run laya-java/scripts/gen_fixtures.py and commit the result",
                   file=sys.stderr)
             return 1
-        print("gen_fixtures: fixtures match laya%s"
-              % (" (%d family/families unverified)" % len(unverified) if unverified else ""))
+        if examined == 0:
+            # Belt and braces with the --only validation above: reporting a match after
+            # comparing nothing is the one outcome this gate must never produce.
+            print("gen_fixtures: no fixture family was examined, so nothing was checked",
+                  file=sys.stderr)
+            return 2
+        print("gen_fixtures: %d family/families match laya%s"
+              % (examined,
+                 " (%d unverified)" % len(unverified) if unverified else ""))
         return 0
     for line in written:
         print("wrote " + line)

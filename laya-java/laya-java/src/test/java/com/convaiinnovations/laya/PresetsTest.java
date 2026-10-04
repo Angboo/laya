@@ -231,6 +231,22 @@ class PresetsTest {
     }
 
     @Test
+    @DisplayName("a null question is refused, not quietly skipped")
+    void stateFieldRefusesANullQuestion() {
+        // Skipping it would answer with the field the REMAINING questions name, which looks like
+        // a correct answer and is not. The reference raises here, and a caller who dropped a
+        // question by setting it to null should hear about it rather than get a plausible field
+        // name back.
+        Map<String, Question> questions = new LinkedHashMap<>();
+        questions.put("intent", Question.noul("Does `message` ask for a refund?"));
+        questions.put("dropped", null);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Presets.stateField(questions));
+        assertTrue(failure.getMessage().contains("dropped"),
+                "the message must name the offending question: " + failure.getMessage());
+    }
+
+    @Test
     @DisplayName("each call returns a fresh mutable map, so a caller can edit one safely")
     void presetsAreFreshAndMutable() {
         // A caller is expected to drop a question it does not want. Returning a shared or

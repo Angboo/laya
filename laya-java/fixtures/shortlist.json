@@ -1,5 +1,4 @@
 {
-  "notes": "`laya.shortlist`'s ranking, its edge cases, and what it hands to `predict`.\n\n    Choice options share one `head_max_len`, so a large label set leaves a few tokens per label.\n    Shortlisting embeds the state and each option, keeps the top k, and runs ONE predict on the\n    reduced set. The parts that need gating are not the embedding -- a caller supplies that -- but\n    the ranking rules around it, and each of them is a place a port goes wrong silently:\n\n      * the sort is STABLE and descending, so a tie keeps the earlier label. `argsort` without\n        `kind=\"mergesort\"` reorders ties, which changes which labels survive at the cut.\n      * the score is a SIGNED cosine, not a similarity floor. A label scoring 0 -- no signal, or a\n        non-finite vector treated as none -- outranks one scoring negative, and k drops the\n        negatives first.\n      * a zero-norm query scores everything 0, so the kept set is the first k in criteria order.\n      * non-finite components become 0 rather than propagating or raising.\n      * k >= the label count is a passthrough: the labels come back in criteria order, scores are\n        None, and the embedder is NEVER called.\n    ",
   "score_decimals": 12,
   "default_k": 20,
   "embed_dim": 8,
@@ -963,6 +962,33 @@
       ]
     }
   ],
+  "nan_ranking": {
+    "criteria": {
+      "a": "A",
+      "b": "B",
+      "c": "C"
+    },
+    "k": 2,
+    "option_texts": [
+      "a: A",
+      "b: B",
+      "c: C"
+    ],
+    "query_text": "state",
+    "sims": [
+      "nan",
+      0.0,
+      0.0
+    ],
+    "labels": [
+      "b",
+      "c"
+    ],
+    "scores": [
+      0.0,
+      0.0
+    ]
+  },
   "cosine": [
     {
       "name": "ordinary",
@@ -1247,6 +1273,40 @@
           0.0
         ]
       ]
+    }
+  ],
+  "cache_counters": [
+    {
+      "texts": [
+        "a",
+        "a",
+        "b"
+      ],
+      "size": 2,
+      "maxsize": 64,
+      "hits": 0,
+      "misses": 3
+    },
+    {
+      "texts": [
+        "a",
+        "b",
+        "c"
+      ],
+      "size": 3,
+      "maxsize": 64,
+      "hits": 2,
+      "misses": 4
+    },
+    {
+      "texts": [
+        "q",
+        "a"
+      ],
+      "size": 4,
+      "maxsize": 64,
+      "hits": 3,
+      "misses": 5
     }
   ],
   "refusals": [

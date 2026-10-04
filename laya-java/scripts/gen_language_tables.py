@@ -27,6 +27,13 @@ TARGET = os.path.join(
     "LanguageTables.java")
 
 
+# The control characters Java spells with a letter escape; everything else below U+0020 gets an
+# octal escape, because a backslash-u escape is translated before the lexer sees it.
+_JAVA_LETTER_ESCAPES = {
+    "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r",
+}
+
+
 def quote(text):
     """A Java string literal, with every non-ASCII character escaped so the file stays ASCII."""
     out = ['"']
@@ -35,6 +42,16 @@ def quote(text):
             out.append('\\"')
         elif ch == "\\":
             out.append("\\\\")
+        elif ch in _JAVA_LETTER_ESCAPES:
+            out.append(_JAVA_LETTER_ESCAPES[ch])
+        elif ch < " ":
+            # Below U+0020 a backslash-u escape is NOT safe: javac translates those before the
+            # file is lexed, so a newline or carriage return would terminate the string literal
+            # and the generated file would fail to compile with "unclosed string literal" rather
+            # than anything that names the cause. An octal escape is handled by the lexer, not
+            # the pre-pass, so it survives. Latent today -- no stopword or script name holds a
+            # control character -- and a build break the first time one does.
+            out.append("\\%03o" % ord(ch))
         elif " " <= ch <= "~":
             out.append(ch)
         else:
@@ -43,6 +60,22 @@ def quote(text):
                 out.append("\\u%02X%02X" % (encoded[i], encoded[i + 1]))
     out.append('"')
     return "".join(out)
+
+
+# A `new int[] {...}` or `Set.of(...)` literal compiles to instructions inside whatever method
+# holds it, and a JVM method body may not exceed 65,535 bytes. Everything this generator emits
+# lands in one `<clinit>`, measured at about 7,800 bytes today -- so there is room, but no signal
+# if that changes. The sibling generator guards its own tables for exactly this reason; the
+# failure mode without a guard is "code too large" from javac, which names no cause.
+MAX_LITERALS = 20000
+
+
+def _check_budget(name, count):
+    if count > MAX_LITERALS:
+        raise SystemExit(
+            "gen_language_tables: %s would emit %d literals into the class initialiser, over the "
+            "%d this generator will allow. Split it into its own factory method before "
+            "regenerating." % (name, count, MAX_LITERALS))
 
 
 def wrap_items(items, indent="            ", width=104):
@@ -61,6 +94,7 @@ def wrap_items(items, indent="            ", width=104):
 
 def words_block(name, words, doc, sort=True):
     items = sorted(words) if sort else list(words)
+    _check_budget(name, len(items))
     lines, current = [], "            "
     for word in items:
         piece = quote(word) + ", "

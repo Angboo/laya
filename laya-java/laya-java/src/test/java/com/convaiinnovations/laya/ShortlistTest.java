@@ -1,8 +1,10 @@
 package com.convaiinnovations.laya;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -301,7 +303,9 @@ class ShortlistTest {
     @DisplayName("a non-finite component becomes zero rather than spreading or raising")
     List<DynamicTest> nonFiniteCleaning() {
         List<DynamicTest> tests = new ArrayList<>();
+        java.util.Set<String> kinds = new java.util.LinkedHashSet<>();
         for (Object entry : list(fixture().get("nonfinite"))) {
+            kinds.add((String) map(entry).get("name"));
             Map<String, Object> row = map(entry);
             String name = (String) row.get("name");
             tests.add(DynamicTest.dynamicTest(name, () -> {
@@ -316,6 +320,13 @@ class ShortlistTest {
                 }
                 double[][] cleaned = Shortlist.embeddings(texts -> raw, List.of("q", "d"));
                 List<Object> expectedRows = list(row.get("cleaned"));
+                // Shape first: the inner loops below walk the EXPECTED rows, so an extra or
+                // missing produced row would otherwise be invisible.
+                assertEquals(expectedRows.size(), cleaned.length, name + ": row count");
+                for (int r = 0; r < expectedRows.size(); r++) {
+                    assertEquals(list(expectedRows.get(r)).size(), cleaned[r].length,
+                            name + ": width of row " + r);
+                }
                 for (int r = 0; r < expectedRows.size(); r++) {
                     List<Object> values = list(expectedRows.get(r));
                     for (int c = 0; c < values.size(); c++) {
@@ -325,6 +336,11 @@ class ShortlistTest {
                 }
             }));
         }
+        // A floor, with the reason the rows exist: an empty fixture key would otherwise generate
+        // no tests and the suite would stay green. Each kind is a different non-finite value, and
+        // each has to become zero rather than propagate.
+        assertTrue(kinds.containsAll(List.of("nan", "posinf", "neginf", "all-nan")),
+                "every non-finite kind must be covered, got " + kinds);
         return tests;
     }
 
@@ -390,6 +406,21 @@ class ShortlistTest {
                 assertEquals(original, questions, name + ": the caller's map was modified");
             }));
         }
+        // Floors, with the reason: one reduced choice proves the subsetting, one passthrough
+        // proves the embedder is skipped, and without them an empty key generates no tests at all.
+        int reduced = 0;
+        int passthrough = 0;
+        for (Object entry : list(fixture().get("predicts"))) {
+            for (Object ranking : map(map(entry).get("shortlist")).values()) {
+                if (Boolean.TRUE.equals(map(ranking).get("passthrough"))) {
+                    passthrough++;
+                } else {
+                    reduced++;
+                }
+            }
+        }
+        assertTrue(reduced >= 1, "no case actually reduces a choice");
+        assertTrue(passthrough >= 1, "no case exercises the passthrough");
         return tests;
     }
 
@@ -468,6 +499,8 @@ class ShortlistTest {
         Shortlist.Ranking ranking = Shortlist.rank("state", question,
                 texts -> new double[texts.size()][EMBED_DIM], 3);
         assertEquals(List.of("a", "b", "c"), ranking.labels());
+        assertEquals(3, ranking.scores().length, "three kept labels, three scores -- asserted"
+                + " before the loop, or an empty array would make it vacuous");
         for (double score : ranking.scores()) {
             assertEquals(0.0, score);
         }
@@ -541,7 +574,12 @@ class ShortlistTest {
         assertEquals(1, batchSizes.get(1),
                 "a repeat must embed the new query alone, not the options again");
         for (int row = 1; row < 4; row++) {
-            assertSame(first[row], second[row], "the cached row must be the one handed back");
+            // Equal contents, but NOT the same array. The reference stacks its rows into a fresh
+            // array on every return, so its cache cannot be reached through what it hands back;
+            // an earlier version of this test asserted identity and was asserting the defect.
+            assertArrayEquals(first[row], second[row], "the cached vector must come back");
+            assertNotSame(first[row], second[row],
+                    "the cache must hand out a copy, not its own row");
         }
 
         Map<String, Long> info = cached.cacheInfo();
@@ -565,9 +603,144 @@ class ShortlistTest {
         }, 64);
         double[][] rows = cached.embed(List.of("a", "a", "a", "b"));
         assertEquals(List.of(2), batchSizes, "four texts, two distinct, one embedding call of two");
-        assertSame(rows[0], rows[1], "the repeats share one row");
-        assertSame(rows[0], rows[2]);
-        assertFalse(rows[0] == rows[3]);
+        assertArrayEquals(rows[0], rows[1], "the repeats carry the same vector");
+        assertArrayEquals(rows[0], rows[2]);
+        assertNotSame(rows[0], rows[1], "but not the same array: each row is its own storage,"
+                + " as numpy's stack gives");
+        assertFalse(java.util.Arrays.equals(rows[0], rows[3]), "and b is a different vector");
+    }
+
+    @Test
+    @DisplayName("a NaN score ranks LAST, as numpy's argsort puts it, not first")
+    void nanRanksLast() {
+        // Java's Double.compare ranks NaN as the LARGEST double, so a descending comparator puts
+        // it FIRST -- the opposite end from numpy. That is not a cosmetic difference: the kept
+        // labels change, so the reduced criteria handed to the model are a different question.
+        // A score is NaN whenever a vector's norm overflows to infinity.
+        Map<String, Object> recorded = map(fixture().get("nan_ranking"));
+        Map<String, Object> criteria = new LinkedHashMap<>(map(recorded.get("criteria")));
+        int k = ((Number) recorded.get("k")).intValue();
+
+        Shortlist.Embedder nan = texts -> {
+            double[][] rows = new double[texts.size()][];
+            for (int i = 0; i < texts.size(); i++) {
+                String text = texts.get(i);
+                if (text.startsWith("b:")) {
+                    rows[i] = new double[] {1.0, 0.0};
+                } else if (text.startsWith("c:")) {
+                    rows[i] = new double[] {0.0, 1.0};
+                } else {
+                    rows[i] = new double[] {1e200, 1e200};
+                }
+            }
+            return rows;
+        };
+        Shortlist.Ranking ranking = Shortlist.rank("state", criteria, nan, k);
+        List<String> expected = new ArrayList<>();
+        for (Object label : list(recorded.get("labels"))) {
+            expected.add((String) label);
+        }
+        assertEquals(expected, ranking.labels(),
+                "the NaN-scored label must be dropped first, not kept first");
+        List<Object> recordedScores = list(recorded.get("scores"));
+        for (int i = 0; i < recordedScores.size(); i++) {
+            assertScore(number(recordedScores.get(i)), ranking.scores()[i], "score " + i);
+        }
+        assertEquals(k, ranking.scores().length, "one score per kept label -- asserted before"
+                + " the loop, or an empty array would make it vacuous");
+        for (double score : ranking.scores()) {
+            assertFalse(Double.isNaN(score), "no NaN may survive the cut here");
+        }
+    }
+
+    @Test
+    @DisplayName("the cache refuses a changed embedding width and stays usable")
+    void cacheRefusesAWidthChange() {
+        // Rows of one width cannot be stacked against rows of another, and rank reads the result
+        // as one matrix. The reference REFUSES the call before writing anything, and the ordering
+        // is the point: caching the new width first leaves a cache that fails on every later call
+        // touching both widths until someone clears it -- a refused call turned into a
+        // permanently broken cache.
+        int[] width = {3};
+        Shortlist.CachedEmbedder cached = Shortlist.cached(texts -> {
+            double[][] rows = new double[texts.size()][width[0]];
+            for (int r = 0; r < rows.length; r++) {
+                rows[r][0] = 1.0;
+            }
+            return rows;
+        }, 64);
+        assertEquals(3, cached.embed(List.of("a"))[0].length);
+
+        width[0] = 5;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> cached.embed(List.of("b")));
+        assertTrue(failure.getMessage().contains("dim 5"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("cacheClear"),
+                "the message must say how to recover: " + failure.getMessage());
+
+        assertEquals(1L, cached.cacheInfo().get("size"),
+                "the refused row must not have been cached");
+        assertEquals(3, cached.embed(List.of("a"))[0].length,
+                "and the cache must still serve what it already held");
+        cached.cacheClear();
+        assertEquals(5, cached.embed(List.of("b"))[0].length, "after a clear, the new width works");
+    }
+
+    @TestFactory
+    @DisplayName("the cache counters match the reference, call by call")
+    List<DynamicTest> cacheCountersMatchTheReference() {
+        // hits and misses are both per OCCURRENCE in the reference, so hits + misses equals the
+        // number of texts looked up. Counting misses per DISTINCT text -- the obvious reading of
+        // "embed each text once" -- breaks that identity on the first repeated text, and anyone
+        // sizing a cache from these numbers would be reading two different bases against
+        // each other.
+        List<DynamicTest> tests = new ArrayList<>();
+        Shortlist.CachedEmbedder cached = Shortlist.cached(ShortlistTest::stubEmbed, 64);
+        int looked = 0;
+        for (Object entry : list(fixture().get("cache_counters"))) {
+            Map<String, Object> call = map(entry);
+            List<String> texts = new ArrayList<>();
+            for (Object text : list(call.get("texts"))) {
+                texts.add((String) text);
+            }
+            looked += texts.size();
+            int expectedLooked = looked;
+            tests.add(DynamicTest.dynamicTest(texts.toString(), () -> {
+                cached.embed(texts);
+                Map<String, Long> info = cached.cacheInfo();
+                assertEquals(((Number) call.get("size")).longValue(), info.get("size"), "size");
+                assertEquals(((Number) call.get("maxsize")).longValue(), info.get("maxsize"));
+                assertEquals(((Number) call.get("hits")).longValue(), info.get("hits"), "hits");
+                assertEquals(((Number) call.get("misses")).longValue(), info.get("misses"),
+                        "misses must count occurrences, not distinct texts");
+                assertEquals(expectedLooked, info.get("hits") + info.get("misses"),
+                        "hits + misses must equal the texts looked up so far");
+            }));
+        }
+        // A repeated text within one call is the whole point of per-occurrence counting, so it is
+        // the floor. An empty key would otherwise generate nothing.
+        boolean hasRepeat = false;
+        for (Object entry : list(fixture().get("cache_counters"))) {
+            List<Object> texts = list(map(entry).get("texts"));
+            if (new java.util.HashSet<>(texts).size() < texts.size()) {
+                hasRepeat = true;
+            }
+        }
+        assertTrue(hasRepeat, "no recorded call repeats a text, so per-occurrence counting is"
+                + " indistinguishable from per-distinct counting");
+        assertTrue(tests.size() >= 3, "only " + tests.size() + " recorded calls");
+        return tests;
+    }
+
+    @Test
+    @DisplayName("editing what the cache returned cannot corrupt the cache")
+    void returnedRowsAreIsolated() {
+        Shortlist.CachedEmbedder cached = Shortlist.cached(ShortlistTest::stubEmbed, 64);
+        double[][] first = cached.embed(List.of("a"));
+        double original = first[0][0];
+        first[0][0] = 99.0;
+        assertEquals(original, cached.embed(List.of("a"))[0][0],
+                "a caller's write must not reach the cached vector");
     }
 
     @Test

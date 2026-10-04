@@ -191,10 +191,28 @@ class RouterTest {
     }
 
     @Test
-    @DisplayName("matchTypedDecisionsWorkflow tolerates null and empty")
+    @DisplayName("matchTypedDecisionsWorkflow tolerates null, empty, and a null question id")
     void matchWorkflowHandlesNothing() {
         assertNull(Router.matchTypedDecisionsWorkflow(null));
         assertNull(Router.matchTypedDecisionsWorkflow(new LinkedHashMap<>()));
+
+        // A HashMap permits a null key, and `Set.of(...).containsAll` throws on one. With five
+        // keys the cardinality check passes first, so the whole route would abort on input the
+        // reference routes normally -- it simply fails to match and carries on to detection.
+        Map<String, Question> withNullId = new java.util.HashMap<>();
+        for (String id : List.of("action", "needs_review", "outcome", "risk")) {
+            withNullId.put(id, Question.noul("Is this " + id + "?"));
+        }
+        withNullId.put(null, Question.noul("Is this urgent?"));
+        assertEquals(5, withNullId.size(), "the cardinality must match a real workflow");
+        assertNull(Router.matchTypedDecisionsWorkflow(withNullId),
+                "a null id matches no workflow, and must not throw");
+
+        // and the route completes rather than aborting
+        Router.RouteDecision decided = Router.builder().autoTaskDetection(true).build()
+                .route("I cannot log in to my account at all today", withNullId);
+        assertEquals(Router.Checkpoint.ENGLISH, decided.model());
+        assertNull(decided.workflow());
     }
 
     @TestFactory

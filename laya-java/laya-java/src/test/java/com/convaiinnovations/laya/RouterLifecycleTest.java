@@ -3,6 +3,7 @@ package com.convaiinnovations.laya;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -440,10 +441,8 @@ final class RouterLifecycleTest {
                         assertTrue(go.await(10, TimeUnit.SECONDS));
                         router.load("multilingual");
                         thrown.add(new AssertionError("the load should have failed"));
-                    } catch (UncheckedIOException expected) {
-                        thrown.add(expected);
-                    } catch (Throwable other) {
-                        thrown.add(other);
+                    } catch (Throwable failure) {
+                        thrown.add(failure);
                     }
                 }, "failing-load-" + i);
                 worker.start();
@@ -458,10 +457,32 @@ final class RouterLifecycleTest {
                 assertFalse(worker.isAlive(), worker.getName() + " never finished");
             }
             assertEquals(threads, thrown.size());
+            // One caller built and sees the IOException wrapper directly; the rest waited and are
+            // handed a per-thread wrapper carrying it as the cause. The builder's own exception
+            // instance is deliberately NOT rethrown on the waiters: that gave every waiter a
+            // stack trace of frames it never ran, and let concurrent handlers mutate one
+            // Throwable's suppressed list, which Throwable does not support.
+            int builders = 0;
+            int waiters = 0;
+            java.util.Set<Throwable> distinct = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<>());
             for (Throwable failure : thrown) {
-                assertTrue(failure instanceof UncheckedIOException,
-                        "every caller must see the failure, got " + failure);
+                distinct.add(failure);
+                if (failure instanceof UncheckedIOException) {
+                    builders++;
+                } else {
+                    assertTrue(failure instanceof IllegalStateException,
+                            "a waiter must see a wrapper, got " + failure);
+                    assertTrue(failure.getCause() instanceof UncheckedIOException,
+                            "the wrapper must carry the builder's failure as its cause, got "
+                            + failure.getCause());
+                    waiters++;
+                }
             }
+            assertEquals(1, builders, "exactly one caller does the building");
+            assertEquals(threads - 1, waiters, "and the rest wait on it");
+            assertEquals(threads, distinct.size(),
+                    "each caller must get its OWN throwable, not one shared instance");
             assertEquals(1, agents.attemptsOf(Checkpoint.MULTILINGUAL),
                     "six callers must share one failed attempt, not pay for six");
             assertEquals(List.of(), router.loaded());
@@ -573,6 +594,164 @@ final class RouterLifecycleTest {
         assertTrue(answer instanceof Answer.Noul,
                 "expected a noul answer, got " + answer.getClass().getSimpleName());
         return ((Answer.Noul) answer).noul();
+    }
+
+    @Test
+    @DisplayName("a throwing close during eviction does not strand the new checkpoint")
+    void aThrowingCloseDoesNotStrandTheNewAgent() throws IOException {
+        // Eviction closes the victim. If that close throws, the publish of the NEW slot has
+        // already happened -- so skipping the bookkeeping that follows left its lease stuck at
+        // one forever, which meant the agent could never be retired or closed: an unreachable,
+        // unclosable native session, and every waiter told the load failed when it had not.
+        TinyCheckpoint.RecordingSession angry = new TinyCheckpoint.RecordingSession() {
+            @Override
+            public void close() {
+                super.close();
+                throw new IllegalStateException("a native close can fail");
+            }
+        };
+        List<TinyCheckpoint.RecordingSession> built = new ArrayList<>();
+        Router.AgentFactory factory = checkpoint -> {
+            if (checkpoint == Checkpoint.ENGLISH) {
+                return TinyCheckpoint.agent(checkpointRoot, angry);
+            }
+            TinyCheckpoint.RecordingSession session = new TinyCheckpoint.RecordingSession();
+            built.add(session);
+            return TinyCheckpoint.agent(checkpointRoot, session);
+        };
+        try (Router router = Router.builder().agents(factory).maxLoaded(1).build()) {
+            router.load("english");
+            assertThrows(IllegalStateException.class, () -> router.load("multilingual"),
+                    "the failing close is surfaced, not swallowed");
+
+            // The point: multilingual really is resident, and it is still CLOSABLE.
+            assertEquals(List.of(Checkpoint.MULTILINGUAL), router.loaded());
+            assertEquals(1, built.size());
+            assertFalse(built.get(0).closed, "nothing has released it yet");
+            assertEquals(List.of(Checkpoint.MULTILINGUAL), router.unload("multilingual"));
+            assertTrue(built.get(0).closed,
+                    "the new agent must be closable; a stranded lease would keep it open forever");
+        }
+    }
+
+    @Test
+    @DisplayName("closing one lease twice from two threads cannot close an agent another holds")
+    void closingALeaseTwiceIsSafeUnderARace() throws Exception {
+        // A plain check-then-set on the released flag loses this race: both threads see it unset,
+        // both decrement, the count reaches zero while lease B is open, and the agent is closed
+        // under a caller still using it -- the single failure the lease mechanism exists to stop.
+        for (int attempt = 0; attempt < 200; attempt++) {
+            StubAgents agents = new StubAgents();
+            try (Router router = routerWith(agents).maxLoaded(2).build()) {
+                Router.Lease a = router.lease("english");
+                Router.Lease b = router.lease("english");
+                TinyCheckpoint.RecordingSession session =
+                        agents.lastSession(Checkpoint.ENGLISH);
+                router.unload("english");           // retired, not closed: two leases are open
+                assertFalse(session.closed);
+
+                int racers = 4;
+                CountDownLatch go = new CountDownLatch(1);
+                List<Thread> threads = new ArrayList<>();
+                for (int i = 0; i < racers; i++) {
+                    Thread thread = new Thread(() -> {
+                        try {
+                            assertTrue(go.await(10, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        a.close();
+                    }, "closer-" + i);
+                    thread.start();
+                    threads.add(thread);
+                }
+                go.countDown();
+                for (Thread thread : threads) {
+                    thread.join(TimeUnit.SECONDS.toMillis(10));
+                }
+                assertFalse(session.closed,
+                        "lease b is still open, so the agent must not be closed (attempt "
+                        + attempt + ")");
+                assertEquals(session, agents.lastSession(Checkpoint.ENGLISH));
+                b.close();
+                assertTrue(session.closed, "and closing the last lease does close it");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("attaching the agent the router already holds does not close it")
+    void attachingTheSameInstanceIsSafe() {
+        // The javadoc invites exactly this: "register an already-built agent instead of loading a
+        // second copy". Retiring the previous slot closed the very agent being attached, leaving
+        // a live slot holding a closed session that nothing could ever replace.
+        StubAgents agents = new StubAgents();
+        // Managed by hand rather than with try-with-resources, because what is being asserted is
+        // what close() does -- and an explicit close() inside a resource block is a -Xlint:try
+        // warning, which is an error here.
+        Router router = routerWith(agents).maxLoaded(2).build();
+        Agent english = router.load("english");
+        TinyCheckpoint.RecordingSession session = agents.lastSession(Checkpoint.ENGLISH);
+        assertSame(english, router.attach("english", english));
+        assertFalse(session.closed, "attaching the same instance must not close it");
+        assertSame(english, router.load("english"), "and it is still the resident agent");
+        assertEquals(1, router.loaded().size());
+        // it is caller-owned now, so the router must leave it alone even on close()
+        router.close();
+        assertFalse(session.closed, "ownership moved to the caller, so the router leaves it");
+        english.close();
+        assertTrue(session.closed, "and the owner can still close it");
+    }
+
+    @Test
+    @DisplayName("a slow close does not stall a lease on an already-resident checkpoint")
+    void aSlowCloseDoesNotStallOtherCallers() throws Exception {
+        // Closing under the registry lock stalled every other caller, including ones asking for a
+        // checkpoint already in memory -- which is precisely what the fast path exists to keep
+        // fast. Measured at 1.3 s for an unrelated lease behind one slow close.
+        CountDownLatch closing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        TinyCheckpoint.RecordingSession slow = new TinyCheckpoint.RecordingSession() {
+            @Override
+            public void close() {
+                closing.countDown();
+                try {
+                    assertTrue(release.await(10, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                super.close();
+            }
+        };
+        Router.AgentFactory factory = checkpoint -> checkpoint == Checkpoint.ENGLISH
+                ? TinyCheckpoint.agent(checkpointRoot, slow)
+                : TinyCheckpoint.agent(checkpointRoot, new TinyCheckpoint.RecordingSession());
+        try (Router router = Router.builder().agents(factory).maxLoaded(2).build()) {
+            router.load("english");
+            router.load("typed-decisions");
+            // On its own thread: the eviction's close now happens outside every lock, which is
+            // the fix being tested -- so this call itself blocks until the close finishes.
+            Thread evicting = new Thread(() -> router.load("multilingual"), "evicting-load");
+            evicting.start();
+
+            assertTrue(closing.await(10, TimeUnit.SECONDS), "the slow close never started");
+            CountDownLatch leased = new CountDownLatch(1);
+            Thread other = new Thread(() -> {
+                try (Router.Lease lease = router.lease("typed-decisions")) {
+                    assertNotNull(lease.agent());
+                    leased.countDown();
+                }
+            }, "resident-lease");
+            other.start();
+            assertTrue(leased.await(5, TimeUnit.SECONDS),
+                    "a lease on a resident checkpoint blocked behind an unrelated slow close");
+            release.countDown();
+            other.join(TimeUnit.SECONDS.toMillis(10));
+            evicting.join(TimeUnit.SECONDS.toMillis(10));
+            assertFalse(evicting.isAlive(), "the evicting load never finished");
+            assertTrue(slow.closed, "and the slow close did complete");
+        }
     }
 
     @Test

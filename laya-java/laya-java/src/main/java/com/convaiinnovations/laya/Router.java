@@ -2,6 +2,7 @@ package com.convaiinnovations.laya;
 
 import com.convaiinnovations.laya.json.PythonJson;
 import com.convaiinnovations.laya.lang.LanguageDetection;
+import com.convaiinnovations.laya.lang.UnicodeTables;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -182,6 +183,7 @@ public final class Router implements AutoCloseable, Predictor {
 
         private final Checkpoint checkpoint;
         private final Slot slot;
+        /** Guarded by {@link Router#lock}: see {@link #close()} for why a plain flag is not enough. */
         private boolean released;
 
         private Lease(Checkpoint checkpoint, Slot slot) {
@@ -191,11 +193,16 @@ public final class Router implements AutoCloseable, Predictor {
 
         /** The agent, valid until this lease is closed. */
         public Agent agent() {
-            if (released) {
-                throw new IllegalStateException("this lease on " + checkpoint.wireName()
-                        + " has been released");
+            lock.lock();
+            try {
+                if (released) {
+                    throw new IllegalStateException("this lease on " + checkpoint.wireName()
+                            + " has been released");
+                }
+                return slot.agent;
+            } finally {
+                lock.unlock();
             }
-            return slot.agent;
         }
 
         /** Which checkpoint this is. */
@@ -203,14 +210,34 @@ public final class Router implements AutoCloseable, Predictor {
             return checkpoint;
         }
 
-        /** Release it. Idempotent, so a try-with-resources around an early return is safe. */
+        /**
+         * Release it. Idempotent, so a try-with-resources around an early return is safe.
+         *
+         * <p>The flag and the lease count move together under {@link Router#lock}. A plain
+         * check-then-set is not enough: two threads closing the SAME lease both read
+         * {@code released == false}, both decrement, and the count reaches zero while another
+         * lease is still open -- so the agent is closed under a caller that is still using it,
+         * which is the single failure this whole mechanism exists to prevent.
+         */
         @Override
         public void close() {
-            if (released) {
-                return;
+            Agent toClose = null;
+            lock.lock();
+            try {
+                if (released) {
+                    return;
+                }
+                released = true;
+                slot.leases--;
+                if (slot.leases <= 0 && slot.retired && slot.ownsClosing) {
+                    toClose = slot.agent;
+                }
+            } finally {
+                lock.unlock();
             }
-            released = true;
-            release(slot);
+            if (toClose != null) {
+                toClose.close();
+            }
         }
     }
 
@@ -534,7 +561,11 @@ public final class Router implements AutoCloseable, Predictor {
         if (name == null) {
             return null;
         }
-        String key = name.trim().toLowerCase(Locale.ROOT);
+        // UnicodeTables.strip, not String.trim: trim only removes code points at or below
+        // U+0020, so a name padded with a no-break space or an ideographic space -- which a
+        // config file pasted from a browser or produced by a CJK input method carries routinely
+        // -- would fail to resolve where the reference resolves it.
+        String key = UnicodeTables.pythonLower(UnicodeTables.strip(name));
         Checkpoint alias = ALIASES.get(key);
         if (alias != null) {
             return alias;
@@ -578,9 +609,27 @@ public final class Router implements AutoCloseable, Predictor {
      * would silently change model.
      */
     public static String matchTypedDecisionsWorkflow(Map<String, ?> questions) {
-        Set<String> ids = questions == null ? Set.of() : questions.keySet();
+        if (questions == null || questions.isEmpty()) {
+            return null;
+        }
+        // Copied into a set that tolerates null, and tested member by member. `Set.of(...)`
+        // throws on a null argument to `containsAll`, so a question map with a null id -- which
+        // a HashMap allows -- would abort the whole route where the reference merely fails to
+        // match and carries on to detection.
+        Set<String> ids = new LinkedHashSet<>(questions.keySet());
         for (Map.Entry<String, Set<String>> entry : TYPED_DECISION_WORKFLOWS.entrySet()) {
-            if (entry.getValue().size() == ids.size() && entry.getValue().containsAll(ids)) {
+            Set<String> signature = entry.getValue();
+            if (signature.size() != ids.size()) {
+                continue;
+            }
+            boolean matches = true;
+            for (String id : ids) {
+                if (id == null || !signature.contains(id)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
                 return entry.getKey();
             }
         }
@@ -629,7 +678,12 @@ public final class Router implements AutoCloseable, Predictor {
         if (value == null) {
             return null;
         }
-        String code = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
+        // Python's strip and Python's lower, for the reason given on normaliseName. Getting this
+        // wrong is worse here than there: a `lang` of "en" with a trailing ideographic space
+        // would route to the multilingual checkpoint while the reason string still reported that
+        // the caller asked for English, and a padded "C " would pin every request to
+        // multilingual instead of falling through to detection.
+        String code = UnicodeTables.pythonLower(UnicodeTables.strip(String.valueOf(value)));
         if (code.isEmpty()) {
             return null;
         }
@@ -851,14 +905,20 @@ public final class Router implements AutoCloseable, Predictor {
             }
             // Someone else is building this one. Wait for them rather than build a second copy.
             await(waitFor);
-            if (waitFor.error != null) {
-                throw waitFor.error;
+            RuntimeException failure = waitFor.error;
+            if (failure != null) {
+                // Wrapped per waiter, with the builder's error as the cause. Rethrowing the one
+                // instance gave every waiter a stack trace of frames it never executed -- the
+                // builder's -- and let concurrent handlers mutate one Throwable's suppressed
+                // list, which Throwable does not support.
+                throw new IllegalStateException("loading the " + checkpoint.wireName()
+                        + " checkpoint failed on the thread that was building it", failure);
             }
         }
     }
 
     private Slot build(Checkpoint checkpoint, InFlight inflight) {
-        List<Checkpoint> evicted = List.of();
+        List<Agent> toClose = new ArrayList<>();
         Slot built;
         try {
             // The build itself runs outside `lock`, so routing and eviction are not stalled for
@@ -880,6 +940,7 @@ public final class Router implements AutoCloseable, Predictor {
                     lock.unlock();
                 }
                 Agent agent = create(checkpoint);
+                boolean duplicate = false;
                 lock.lock();
                 try {
                     Slot attached = slots.get(checkpoint);
@@ -889,17 +950,24 @@ public final class Router implements AutoCloseable, Predictor {
                         touch(checkpoint);
                         attached.leases++;
                         built = attached;
-                        agent.close();
+                        duplicate = true;
                     } else {
                         built = new Slot(agent, true);
                         built.leases++;
                         slots.put(checkpoint, built);
                         order.add(checkpoint);
-                        evicted = evictLocked();
+                        evictLocked(toClose);
                     }
-                    finish(checkpoint, inflight);
                 } finally {
+                    // ALWAYS, even if eviction threw. Skipping it left the new slot published
+                    // with a lease that nothing could release -- so the agent could never be
+                    // retired or closed -- and left every waiter parked on a latch for a
+                    // checkpoint that had in fact loaded.
+                    finish(checkpoint, inflight);
                     lock.unlock();
+                }
+                if (duplicate) {
+                    toClose.add(agent);
                 }
             } finally {
                 buildLock.unlock();
@@ -918,10 +986,20 @@ public final class Router implements AutoCloseable, Predictor {
             }
             throw failure;
         }
-        if (!evicted.isEmpty()) {
-            // Nothing to dispatch here, but keeping the list is what lets a caller see which
-            // checkpoints left: `loaded()` after a load is the observable form of it.
-            assert evicted.size() <= Checkpoint.values().length;
+        // Outside every lock. Closing a native session can be slow, and doing it under `lock`
+        // stalled callers asking for an ALREADY-RESIDENT checkpoint -- which is the one thing the
+        // fast path in `acquire` exists to keep fast. Measured at 1.3 s for an unrelated lease
+        // behind one slow close.
+        try {
+            closeAll(toClose);
+        } catch (RuntimeException | Error failure) {
+            // The new slot is already published and holds the lease this call took. Throwing
+            // without releasing it would strand that lease forever: nothing else can reach it,
+            // so the agent could never be retired or closed -- an unreachable, unclosable native
+            // session. The caller is about to get an exception instead of the lease, so giving it
+            // back here is exactly right.
+            release(built);
+            throw failure;
         }
         return built;
     }
@@ -989,9 +1067,8 @@ public final class Router implements AutoCloseable, Predictor {
      *
      * @return the checkpoints that left
      */
-    private List<Checkpoint> evictLocked() {
+    private List<Checkpoint> evictLocked(List<Agent> toClose) {
         List<Checkpoint> evicted = new ArrayList<>();
-        List<Agent> toClose = new ArrayList<>();
         while (order.size() > maxLoaded) {
             Checkpoint victim = order.remove(0);
             Slot slot = slots.remove(victim);
@@ -1013,7 +1090,6 @@ public final class Router implements AutoCloseable, Predictor {
                 }
             }
         }
-        closeAll(toClose);
         return evicted;
     }
 
@@ -1044,7 +1120,11 @@ public final class Router implements AutoCloseable, Predictor {
         try {
             requireOpen();
             Slot previous = slots.put(checkpoint, new Slot(agent, false));
-            if (previous != null) {
+            // Not when it is the SAME agent. `attach`ing the instance `load` just returned is
+            // exactly what the javadoc invites, and retiring the previous slot would close the
+            // very agent the caller is being told the router will never close -- leaving a live
+            // slot holding a closed session that nothing can ever replace.
+            if (previous != null && previous.agent != agent) {
                 retire(previous, toClose);
             }
             touch(checkpoint);
@@ -1110,7 +1190,9 @@ public final class Router implements AutoCloseable, Predictor {
      * <p>Waits for an in-flight build of that checkpoint only, so an unrelated cold load does not
      * stall this call.
      *
-     * @return the checkpoints that were freed, which is empty when it was not resident
+     * @return the checkpoints this router let go of, which is empty when it was not resident.
+     *     "Let go of" and "closed" are not the same thing when a lease is outstanding: the slot
+     *     is dropped immediately and its agent closes when the last lease is released.
      */
     public List<Checkpoint> unload(String name) {
         Checkpoint checkpoint = normaliseName(name);
@@ -1180,7 +1262,14 @@ public final class Router implements AutoCloseable, Predictor {
         }
     }
 
-    /** How many checkpoints may be resident at once; {@link #attach} and {@link #preload} raise it. */
+    /**
+     * How many checkpoints may be resident at once.
+     *
+     * <p>A high-water mark, not a window: {@link #attach} and {@link #preload} raise it to fit
+     * what they make resident and nothing lowers it again, so detaching later leaves the raised
+     * ceiling in place. That is the reference's behaviour and is kept deliberately; a caller who
+     * needs the original ceiling back should build a new router.
+     */
     public int maxLoaded() {
         lock.lock();
         try {
