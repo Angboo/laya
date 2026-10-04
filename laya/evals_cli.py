@@ -256,6 +256,12 @@ def _print_deltas(deltas: Dict[str, Dict[str, Any]]) -> None:
         if delta.get("missing"):
             print("%-18s baseline=%.4f missing from the report" % (metric, delta["baseline"]))
             continue
+        if delta.get("incomparable"):
+            # The diff is NaN by construction here, and "diff=+nan" on its own is not a
+            # diagnosis: print the reason the comparison was refused, not just its symptom.
+            print("%-18s baseline=%.4f value=%.4f not compared: %s"
+                  % (metric, delta["baseline"], delta["value"], delta["incomparable"]))
+            continue
         print("%-18s baseline=%.4f value=%.4f diff=%+.4f (tol %.4f)"
               % (metric, delta["baseline"], delta["value"], delta["diff"], delta["tolerance"]))
 
