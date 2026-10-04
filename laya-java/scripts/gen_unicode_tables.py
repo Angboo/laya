@@ -160,6 +160,7 @@ def render():
     upper = ranges(lambda cp: chr(cp).isupper())
     lower = ranges(lambda cp: chr(cp).islower())
     space = ranges(lambda cp: chr(cp).isspace())
+    printable = ranges(lambda cp: chr(cp).isprintable())
 
     # Every code point whose lowercase is more than one code point. In Unicode 15 there is
     # exactly one, and `laya/lang.py` depends on it: it replaces U+0130 before lowering, because
@@ -239,6 +240,11 @@ public final class UnicodeTables {
                      "Every code point whose Python lowercase is one DIFFERENT code point,\n"
                      "     * sorted. {@link #LOWER_TO} holds what each one maps to.")
         + "\n"
+        + "\n"
+        + table("PRINTABLE", printable,
+                "Python's {@code str.isprintable()}, which is what {@code repr} leaves\n"
+                "     * unescaped. Everything else it spells as a numeric escape.")
+        + "\n"
         + flat_table("LOWER_TO", [low for _, low in simple],
                      "The lowercase of each entry of {@link #LOWER_FROM}, in the same order.")
         + "\n"
@@ -255,6 +261,7 @@ public final class UnicodeTables {
             ("UPPER", lambda cp: chr(cp).isupper()),
             ("LOWER", lambda cp: chr(cp).islower()),
             ("SPACE", lambda cp: chr(cp).isspace()),
+            ("PRINTABLE", lambda cp: chr(cp).isprintable()),
         ))
     )
 
@@ -358,6 +365,20 @@ public final class UnicodeTables {
             }
         }
         return false;
+    }
+
+    /**
+     * Python's {@code str.isprintable()} for one code point.
+     *
+     * <p>What {@code repr} leaves alone. Everything else it spells as a numeric escape, and that
+     * includes code points no ASCII-only check catches: U+00A0 NO-BREAK SPACE, U+00AD SOFT
+     * HYPHEN, U+200B ZERO WIDTH SPACE, U+FEFF, and the private-use and unassigned planes. A
+     * pasted ticket is full of the first one, and it reaches a route's reason string through the
+     * mixed segment, so an escape check that stopped at U+007F would put a raw control character
+     * into an API response.
+     */
+    public static boolean isPrintable(int codePoint) {
+        return contains(PRINTABLE, codePoint);
     }
 
     /**
@@ -527,7 +548,8 @@ public final class UnicodeTables {
     # Splice the ASCII fast path into each accessor. Done here rather than in the template so the
     # template stays readable, and asserted so a renamed accessor cannot silently lose its fast
     # path and quietly become ten times slower on ordinary Latin text.
-    for name in ("ALPHA", "WORD", "COMBINING", "DIGIT", "UPPER", "LOWER", "SPACE"):
+    for name in ("ALPHA", "WORD", "COMBINING", "DIGIT", "UPPER", "LOWER", "SPACE",
+                 "PRINTABLE"):
         marker = "        return contains(%s, codePoint);\n" % name
         if methods.count(marker) != 1:
             raise SystemExit(

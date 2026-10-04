@@ -1,5 +1,6 @@
 package com.convaiinnovations.laya.json;
 
+import com.convaiinnovations.laya.lang.UnicodeTables;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Locale;
@@ -188,6 +189,83 @@ public final class PythonJson {
      * JSON, and is deliberately what CPython does by default, so a state carrying one produces the
      * same tokens here as there rather than a different error.
      */
+    /**
+     * CPython's {@code repr} for a string, which is what a {@code %r} in a message interpolates.
+     *
+     * <p>Needed because the router's reason strings are built with {@code %r} and one of them
+     * interpolates the mixed segment -- a slice of the caller's own text. So this sees arbitrary
+     * input, not a short language code, and every rule below is reachable from a pasted ticket.
+     *
+     * <p>The rules, in CPython's order:
+     *
+     * <ul>
+     *   <li>The quote is a single quote, unless the string holds a single quote and no double
+     *       quote, in which case the whole thing is double-quoted and nothing needs escaping.
+     *       A string holding both is single-quoted with its single quotes escaped.
+     *   <li>A backslash and the chosen quote are backslash-escaped; newline, carriage return and
+     *       tab get their letter escapes.
+     *   <li>Anything {@link UnicodeTables#isPrintable} calls unprintable becomes a numeric escape
+     *       -- backslash-x and two hex digits below U+0100, backslash-u and four below U+10000,
+     *       backslash-U and eight above it -- in LOWERCASE hex. (Spelled out rather than shown:
+     *       a backslash-u sequence in a Java comment is translated before the file is lexed, so
+     *       writing the escape here would stop this file compiling.)
+     *   <li>Everything else passes through as itself, including every non-ASCII printable
+     *       character: CPython 3 does not escape those.
+     * </ul>
+     *
+     * <p>That last pair is where an ASCII-only escape check goes wrong, and it is not a corner:
+     * U+00A0 NO-BREAK SPACE is unprintable to CPython and arrives in pasted text constantly, so
+     * stopping at U+007F would write a raw control character into an API response.
+     */
+    public static String repr(String value) {
+        if (value == null) {
+            return "None";
+        }
+        char quote = value.indexOf('\'') >= 0 && value.indexOf('"') < 0 ? '"' : '\'';
+        StringBuilder out = new StringBuilder(value.length() + 2);
+        out.append(quote);
+        int i = 0;
+        while (i < value.length()) {
+            int cp = value.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp == quote || cp == '\\') {
+                out.append('\\').appendCodePoint(cp);
+            } else if (cp == '\n') {
+                out.append("\\n");
+            } else if (cp == '\r') {
+                out.append("\\r");
+            } else if (cp == '\t') {
+                out.append("\\t");
+            } else if (UnicodeTables.isPrintable(cp)) {
+                out.appendCodePoint(cp);
+            } else if (cp < 0x100) {
+                out.append(String.format(Locale.ROOT, "\\x%02x", cp));
+            } else if (cp < 0x10000) {
+                out.append(String.format(Locale.ROOT, "\\u%04x", cp));
+            } else {
+                out.append(String.format(Locale.ROOT, "\\U%08x", cp));
+            }
+        }
+        return out.append(quote).toString();
+    }
+
+    /**
+     * CPython's {@code %.0f}: the nearest integer, halves to EVEN.
+     *
+     * <p>{@code String.format("%.0f", v)} rounds halves UP, so the two disagree on every halfway
+     * value -- {@code 12.5} is {@code "12"} in CPython and {@code "13"} in Java. The router
+     * reports a percentage of letters with this, and a share of one in eight letters is exactly
+     * 12.5, so the disagreement is reachable rather than theoretical.
+     */
+    public static String percent0(double fraction) {
+        double scaled = 100.0 * fraction;
+        if (Double.isNaN(scaled) || Double.isInfinite(scaled)) {
+            return repr(scaled);
+        }
+        // Math.rint is IEEE ties-to-even, which is the rule; a long keeps a share above 2^31.
+        return Long.toString((long) Math.rint(scaled));
+    }
+
     public static String repr(double value) {
         if (Double.isNaN(value)) {
             return "NaN";
