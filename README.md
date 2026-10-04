@@ -710,8 +710,11 @@ reachable on demand, or the server rebuilds one every time routing switches),
 `LAYA_IDLE_UNLOAD_SECONDS` (unload idle checkpoints; `0` disables it, `300` frees device memory
 after five minutes and makes the next request pay a cold load), and `LAYA_API_KEY` (when set, clients must
 send `Authorization: Bearer <key>`). A client's `model` field is honoured when it
-names a Laya checkpoint (`english`/`multilingual`/`typed-decisions`), otherwise
-the router auto-selects by script/language. The same body can also carry `task`,
+names a Laya checkpoint (`english`/`multilingual`/`typed-decisions` or a published Hub id).
+`jev-1` and `convaiinnovations/laya` still mean the router auto-selects by script/language.
+A path or an unpublished Hub id (`/path/to/checkpoint`, `org/repo`) is a 422 on both
+`/v1/systemone` and `/v1/systemone/batch` instead of being answered by another checkpoint.
+The same body can also carry `task`,
 `lang`, `lang_guess`, `min_confidence`, `max_len` and `head_max_len` — the controls
 `Router.predict` takes that a JSON body can state — while the five hook arguments
 (`hooks`, `on_predict_start`, `on_predict_end`, `hooks_raise`, `hooks_timeout`) are refused

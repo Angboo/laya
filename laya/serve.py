@@ -212,23 +212,58 @@ def _published_model_ids() -> Dict[str, str]:
     return {repo: name for name, repo in STANDALONE_MODELS.items() if repo != BUNDLE_REPO}
 
 
+def _names_unpublished_source(text: str) -> bool:
+    """True when `text` is a filesystem path or a Hub repo id, not a checkpoint name.
+
+    A slash or backslash is how both a path and a `org/repo` id are written. A leading
+    ``.`` or ``~`` is a relative or home path with no slash yet (``./ckpt``, ``~/ckpt``).
+    Checkpoint names, aliases and a Jev id such as ``jev-1`` have none of those, so they
+    are not this. Published ids are matched before the caller asks.
+    """
+    if not text:
+        return False
+    if text[0] in ".~":
+        return True
+    return "/" in text or "\\" in text
+
+
 def _resolve_model(model: Optional[str]) -> Optional[str]:
-    """Map a client's `model` field onto a Laya checkpoint, or None to auto-route."""
+    """Map a client's `model` field onto a Laya checkpoint, or None to auto-route.
+
+    A Jev id such as ``jev-1``, and the bundle id ``convaiinnovations/laya``, stay None:
+    both mean "let the Router choose". A path or an unpublished Hub repo id is a
+    different miss. Swallowing it used to answer with whichever checkpoint routing
+    picked, which is a wrong answer. That request is a 422 instead.
+    """
     if not model:
         return None
-    published = _published_model_ids().get(str(model).strip().lower())
+    text = str(model).strip()
+    published = _published_model_ids().get(text.lower())
     if published is not None:
         return published
-    from .router import normalise_name
+    from .router import BUNDLE_REPO, normalise_name
 
+    # The root bundle is the one Hub id whose documented meaning is auto-route, not a pin.
+    # It contains a slash, so the path check below would otherwise refuse it.
+    if text.lower() == BUNDLE_REPO:
+        return None
     # normalise_name raises ValueError on anything that is not a known checkpoint
     # or alias, and returns a name from router.DEFAULT_MODELS when it does accept one --
     # so it is the only list of accepted names this needs. A Jev client's `model` field
     # (e.g. "jev-1") is expected to miss; treat that as "no explicit checkpoint" and let
-    # the router auto-select.
+    # the router auto-select. A path or unpublished Hub id is not that miss: the caller
+    # named a checkpoint this server cannot load, the same refusal `validate_model` gives
+    # an MCP client, reported as this endpoint's 422.
     try:
         return normalise_name(model)
-    except Exception:
+    except ValueError as error:
+        if _names_unpublished_source(text):
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=422,
+                detail="%s, or omit model to let the router choose" % error,
+            ) from None
         return None
 
 

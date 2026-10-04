@@ -164,7 +164,7 @@ reference, and this client exposes them as options on `predict()`:
 
 | option | wire field | meaning |
 |---|---|---|
-| `model` | `model` | checkpoint name or alias for this request |
+| `model` | `model` | checkpoint name or alias for this request; a path or unpublished Hub id is a 422 from the server |
 | `task` | `task` | force a workflow; an unknown name is a 422 naming it |
 | `lang` | `lang` | a language code that skips detection when it names a language |
 | `langGuess` | `lang_guess` | a code from your own LID, consulted before detection |

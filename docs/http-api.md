@@ -121,7 +121,7 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 |---|---|---|
 | `state` | yes | text, email, ticket or JSON document to decide on; a missing or `null` state is a `400` |
 | `questions` | yes | object keyed by question id; each question is `choice` / `score` / `noul` with `instructions` and `criteria` |
-| `model` | no | names a checkpoint; anything else is ignored (see below) |
+| `model` | no | names a checkpoint; a path or unpublished Hub id is a `422`, anything else is ignored (see below) |
 | `task` | no | forces a checkpoint by workflow name instead of letting routing decide; an unknown name is a `422` naming it |
 | `lang` | no | a language code (`de`, `en-US`) that skips detection when it names a language; a blank or unrecognised code falls through to detection |
 | `lang_guess` | no | a language code from the client's own identifier, consulted after `lang` and before detection; any non-English code routes to the multilingual checkpoint |
@@ -141,9 +141,14 @@ now get the same answer.
 
 `model` is accepted so a Jev client can keep sending one. The public Hugging Face ids
 (`convaiinnovations/laya-multilingual`, `convaiinnovations/laya-typed-decisions`), the checkpoint
-names (`english`, `multilingual`, `typed-decisions`) and their aliases select a checkpoint; any
-other value -- including a Jev id like `jev-1` -- means "let the router choose", and the response's
-`routing` block records what was chosen and why.
+names (`english`, `multilingual`, `typed-decisions`) and their aliases select a checkpoint.
+`convaiinnovations/laya`, and any other value that is not a path or a Hub repo id -- including a
+Jev id like `jev-1` -- means "let the router choose", and the response's `routing` block records
+what was chosen and why. A value that looks like a filesystem path or an unpublished Hub id
+(`/path/to/checkpoint`, `org/repo`, `~/ckpt`, `.\ckpt`) is a `422` on both `/v1/systemone` and
+`/v1/systemone/batch`: this server cannot load it, and answering with another checkpoint would
+hide that. The detail is the same `unknown model` text core raises, plus the reminder to omit
+`model` to let the router choose.
 
 ### Response
 

@@ -575,6 +575,65 @@ def test_resolve_model_follows_the_router_registry(monkeypatch):
     assert _resolve_model("jev-1") is None
 
 
+def test_path_or_unpublished_hub_id_is_refused_on_both_endpoints(monkeypatch):
+    """A path or Hub id this server cannot load must not be answered by another checkpoint.
+
+    ``jev-1`` and ``convaiinnovations/laya`` stay "let the router choose", and so does a
+    plain unknown name: only a path or an unpublished repo id is a wrong answer (#919).
+    Both ``/v1/systemone`` and ``/v1/systemone/batch`` resolve ``model`` through the same
+    helper, so a miss has to be a 422 on each, before any inference.
+    """
+    from fastapi import HTTPException
+
+    passthrough = ("jev-1", "JEV-1", "convaiinnovations/laya", "Convaiinnovations/Laya",
+                   "  convaiinnovations/laya  ", "not-a-checkpoint", None, "")
+    for kept in passthrough:
+        assert _resolve_model(kept) is None, kept
+
+    refused = (
+        "/path/to/checkpoint",
+        "  /path/to/checkpoint  ",
+        "org/repo",
+        "someone/my-checkpoint",
+        "~/models/ckpt",
+        "./checkpoint",
+        ".\\checkpoint",
+        "C:\\models\\ckpt",
+    )
+    for raw in refused:
+        with pytest.raises(HTTPException) as caught:
+            _resolve_model(raw)
+        err = caught.value
+        assert err.status_code == 422, raw
+        assert "unknown model" in err.detail, err.detail
+        assert "choose one of" in err.detail, err.detail
+        assert "omit model to let the router choose" in err.detail, err.detail
+        assert repr(raw) in err.detail, err.detail
+
+    client, fake = _client(monkeypatch)
+    questions = REQ["questions"]
+    for raw in ("/path/to/checkpoint", "org/repo", "~/models/ckpt", ".\\checkpoint"):
+        single = client.post("/v1/systemone", json={**REQ, "model": raw})
+        assert single.status_code == 422, (raw, single.text)
+        assert "unknown model" in single.json()["detail"]
+        assert repr(raw) in single.json()["detail"]
+        batch = client.post("/v1/systemone/batch", json={
+            "states": ["one", "two"], "questions": questions, "model": raw})
+        assert batch.status_code == 422, (raw, batch.text)
+        assert "unknown model" in batch.json()["detail"]
+        assert repr(raw) in batch.json()["detail"]
+    assert fake.calls == [], fake.calls
+
+    for kept in ("jev-1", "convaiinnovations/laya", "not-a-checkpoint"):
+        single = client.post("/v1/systemone", json={**REQ, "model": kept})
+        assert single.status_code == 200, (kept, single.text)
+        assert fake.calls[-1]["model"] is None, (kept, fake.calls[-1])
+        batch = client.post("/v1/systemone/batch", json={
+            "states": ["one"], "questions": questions, "model": kept})
+        assert batch.status_code == 200, (kept, batch.text)
+        assert fake.calls[-1]["model"] is None, (kept, fake.calls[-1])
+
+
 def test_thread_limit(monkeypatch):
     pytest.importorskip("torch")
     monkeypatch.delenv("LAYA_THREADS", raising=False)
