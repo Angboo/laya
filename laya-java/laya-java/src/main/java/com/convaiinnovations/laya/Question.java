@@ -184,6 +184,29 @@ public final class Question {
     }
 
     /**
+     * A score question's legend: each level index mapped to the text the model was shown.
+     *
+     * <p>{@code renderCriterion} rather than a plain {@code toString}: a structured level comes
+     * back as the same JSON text the model read, where stringifying it would return a Java object's
+     * {@code toString}. A numeric scale passed as {@code [1, 2, 3]} must come back as
+     * {@code {"0": "1", "1": "2", "2": "3"}}, so the answer's shape does not depend on what the
+     * caller happened to pass.
+     *
+     * @throws IllegalStateException for a choice or noul question, which have no legend
+     */
+    public Map<String, String> legend() {
+        if (type != Type.SCORE) {
+            throw new IllegalStateException("only a score question has a legend, not " + type);
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < criteriaList.size(); i++) {
+            out.put(Integer.toString(i), renderCriterion(criteriaList.get(i)));
+        }
+        // Level order, so `Map.copyOf` is not an option: its iteration order is unspecified.
+        return java.util.Collections.unmodifiableMap(out);
+    }
+
+    /**
      * One criterion as text: a string passes through, anything else becomes compact JSON.
      *
      * <p>Python spells that JSON with {@code json.dumps(..., ensure_ascii=False,

@@ -380,11 +380,136 @@ def sequences():
     return out
 
 
+def decode_answers():
+    """`Agent._decode_answers` output for hostile logit rows, per checkpoint.
+
+    Driven through the REAL method rather than a transcription of it: the expectations have to come
+    from the shipped decoder, including its rounding, its argmax tie-breaking and its clamps.
+
+    Logits are synthesised rather than taken from a forward pass so the case list can aim at the
+    branches -- every temperature bucket, a tie at the top, a row whose softmax is exactly uniform,
+    magnitudes that would overflow a naive `exp`, and the language override -- and so the fixture
+    does not need a 1.2 GB graph to regenerate.
+    """
+    import math
+    import os
+
+    import numpy as np
+
+    from laya.agent import Agent, QTYPES
+    from laya.common import clamp_temperature, resolve_lang_temperatures
+
+    rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS",
+                         "/Users/nombauser/Documents/nomba-dev/laya-e2e/checkpoints")
+
+    def row(values):
+        return np.asarray(values, dtype=np.float32)
+
+    # (id, question, option_order, lang, logits)
+    cases = [
+        ("choice-2", {"t": "choice", "ins": "i", "crit": {"a": "x", "b": "y"}},
+         None, None, [2.0, 1.0]),
+        ("choice-2-tied", {"t": "choice", "ins": "i", "crit": {"a": "x", "b": "y"}},
+         None, None, [1.0, 1.0]),
+        ("choice-4", {"t": "choice", "ins": "i",
+                      "crit": {"a": "1", "b": "2", "c": "3", "d": "4"}},
+         None, None, [0.5, 2.5, -1.0, 2.5]),
+        ("choice-4-permuted", {"t": "choice", "ins": "i",
+                               "crit": {"a": "1", "b": "2", "c": "3", "d": "4"}},
+         [2, 0, 3, 1], None, [0.5, 2.5, -1.0, 2.5]),
+        ("choice-7", {"t": "choice", "ins": "i",
+                      "crit": {("o%d" % i): str(i) for i in range(7)}},
+         None, None, [0.1 * i for i in range(7)]),
+        ("choice-12", {"t": "choice", "ins": "i",
+                       "crit": {("o%d" % i): str(i) for i in range(12)}},
+         None, None, [(-1.0) ** i * i * 0.3 for i in range(12)]),
+        ("choice-20-uniform", {"t": "choice", "ins": "i",
+                               "crit": {("o%d" % i): str(i) for i in range(20)}},
+         None, None, [0.0] * 20),
+        ("choice-huge-magnitude", {"t": "choice", "ins": "i",
+                                   "crit": {"a": "1", "b": "2", "c": "3"}},
+         None, None, [700.0, 699.0, -700.0]),
+        ("choice-tiny-spread", {"t": "choice", "ins": "i", "crit": {"a": "1", "b": "2"}},
+         None, None, [1.0, 1.0 + 1e-7]),
+        ("choice-lang-override", {"t": "choice", "ins": "i", "crit": {"a": "1", "b": "2"}},
+         None, "zh-Hans", [2.0, 1.0]),
+        ("choice-lang-override-prefix", {"t": "choice", "ins": "i", "crit": {"a": "1", "b": "2"}},
+         None, "ZH", [2.0, 1.0]),
+        ("choice-lang-unknown", {"t": "choice", "ins": "i", "crit": {"a": "1", "b": "2"}},
+         None, "xx", [2.0, 1.0]),
+        ("score-3", {"t": "score", "ins": "i", "crit": ["bad", "ok", "good"]},
+         None, None, [0.2, 1.4, 0.9]),
+        ("score-6", {"t": "score", "ins": "i", "crit": [str(i) for i in range(6)]},
+         None, None, [0.0, 1.0, 2.0, 1.0, 0.0, -1.0]),
+        ("score-structured-legend", {"t": "score", "ins": "i", "crit": [{"d": 1}, "ok", 3]},
+         None, None, [0.4, 0.4, 0.4]),
+        ("score-permuted", {"t": "score", "ins": "i", "crit": ["bad", "ok", "good"]},
+         [1, 2, 0], None, [0.2, 1.4, 0.9]),
+        ("noul-true", {"t": "noul", "ins": "i"}, None, None, [0.3, 1.9]),
+        ("noul-false", {"t": "noul", "ins": "i"}, None, None, [2.4, 0.1]),
+        ("noul-balanced", {"t": "noul", "ins": "i"}, None, None, [1.0, 1.0]),
+        ("noul-labels", {"t": "noul", "ins": "i",
+                         "labels": {"false": "nope", "true": "yep"}}, None, None, [0.3, 1.9]),
+    ]
+
+    out = {}
+    for name in ("english", "multilingual"):
+        path = os.path.join(rig, name, "rl_agent_config.json")
+        if not os.path.isfile(path):
+            out[name] = {"skipped": "no rl_agent_config.json for %s" % name}
+            continue
+        cfg = json.load(open(path, encoding="utf-8"))
+        # Clamped exactly as the runtime clamps: `choice:11+` ships at 0.1006 on one checkpoint,
+        # a ~10x sharpener, and a port that applied the raw value would publish a coin flip as a
+        # certainty. The fixture therefore records the CLAMPED table the decoder actually uses.
+        temperature = [clamp_temperature(t) for t in cfg.get("temperature", [1.0, 1.0, 1.0])]
+        by_options = {k: clamp_temperature(v)
+                      for k, v in (cfg.get("temperature_by_options") or {}).items()}
+        # Neither shipped checkpoint sets `lang_temperatures`, so the override branch would never
+        # be exercised by their configs. One is supplied here, through the same resolver the
+        # runtime uses, so a port cannot skip the branch and still pass.
+        lang_raw = {"zh": {"temperature": [2.0, 1.5, 3.0],
+                           "temperature_by_options": {"choice:2": 2.5}}}
+        lang_temperatures = resolve_lang_temperatures(lang_raw, temperature)
+
+        shim = Agent.__new__(Agent)
+        shim.temperature = temperature
+        shim.temperature_by_options = by_options
+        shim.lang_temperatures = lang_temperatures
+        shim.binning_map = None
+
+        recorded = {}
+        for cid, question, option_order, lang, logits in cases:
+            k = len(logits)
+            q = dict(question)
+            if option_order is not None:
+                q["option_order"] = option_order
+            items = [{"markers": list(range(k))}]
+            # a wider logits block than k, so a port that forgets to slice to k columns is caught
+            block_width = k + 3
+            padded = row(list(logits) + [99.0] * 3).reshape(1, block_width)
+            act = row([0.25, -0.5]).reshape(1, 2)
+            answers = Agent._decode_answers(shim, padded, act, items, [cid], {cid: q}, 0, lang)
+            recorded[cid] = {
+                "question": question, "option_order": option_order, "lang": lang,
+                "logits": [float(x) for x in logits], "logits_block_width": block_width,
+                "act": [0.25, -0.5], "answer": answers[cid],
+            }
+        out[name] = {
+            "config": {"temperature": temperature, "temperature_by_options": by_options,
+                       "lang_temperatures_raw": lang_raw},
+            "qtypes": QTYPES,
+            "cases": recorded,
+        }
+    return out
+
+
 FAMILIES = {
     "lang_tables.json": lang_tables,
     "presets.json": presets,
     "tokenizer_ids.json": tokenizer_ids,
     "sequences.json": sequences,
+    "decode.json": decode_answers,
 }
 
 
