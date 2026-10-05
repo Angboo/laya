@@ -146,9 +146,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 17 is covered by the build job above. 21 is the LTS most consumers are on; 24 is the
-        # newest with a different Unicode version from 17, and is the one verified by hand.
-        jdk: ["21", "24"]
+        # 17 as well as 21 and 24, even though the build job also tests on 17: that job runs
+        # WITHOUT `-PtestJavaVersion`, so `TestJvmVersionTest` is disabled there and "17 is
+        # tested" was true but unasserted. Here it is asserted.
+        #
+        # The three are not an arbitrary spread, they are three different Unicode versions --
+        # 17 carries 13.0, 21 carries 15.0 and 24 carries 16.0 -- and this port's whole
+        # character-handling strategy is that the answer must not depend on which. That is not
+        # theoretical: the JDK 21 cell failed on its first run, because `Character.isLetter` on
+        # Unicode 15.0 agrees with CPython 15.0 exactly, and a test had asserted the JDK
+        # DISAGREES. 17 and 24 passed. A two-version matrix would not have found it.
+        jdk: ["17", "21", "24"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # For check_test_results.py only -- it is standard library, so there is nothing to install.

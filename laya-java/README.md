@@ -340,6 +340,10 @@ the bytecode stays at release 17:
 ./gradlew test -PtestJavaVersion=24    # compiled for 17, executed on 24
 ```
 
+CI runs the model-free suite on **17, 21 and 24** — three different Unicode versions (13.0, 15.0
+and 16.0). The artifact is compiled for 17, so it runs on 17 and anything newer; those three are
+the versions the suite is actually asserted against.
+
 This matters more here than in most ports. `\p{L}` and `\p{N}` in `java.util.regex` follow the
 JDK's own Unicode version, and `Character.isLetter` disagrees with itself across JDK 17 (Unicode
 13.0) and JDK 24 (Unicode 16.0) on 751 of the code points this port has to classify — 0 of 751 on

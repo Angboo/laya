@@ -204,23 +204,63 @@ class UnicodeTablesTest {
     }
 
     @Test
-    @DisplayName("the JDK's own predicates would NOT pass, which is why these tables exist")
-    void theJdkDisagrees() {
-        // Not a tautology: this is the measurement behind the comment on UnicodeTables, kept as a
-        // test so the claim is checked rather than asserted. If a future JDK ever catches up, this
-        // fails and the table can be reconsidered deliberately rather than kept out of habit.
-        assertFalse(predicateDigest(Character::isLetter).equals(digests().get("alpha")),
-                "Character.isLetter now agrees with CPython; the ALPHA table may be removable");
+    @DisplayName("two of these properties have no JDK equivalent, on any JDK")
+    void theJdkHasNoEquivalent() {
+        // These two disagree with CPython on EVERY JDK, because the JDK does not expose the
+        // property at all rather than exposing an older version of it:
+        //
+        //   * `str.isspace()` takes U+00A0, U+0085, U+2007 and U+202F, and
+        //     `Character.isWhitespace` rejects every one of them -- it is a different predicate,
+        //     not a stale one.
+        //   * the canonical combining CLASS is not exposed by the JDK. Mn/Mc is the nearest
+        //     approximation, which is what the .NET port uses, and it differs on 1,528 code
+        //     points that are category M with a class of zero.
+        //
+        // So these are the version-independent half of the justification for compiling the
+        // tables in, and they are safe to assert on a JDK matrix.
         assertFalse(predicateDigest(Character::isWhitespace).equals(digests().get("space")),
                 "Character.isWhitespace now agrees with CPython's isspace");
-        assertFalse(predicateDigest(Character::isUpperCase).equals(digests().get("upper")),
-                "Character.isUpperCase now agrees with CPython's isupper");
         assertFalse(predicateDigest(cp -> {
             int type = Character.getType(cp);
             return type == Character.NON_SPACING_MARK || type == Character.COMBINING_SPACING_MARK;
         }).equals(digests().get("combining")),
                 "the Mn/Mc approximation -- which the .NET port uses -- now agrees with the"
                 + " canonical combining class");
+    }
+
+    @Test
+    @DisplayName("whether the JDK's letter and case predicates agree is a property of the JDK")
+    void theJdkMayOrMayNotAgree() {
+        // This test used to assert that `Character.isLetter` DISAGREES with CPython, with a
+        // comment saying that if a JDK ever caught up the test should fail so the table could be
+        // reconsidered. A JDK caught up: 21 ships Unicode 15.0 and CPython is 15.0.0, so the two
+        // letter sets are identical there -- and the test failed on the JDK 21 cell while 17
+        // (Unicode 13.0) and 24 (16.0) passed.
+        //
+        // Catching up is not a reason to remove the table; it is the reason the table exists. The
+        // agreement is an accident of two version numbers lining up, and it un-happens on the
+        // next release in either direction. A port that read the predicate from the JDK would
+        // have been correct on 21 and wrong on 17 and 24, which is exactly the defect this port
+        // shipped in its pre-tokenizer.
+        //
+        // So the assertion is the JDK-independent one: whatever this JDK thinks, the TABLE is
+        // CPython's answer. Agreement is recorded rather than required.
+        boolean letters = predicateDigest(Character::isLetter).equals(digests().get("alpha"));
+        boolean upper = predicateDigest(Character::isUpperCase).equals(digests().get("upper"));
+        System.out.printf("JDK %s: isLetter agrees with CPython = %s, isUpperCase = %s%n",
+                Runtime.version().feature(), letters, upper);
+
+        // The part that must hold on every JDK: the tables are the reference's, not the JDK's.
+        assertEquals(digests().get("alpha"), predicateDigest(UnicodeTables::isAlpha),
+                "the ALPHA table no longer matches CPython");
+        assertEquals(digests().get("upper"), predicateDigest(UnicodeTables::isUpper),
+                "the UPPER table no longer matches CPython");
+        // And at least one of the four properties must still have no JDK equivalent, or there
+        // would be nothing left for these tables to do. `theJdkHasNoEquivalent` names which two.
+        assertFalse(letters && upper
+                        && predicateDigest(Character::isWhitespace).equals(digests().get("space")),
+                "every JDK predicate now agrees with CPython; the tables can be reconsidered "
+                + "deliberately rather than kept out of habit");
     }
 
     @Test
