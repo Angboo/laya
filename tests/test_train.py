@@ -189,6 +189,28 @@ class DataTests(unittest.TestCase):
                          (None, "options_collapsed"))
         self.assertIsNotNone(make_item(self.tok, q, [0.5, 0.5], state_ids, head_max_len=64)[0])
 
+    def test_options_past_max_len_are_skipped_like_inference_refuses_them(self):
+        # With a head longer than max_len, build_sequence drops the last options' markers and the
+        # batch would crash on a target longer than its markers. Agent refuses the same question.
+        from laya.common import build_head
+
+        question = {"type": "choice", "instructions": "which ?",
+                    "criteria": ["one", "two", "three", "four", "five", "six", "seven"]}
+        q = to_internal("q", question)
+        _ids, markers, _stats = build_head(self.tok, q, 64)
+        state_ids = encode_state(self.tok, "app", 64)
+        target = [1.0 / 7] * 7
+        self.assertEqual(make_item(self.tok, q, target, state_ids, 64, max_len=markers[-1]),
+                         (None, "options_beyond_max_len"))
+        self.assertIsNotNone(make_item(self.tok, q, target, state_ids, 64, max_len=markers[-1] + 1)[0])
+        self.assertIsNotNone(make_item(self.tok, q, target, state_ids, 64)[0])   # no max_len: not checked
+        row = {"state": "app", "questions": {"q": question},
+               "gold": {"q": {"probabilities": {"one": 1.0}}}}
+        self.assertEqual(items_from_rows(self.tok, [row], markers[-1], 64), ([], {"options_beyond_max_len": 1}))
+        # the same budget really does cut a marker in the sequence training would build
+        _seq, kept = build_sequence(self.tok, "app", q, markers[-1], 64)
+        self.assertEqual(len(kept), 6)
+
     def test_target_length_must_match_options(self):
         state_ids = encode_state(self.tok, "app", 64)
         self.assertEqual(make_item(self.tok, to_internal("q", DEPARTMENT), [0.5, 0.5], state_ids, 40),
