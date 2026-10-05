@@ -1627,7 +1627,8 @@ class Agent(HookRegistry):
         That span is the one the model read, not merely the one asked for: the window is capped at
         the room the questions leave, so what is handed to `predict_batch` is not cut short again.
 
-        A state that already fits one window is passed straight to `system_one` (identical output).
+        A state the questions leave room for is passed straight to `system_one` (identical output),
+        since `system_one` reads it whole; with an explicit `window`, a state that fits that window.
 
         The hooks wrap the inference that answers the state, which for a document needing several
         windows is the one shared `predict_batch` over them: `on_predict_start` fires once, and
@@ -1716,8 +1717,8 @@ class Agent(HookRegistry):
         for qid in ids:
             self._check_question(qid, questions[qid])
         internal = {qid: self._to_internal(questions[qid]) for qid in ids}
-        budget, step, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
-                                        head_max_len, window=window, stride=stride)
+        budget, step, room = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
+                                           head_max_len, window=window, stride=stride)
         # Snapshot the questions the scan was just sized against, BEFORE any start hook can
         # rewrite them, and compare against this instead of `questions` itself. `==` over the
         # mapping cannot see an in-place rewrite: a hook that adds options to
@@ -1735,7 +1736,10 @@ class Agent(HookRegistry):
         # ask "how much of the document did the model read?" without handling a KeyError on the
         # shortest, most common inputs. The result is copied first: a start hook that answers with
         # `ctx.skip(...)` hands back its own payload dict, and it may be a cached object.
-        if len(state_ids) <= budget:
+        # "Fits" is the room the questions leave, not the default window: `system_one` reads a
+        # state up to that room whole, so windowing one between the two only re-reads it in pieces
+        # and lets the per-window max inflate the answer. An explicit `window` still scans.
+        if len(state_ids) <= (budget if window and window > 0 else room):
             probe, evidence = _start_evidence()
             single = dict(self.system_one(state, questions, lang=lang,
                                           **_with_start_probe(hook_kwargs, probe)))
@@ -1746,7 +1750,10 @@ class Agent(HookRegistry):
             # fit one window was silently truncated by a re-budgeting hook and still reported
             # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
             # never reached the model, while a longer document on the identical input hard-failed.
-            _check_scan_budget(self, evidence, budget, max_len, head_max_len, asked)
+            # Sized for the whole state when it is longer than the window, so a hook that narrows
+            # the room below it is refused rather than cutting its tail.
+            _check_scan_budget(self, evidence, max(budget, len(state_ids)), max_len, head_max_len,
+                               asked)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 
