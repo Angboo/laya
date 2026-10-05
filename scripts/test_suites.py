@@ -81,6 +81,7 @@ SCRIPT_SUITES = [
     "tests/test_conformal_abstention.py",
     "tests/test_cli.py",
     "tests/test_cli_lang_guess.py",
+    "tests/test_evidence.py",
     "tests/test_mcp.py",
     "tests/test_mcp_device.py",
     "tests/test_langchain.py",
