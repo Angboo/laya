@@ -1747,6 +1747,201 @@ def predict_golden():
             "single": single, "batch": batches}
 
 
+def email_clean():
+    """`laya.email`'s cleaner and state builder, over a corpus built from its own reasoning.
+
+    Every case below is a rule the module's comments argue for, which is what makes this a
+    contract rather than a sample: a marker that must fire, a near-miss that must NOT fire because
+    it is ordinary prose, and the Unicode-sensitive sign-off rule whose tail is matched
+    structurally. The near-misses matter more than the hits -- a cleaner that is too eager deletes
+    the sender's actual request, which is worse than leaving boilerplate behind, and the module
+    says so in four separate places.
+    """
+    from laya import email as email_mod
+
+    q = "I cannot log in and need a password reset."
+    cases = [
+        # -- nothing to do
+        ("empty", ""),
+        ("plain", q),
+        ("crlf", "line one\r\nline two\r\rline three"),
+        ("literal-backslash-n", "first\\nsecond"),
+        ("collapses-runs", "a    b\t\tc"),
+        ("blank-paragraphs", "first\n\n\n\nsecond\n   \n\nthird"),
+
+        # -- quote headers that MUST cut
+        ("on-wrote", q + "\n\nOn Tue, 3 Sep 2025 at 10:04, Ana <ana@x.com> wrote:\n> older text"),
+        ("em-escreveu", q + "\n\nEm ter., 3 de set. de 2025, Ana escreveu:\n> antigo"),
+        ("el-escribio", q + "\n\nEl mar, 3 sept 2025 a las 10:04, Ana escribió:\n> viejo"),
+        ("le-a-ecrit", q + "\n\nLe mar. 3 sept. 2025 a écrit :\n> ancien"),
+        ("original-message", q + "\n\n-----Original Message-----\nolder"),
+        ("mensagem-original", q + "\n\n-----Mensagem original-----\nantigo"),
+        ("message-d-origine", q + "\n\n-----Message d'origine-----\nancien"),
+        ("underscore-rule", q + "\n\n________________\nolder"),
+        ("from-with-address", q + "\n\nFrom: Ana <ana@x.com>\nolder"),
+        ("de-with-address", q + "\n\nDe: Ana <ana@x.com>\nantigo"),
+        ("de-spaced-colon", q + "\n\nDe : Marie <marie@x.com>\nancien"),
+
+        # -- near-misses that MUST NOT cut: the module names each of these as body text
+        ("em-without-date", q + "\n\nEm resposta ao que você escreveu:\nmais detalhes"),
+        ("le-without-date", q + "\n\nLe rapport que vous avez écrit :\nplus de détails"),
+        ("from-as-prose", "From: my side the integration works, but please refund the charge."),
+        ("de-as-date-range", "De: 10/09 a 15/09 estarei fora, por favor adie a cobranca."),
+        ("quote-header-first-line", "On Tue, 3 Sep 2025, Ana <ana@x.com> wrote:\nstill the body"),
+
+        # -- the bare-name Outlook header needs its neighbour to be told from prose
+        ("from-name-then-sent", q + "\n\nFrom: Maria Souza\nSent: Tuesday\nolder"),
+        ("de-name-then-enviado", q + "\n\nDe: Maria Souza\nEnviado: terca\nantigo"),
+        ("de-name-then-envoye", q + "\n\nDe : Marie Dupont\nEnvoyé : mardi\nancien"),
+        ("from-name-then-date-year", q + "\n\nFrom: Maria Souza\nDate: 3 Sep 2025\nolder"),
+        ("de-name-no-neighbour", q + "\n\nDe: Maria Souza\nPara: 15/09\nstill body"),
+
+        # -- Gmail's wrapped attribution: the tail cuts and takes its head with it
+        ("wrapped-attribution", q + "\n\nEm ter., 3 de set. de 2025,\nfulano@x.com> escreveu:\n> antigo"),
+        ("wrapped-attribution-fr", q + "\n\nLe mar. 3 sept. 2025,\nsupport@x.com> a écrit :\n> ancien"),
+        ("attribution-tail-no-head", q + "\n\nfulano@x.com> escreveu:\n> antigo"),
+
+        # -- quoted lines are dropped wherever they appear
+        ("angle-quoted", q + "\n> quoted\n  > indented quote\nmore of my message"),
+
+        # -- sign-offs. The search window starts at 60% of the lines, so each needs a body.
+        ("signoff-regards-name", "\n".join([q] * 9 + ["Regards, Ana", "x@y.com"])),
+        ("signoff-latin-ext-name", "\n".join([q] * 9 + ["Regards, Łukasz", "x@y.com"])),
+        # The case INITIAL governs: Lo is a letter a name may begin with, and `str.isupper()`
+        # is false for every caseless script, so UPPER here would lose the sign-off.
+        ("signoff-caseless-name", "\n".join([q] * 9 + ["Regards, 山田", "x@y.com"])),
+        # And the near-miss next to it: a Portuguese closing allows no trailing words at all,
+        # so the same name after `Obrigado` is a sentence, not a signature.
+        ("not-signoff-pt-with-name", "\n".join([q] * 9 + ["Obrigado, 山田", "x@y.com"])),
+        ("signoff-titlecase-name", "\n".join([q] * 9 + ["Regards, ǅarko", "x@y.com"])),
+        ("signoff-combining-name", "\n".join([q] * 9 + ["Regards, José", "x@y.com"])),
+        ("signoff-dashes", "\n".join([q] * 9 + ["--", "Ana"])),
+        ("signoff-warmest", "\n".join([q] * 9 + ["Warmest regards, Ana"])),
+        ("signoff-and-regards", "\n".join([q] * 9 + ["Thanks and regards, Ana"])),
+        ("signoff-many-thanks", "\n".join([q] * 9 + ["Many thanks, Ana"])),
+        # NOT sign-offs: the next word is not a name
+        ("not-signoff-sentence", "\n".join([q] * 9 + ["Thanks for the quick reply."])),
+        ("not-signoff-lowercase-other-script", "\n".join([q] * 9 + ["Thanks, żaneta"])),
+        ("not-signoff-symbol-name", "\n".join([q] * 9 + ["Thanks, Ⓐ"])),
+        ("not-signoff-zwnj", "\n".join([q] * 9 + ["Thanks, क्‌ष"])),
+        # pt/es/fr closings cut only when they stand alone
+        ("signoff-atenciosamente", "\n".join([q] * 9 + ["Atenciosamente,", "Ana"])),
+        ("signoff-cordialement", "\n".join([q] * 9 + ["Cordialement,", "Marie"])),
+        ("signoff-saudacoes", "\n".join([q] * 9 + ["Saudações!"])),
+        ("not-signoff-obrigado-mas", "\n".join([q] * 9 + ["Obrigado pelo retorno, mas preciso do estorno."])),
+        ("not-signoff-merci-mais", "\n".join([q] * 9 + ["Merci pour votre aide, mais le probleme persiste."])),
+        # a closing before the window is left alone
+        ("signoff-too-early", "Regards, Ana\n" + "\n".join([q] * 12)),
+
+        # -- device footers: only a line that is nothing but the footer
+        ("footer-iphone", "\n".join([q] * 9 + ["Sent from my iPhone"])),
+        ("footer-samsung", "\n".join([q] * 9 + ["Enviado do meu smartphone Samsung Galaxy."])),
+        ("footer-envoye-iphone", "\n".join([q] * 9 + ["Envoyé depuis mon iPhone"])),
+        ("footer-get-outlook", "\n".join([q] * 9 + ["Get Outlook for iOS"])),
+        ("not-footer-with-request", "\n".join([q] * 9 + ["Enviado do meu celular o comprovante ontem."])),
+
+        # -- disclaimers: a paragraph goes whole only when every sentence is boilerplate
+        ("disclaimer-en", q + "\n\nThis email and its contents are confidential and intended solely "
+                              "for the addressee."),
+        ("disclaimer-en-wrapped", q + "\n\nThis email and its contents are\nconfidential and intended "
+                                      "solely for the addressee."),
+        ("disclaimer-received-in-error", q + "\n\nIf you have received this email in error please "
+                                             "delete it."),
+        ("disclaimer-pt", q + "\n\nEsta mensagem e seus anexos sao confidenciais e de uso exclusivo "
+                              "do destinatario."),
+        ("disclaimer-es", q + "\n\nEste mensaje es confidencial y para uso exclusivo del destinatario."),
+        ("disclaimer-fr", q + "\n\nCe message est confidentiel et destiné uniquement au destinataire."),
+        ("disclaimer-print", q + "\n\nAntes de imprimir pense no meio ambiente."),
+        ("disclaimer-mixed-paragraph", "Please refund the charge. This email and its contents are "
+                                       "confidential and intended solely for the addressee."),
+        ("disclaimer-fused-line", "The account is locked\nThis email and its contents are confidential "
+                                  "and intended solely for the addressee."),
+        # NOT disclaimers: the bare word is a sender's own
+        ("not-disclaimer-question", "Is this confidential?"),
+        ("not-disclaimer-colon", "Confidential: I need a refund."),
+        ("not-disclaimer-print", "Antes de imprimir o boleto, confira o valor."),
+        ("not-disclaimer-contract", "Preciso do contrato confidencial assinado."),
+        ("not-disclaimer-fr-contract", "Je voudrais le contrat confidentiel signé."),
+
+        # -- cases that exist because a mutant survived without them. Each one is the smallest
+        # input that tells the port's rule apart from the plausible wrong rule next to it.
+        #
+        # A mark whose canonical combining CLASS is zero. U+034F is category Mn, so it is dropped
+        # before the tail is matched and the name reads as one token; the combining-class table
+        # would keep it, and a kept non-word character ends the scan short of the line.
+        ("signoff-class-zero-mark", "\n".join([q] * 9 + ["Regards, Jo\u034Fse"])),
+        # A mark with NO base: it follows a space, so the reference keeps it, and a kept mark is
+        # not a token opener -- `[^\W\d_]` excludes marks -- so this is NOT a sign-off.
+        ("not-signoff-baseless-mark", "\n".join([q] * 9 + ["Regards, \u0301Ana"])),
+        # 44 characters: a sign-off by every other rule, kept only by the 40-character limit.
+        ("not-signoff-too-wide",
+         "\n".join([q] * 9 + ["Regards, Anastasia Konstantinopolitanopoulos"])),
+        # A fourth token: `{0,3}` is the whole rule, so four names are a sentence.
+        ("not-signoff-four-tokens", "\n".join([q] * 9 + ["Regards, Ana Maria Souza Lima"])),
+        # The wrapped-attribution tail pops the line above it ONLY when that line is the
+        # `On/Em/El/Le ...` head it belongs to. Here it is ordinary prose and must survive.
+        ("attribution-tail-keeps-prose", q + "\nSee the details below.\nfulano@x.com> escreveu:\n> antigo"),
+        # U+0085 is a line terminator to Java and an ordinary character to Python's `.`, so a
+        # header spanning one is recognised by the reference and only by a port that says so.
+        ("quote-header-across-u0085", q + "\n\nOn Tue, 3 Sep 2025\u0085Ana wrote:\n> older"),
+        # U+00A0 is Python `\s` and is not Java's; U+001C is Python `\s` and is not even
+        # White_Space, so it is missed by Java's Unicode `\s` as well as by its default one.
+        ("quote-header-nbsp-indent", q + "\n\n\u00A0On Tue, 3 Sep 2025, Ana wrote:\n> older"),
+        ("quote-header-u001c-indent", q + "\n\n\u001COn Tue, 3 Sep 2025, Ana wrote:\n> older"),
+        # Python's `\d` is the Nd category, not ASCII. The date these headers require can be
+        # written in any decimal script, and an ASCII-only port keeps the quoted history instead.
+        ("quote-header-arabic-indic-date",
+         q + "\n\nEm ter., \u0663 de set. de \u0662\u0660\u0662\u0665, Ana escreveu:\n> antigo"),
+        ("header-next-devanagari-year",
+         q + "\n\nFrom: Maria Souza\nDate: 3 Sep \u0968\u0966\u0968\u096B\nolder"),
+
+        # -- everything at once
+        ("full-stack", "\n".join(
+            [q, "Please check the attached receipt.", ""]
+            + [q] * 7
+            + ["Atenciosamente,", "Ana Souza", "Enviado do meu iPhone", "",
+               "Esta mensagem e confidencial e de uso exclusivo do destinatario.", "",
+               "Em ter., 3 de set. de 2025, Bruno <bruno@x.com> escreveu:",
+               "> mensagem antiga"])),
+    ]
+    budgets = [
+        ("budget-default", "x" * 50 + " " + q, 3000),
+        ("budget-tiny", q, 12),
+        ("budget-cut-mid-word", "abcdefghij " * 10, 25),
+        # the 4x pre-truncation bound: input longer than max_chars*4 is cut before matching
+        ("budget-four-x-bound", ("word " * 400) + "This email is confidential and intended solely "
+                                                  "for the addressee.", 100),
+        ("budget-zero", q, 0),
+    ]
+    states = [
+        ("state-plain", "Refund request", q, None, True, 3000, {}),
+        ("state-with-sender", "Refund request", q, "ana@x.com", True, 3000, {}),
+        ("state-unclean", "Refund request", q + "\n\nSent from my iPhone", None, False, 3000, {}),
+        ("state-extra-fields", "Refund", q, "ana@x.com", True, 3000,
+         {"priority": "high", "ticket": 42, "dropped": None}),
+        ("state-blank-subject", "   ", q, None, True, 3000, {}),
+        ("state-none-ish", "", "", None, True, 3000, {}),
+        ("state-budget", "S", "y" * 80, None, True, 20, {}),
+    ]
+    return {
+        "cleaned": [{"name": name, "body": body,
+                     "result": email_mod.clean_email_body(body)}
+                    for name, body in cases],
+        "budgets": [{"name": name, "body": body, "max_chars": n,
+                     "result": email_mod.clean_email_body(body, max_chars=n)}
+                    for name, body, n in budgets],
+        "states": [{"name": name, "subject": subject, "body": body, "sender": sender,
+                    "clean": clean, "max_chars": n, "extra": extra,
+                    "result": email_mod.email_state(subject, body, sender=sender, clean=clean,
+                                                    max_chars=n, **extra)}
+                   for name, subject, body, sender, clean, n, extra in states],
+        # The re-export the module exists to keep working for callers who import it from here.
+        "questions_match_presets": (
+            email_mod.email_questions() == __import__("laya.presets", fromlist=["x"])
+            .email_questions()),
+    }
+
+
 FAMILIES = {
     "lang_tables.json": lang_tables,
     "lang_detect.json": lang_detect,
@@ -1757,6 +1952,7 @@ FAMILIES = {
     "sequences.json": sequences,
     "decode.json": decode_answers,
     "python_json.json": python_json,
+    "email.json": email_clean,
     "predict.json": predict_golden,
 }
 

@@ -13,9 +13,10 @@ four questions about a document cost one batched encode rather than four round t
 Implemented: tokenizer, sequence builder, config, ONNX inference (fused or split graph), answer
 decoding, `predict`, `predictBatch`, usage and truncation reporting, script and language detection
 (`lang.LanguageDetection`), the question presets (`Presets`), the checkpoint `Router` with its
-load-and-evict lifecycle, and the embedding `Shortlist` with its LRU cache.
+load-and-evict lifecycle, the embedding `Shortlist` with its LRU cache, and the email cleaner
+and state builder (`LayaEmail`).
 
-Not implemented yet: hooks, `predictLong`, structured `decide`, `laya.email`, the
+Not implemented yet: hooks, `predictLong`, structured `decide`, the
 `laya-java-client` HTTP module, Android. **Not published to Maven Central** — see
 [Installing](#installing).
 
@@ -232,6 +233,50 @@ passthrough: the labels come back in order and **the embedder is never called**.
 
 Both `Agent` and `Router` implement `Predictor`, so shortlisting works identically against a fixed
 checkpoint or a routed one.
+
+## Cleaning an email
+
+`laya.email`'s cleaner and state builder. The markers cover English, Portuguese, Spanish and
+French mail clients, because the router already sends the last three to the multilingual
+checkpoint and an English-only cleaner left their quoted history — often a *different* request —
+weighing on the answer as much as the new message.
+
+```java
+import com.convaiinnovations.laya.LayaEmail;
+import java.util.Map;
+
+String body = """
+        I was charged twice for order 8812. Please refund one of them.
+
+        Atenciosamente,
+        Ana Souza
+        Enviado do meu iPhone
+
+        Esta mensagem e confidencial e de uso exclusivo do destinatario.
+
+        Em ter., 3 de set. de 2025, Suporte <suporte@x.com> escreveu:
+        > Podemos ajudar?
+        """;
+
+// quoted history, sign-off, device footer and disclaimer all go
+String clean = LayaEmail.cleanEmailBody(body);
+
+Map<String, Object> state = LayaEmail.emailState("Cobranca duplicada", body, "ana@x.com");
+// {subject=Cobranca duplicada, body=I was charged twice..., from=ana@x.com}
+
+Prediction p = agent.predict(state, LayaEmail.emailQuestions());
+```
+
+`emailState` takes the same `maxChars` budget and passes it through, and it is worth raising for
+a long message: at the default the body stops after 3,000 characters, so a request arriving in
+the last paragraphs never reaches the model.
+
+What it deliberately does **not** cut is the interesting half. `From: my side the integration
+works, but please refund...` is prose, not a header, so a reply header is recognised only when an
+address follows it or its own `Sent:`/`Enviado:` line does. `Thanks for the quick reply.` is not
+a sign-off, `Obrigado pelo retorno, mas ...` is a request, and `Is this confidential?` is a
+question — a cleaner that is too eager deletes what the sender actually wrote, which is worse
+than leaving one boilerplate line behind.
 
 ## Lower-level pieces
 
