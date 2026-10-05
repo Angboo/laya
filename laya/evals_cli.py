@@ -17,7 +17,7 @@ import math
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import _eval_policy, evals
+from . import _eval_policy, evals, evidence
 from .evals import EvalError
 
 
@@ -230,6 +230,14 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="allowed absolute drift; repeatable")
     compare.add_argument("--gate-policy", metavar="FILE",
                          help="apply opt-in per-slice quality rules from a JSON policy")
+    evidence_cmd = sub.add_parser("evidence",
+                                  help="read-only evidence inspection over a checkpoint config and an eval report")
+    evidence_cmd.add_argument("--checkpoint", required=True,
+                              help="checkpoint directory containing rl_agent_config.json")
+    evidence_cmd.add_argument("--report", default=None,
+                              help="an existing laya-evals report JSON")
+    evidence_cmd.add_argument("--json", dest="json_out", default=None,
+                              help="write the full inspection JSON to this path")
 
     return parser
 
@@ -436,6 +444,19 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _cmd_evidence(args) -> int:
+    try:
+        result = evidence.inspect_checkpoint(args.checkpoint, args.report)
+    except (FileNotFoundError, ValueError) as exc:
+        print("laya-evals: %s" % exc, file=sys.stderr)
+        return 2
+    print(evidence.format_summary(result))
+    if args.json_out:
+        with open(args.json_out, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2, sort_keys=True)
+    return 0
+
+
 def _cmd_compare(args) -> int:
     # `_identity_of` rather than a bare `config` slice, because a report may carry its identity
     # at the top level -- `research/evals/act_head_eval.py` puts `schema` there -- and
@@ -474,6 +495,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _cmd_validate(args)
         if args.command == "run":
             return _cmd_run(args)
+        if args.command == "evidence":
+            return _cmd_evidence(args)
         return _cmd_compare(args)
     except EvalError as exc:
         # A malformed dataset, an unreadable report, or a mistyped pin is a usage error, not a
