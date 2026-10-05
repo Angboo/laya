@@ -103,7 +103,21 @@ jobs:
         # the stale committed copy -- exactly the failure the fixtures exist to prevent. The
         # generator already leaves checkpoint-backed families alone and reports them unverified,
         # so a bare --check is the right scope.
-        run: python laya-java/scripts/gen_fixtures.py --check
+        #
+        # On failure, SHOW the drift. `--check` printed only "<family> is stale", which named the
+        # file and nothing else -- and diagnosing a cross-platform float difference from that took
+        # three CI round trips. Regenerating and diffing costs nothing on the passing path, which
+        # is the common one.
+        run: |
+          if python laya-java/scripts/gen_fixtures.py --check; then
+            exit 0
+          fi
+          echo "::group::what actually drifted"
+          python laya-java/scripts/gen_fixtures.py || true
+          git --no-pager diff --stat -- laya-java/fixtures
+          git --no-pager diff -U0 -- laya-java/fixtures | head -120
+          echo "::endgroup::"
+          exit 1
       # The compiled-in Unicode tables are recorded from CPython, so a CPython upgrade that moves
       # them has to show up here rather than as a routing change nobody attributed.
       - name: Unicode tables match CPython

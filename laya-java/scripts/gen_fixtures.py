@@ -1114,7 +1114,18 @@ def shortlist():
 # shown up in this repository, and about four orders LOOSER than the 1e-16 BLAS spread, so it
 # separates the two cleanly. What stays exact is the LABEL ORDER, which is the only thing a
 # consumer can observe -- and the thing a ranking bug actually changes.
-_SCORE_DECIMALS = 12
+# Nine, measured rather than chosen. A cosine here is a dot product of 8-dimensional unit
+# vectors, and BLAS blocking moves the last bit: the worst difference between numpy's `dot` and a
+# sequential sum over 4,000 random pairs is 2.22e-16, about one ULP near 1.
+#
+# A decimal snapshot of a platform-dependent float can always straddle a rounding boundary, so the
+# only question is how often. With 194 floats in this file the chance that at least one lands
+# within the BLAS error of a boundary is about 8.3% at twelve decimals -- which is what happened:
+# the drift gate failed on Linux x64 while reproducing exactly on arm64, with the same numpy,
+# torch and transformers pins. At nine it is 0.0085%, and nine is still three orders of magnitude
+# finer than any real porting bug: a wrong normalisation, a missing clamp or an inverted tie order
+# moves a score in the third decimal, not the tenth.
+_SCORE_DECIMALS = 9
 
 
 def _cache_counter_cases():
@@ -1138,7 +1149,10 @@ def _cache_counter_cases():
 
 
 def _round_score(value):
-    """A cosine rounded to a precision BLAS blocking cannot move, or tagged when non-finite."""
+    """A cosine rounded to a precision BLAS blocking is unlikely to move, or tagged if non-finite.
+
+    NOT "cannot move" -- that is what this said, and it was wrong. See _SCORE_DECIMALS.
+    """
     value = float(value)
     if value != value or value in (float("inf"), float("-inf")):
         return _json_float(value)

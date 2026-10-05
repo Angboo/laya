@@ -90,13 +90,13 @@ class ShortlistTest {
      * OpenBLAS blocks it differently again. So the reference's own score is not reproducible
      * across machines and no port can match it bit for bit.
      *
-     * <p>The fixture therefore records twelve decimals, which is roughly four orders of magnitude
-     * tighter than any porting error this repository has seen and four orders looser than the
+     * <p>The fixture therefore records nine decimals, which is roughly three orders of magnitude
+     * tighter than any porting error this repository has seen and seven orders looser than the
      * 1e-16 BLAS spread. What is still compared exactly is the label ORDER -- the only thing a
      * consumer observes, and the thing a ranking bug actually moves.
      */
     private static void assertScore(double expected, double actual, String what) {
-        double tolerance = 5e-13;
+        double tolerance = 5e-10;
         assertTrue(Math.abs(expected - actual) <= tolerance,
                 what + ": expected " + expected + " +/- " + tolerance + ", got " + actual
                 + " (difference " + Math.abs(expected - actual) + ")");
@@ -511,7 +511,7 @@ class ShortlistTest {
     void underflowingQueryScoresExactlyZero() {
         // Asserted exactly, and separately from the recorded scores, because the rounded
         // comparison cannot see it: without the zero-norm guard the score is 1.4e-200, which
-        // agrees with 0 to twelve decimals and to any tolerance worth having. A norm of zero does
+        // agrees with 0 to nine decimals and to any tolerance worth having. A norm of zero does
         // NOT imply a dot product of zero once components underflow, which is the trap.
         double[] query = {1e-200, 1e-200};
         double[][] matrix = {query, {1.0, 1.0}};
@@ -524,7 +524,7 @@ class ShortlistTest {
     void cosineIsClampedToOne() {
         // The self-cosine of this vector computes to 1.0000000000000002 with sequential
         // arithmetic, so the clamp is observable -- and again only exactly: the unclamped value
-        // agrees with 1.0 to twelve decimals. Asserted on an exact equality for that reason.
+        // agrees with 1.0 to nine decimals. Asserted on an exact equality for that reason.
         double[] vector = {1.0 / 3.0, 1.0 / 3.0, 8.0 / 3.0};
         double[][] matrix = {vector, vector};
         double[] sims = Shortlist.cosine(vector, matrix, 1);
@@ -838,13 +838,13 @@ class ShortlistTest {
     @DisplayName("the recorded scores are rounded far below the tolerance they are checked at")
     void scorePrecisionIsHonest() {
         // Guards the one tolerance in this suite from quietly widening. The fixture rounds to
-        // twelve decimals and the comparison allows 5e-13 -- half of the last recorded digit --
+        // nine decimals and the comparison allows 5e-10 -- half of the last recorded digit --
         // so the tolerance admits nothing the rounding did not already discard. If either number
         // moves without the other, this fails rather than letting a looser check pass unnoticed.
         int decimals = ((Number) fixture().get("score_decimals")).intValue();
-        assertEquals(12, decimals, "the fixture's recorded precision changed");
+        assertEquals(9, decimals, "the fixture's recorded precision changed");
         double halfOfLastDigit = 0.5 * Math.pow(10, -decimals);
-        assertEquals(5e-13, halfOfLastDigit, 1e-18,
+        assertEquals(5e-10, halfOfLastDigit, 1e-15,
                 "the tolerance in assertScore must stay half of the last recorded digit");
         // and the recorded values really are rounded, not full precision stored at a width that
         // happens to look rounded
@@ -859,7 +859,7 @@ class ShortlistTest {
                     continue;
                 }
                 // Via the shortest decimal that round-trips, not by scaling: multiplying a
-                // 12-decimal value by 1e12 is not exact in binary, and the first version of this
+                // 9-decimal value by 1e9 is not exact in binary, and the first version of this
                 // check failed on its own arithmetic rather than on the data.
                 double value = ((Number) score).doubleValue();
                 int scale = new java.math.BigDecimal(Double.toString(value)).stripTrailingZeros()
