@@ -20,6 +20,13 @@ see [Installing](README.md#installing).
   `confidence` alongside `answerConfidence`.
 - Python-compatible tokenization (BPE and Metaspace, added tokens, normalizers), sequence
   building, collation, answer decoding and calibration.
+- `Tokenizer.decode(int[])` and `decode(int[], boolean skipSpecialTokens)`: ids back to text,
+  matching the `tokenizers` crate's `ByteLevel`, `Replace`, `ByteFallback`, `Fuse`, `Strip` and
+  `Sequence` decoders. Byte-exact against the reference over both shipped checkpoints, including
+  201,279 window slices — the shape that cuts a multi-byte character in half, where a decoder that
+  agrees on every whole text can still be wrong. Decoding on the multilingual checkpoint is lossy
+  by the reference's own behaviour: `Metaspace` prepends its marker and the round trip gains a
+  leading space, which this port reproduces rather than corrects.
 - `lang.LanguageDetection`: script and language detection, the eight public fields and the
   fourteen intermediate steps the reference exposes.
 - `Presets`: the five preset question sets, compared against the reference word for word.

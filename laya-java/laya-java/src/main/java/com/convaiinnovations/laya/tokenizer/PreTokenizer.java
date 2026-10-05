@@ -32,6 +32,26 @@ abstract class PreTokenizer {
     /** Cuts one span of normalized text into pieces for the BPE stage. */
     abstract List<String> preTokenize(String text);
 
+    /**
+     * The byte a ByteLevel stand-in character represents, or -1 when it is not one of the 256.
+     *
+     * <p>Exposed on the enclosing class because {@link TokenDecoder} needs the inverse mapping and
+     * {@code ByteLevel} is private here. One table, inverted once -- a decoder with its own copy
+     * could disagree in one position and produce plausible text with one character wrong.
+     */
+    static int byteForChar(char c) {
+        return ByteLevel.byteForChar(c);
+    }
+
+    /**
+     * The stand-in character for a byte, which is what {@link #byteForChar} inverts.
+     *
+     * @param b a byte value, 0 to 255
+     */
+    static char charForByte(int b) {
+        return ByteLevel.charForByte(b);
+    }
+
     /** Builds a pre-tokenizer from a checkpoint's {@code pre_tokenizer} node, which may be null. */
     static PreTokenizer from(Map<String, Object> node) {
         if (node == null) {
@@ -125,6 +145,48 @@ abstract class PreTokenizer {
         ByteLevel(boolean addPrefixSpace, boolean useRegex) {
             this.addPrefixSpace = addPrefixSpace;
             this.useRegex = useRegex;
+        }
+
+        /**
+         * The stand-in character for a byte.
+         *
+         * @param b a byte value, 0 to 255
+         * @throws IllegalArgumentException for anything outside that range, rather than the
+         *     {@code ArrayIndexOutOfBoundsException} a bare index would raise
+         */
+        static char charForByte(int b) {
+            if (b < 0 || b >= BYTE_TO_CHAR.length) {
+                throw new IllegalArgumentException(
+                        "a byte is 0 to 255, got " + b);
+            }
+            return BYTE_TO_CHAR[b];
+        }
+
+        /**
+         * The byte a stand-in character represents, or -1 when it is not one of the 256.
+         *
+         * <p>Built by inverting {@link #BYTE_TO_CHAR} rather than by a second construction, so the
+         * two cannot disagree: a decode that mapped one character to the wrong byte would produce
+         * plausible text with one character wrong, and the window it belongs to would re-tokenize
+         * to different ids with nothing to show why.
+         */
+        static int byteForChar(char c) {
+            return c < CHAR_TO_BYTE.length ? CHAR_TO_BYTE[c] : -1;
+        }
+
+        private static final int[] CHAR_TO_BYTE = buildCharToByte();
+
+        private static int[] buildCharToByte() {
+            int highest = 0;
+            for (char c : BYTE_TO_CHAR) {
+                highest = Math.max(highest, c);
+            }
+            int[] table = new int[highest + 1];
+            java.util.Arrays.fill(table, -1);
+            for (int b = 0; b < BYTE_TO_CHAR.length; b++) {
+                table[BYTE_TO_CHAR[b]] = b;
+            }
+            return table;
         }
 
         /**

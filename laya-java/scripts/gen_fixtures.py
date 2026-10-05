@@ -2088,6 +2088,349 @@ def email_clean():
     }
 
 
+def decode_text():
+    """What `Tokenizer.decode` must return, per checkpoint, recorded from the reference.
+
+    Decoding has no Python reference to port -- it lives in the Rust `tokenizers` crate -- so this
+    family is the only specification the Java side has, and the three rules it pins were each
+    wrong on the first attempt:
+
+      * a character outside the ByteLevel stand-in alphabet is KEPT as its own UTF-8 bytes, not
+        dropped. The english vocabulary mixes byte-level tokens like "\\u0120world" with 23 added
+        tokens whose content is literal whitespace -- id 50275 is three real spaces -- and dropping
+        unmapped characters got 414 of 5,312 texts wrong.
+      * the ByteLevel fallback is per TOKEN, not per character: one unmapped character and the
+        whole token uses its raw bytes.
+      * ByteFallback does NOT decode lossily. It tries strict UTF-8 and, on failure, emits one
+        U+FFFD per BYTE of the run. Lossy decoding emits one per maximal subpart, which differs
+        the moment a window boundary cuts a multi-byte character -- 629 of 201,279 window slices.
+
+    The SLICES are the point of this family. `predictLong` cuts a tokenized state into windows at
+    arbitrary offsets and decodes each one, so a boundary lands inside a multi-byte character
+    routinely. Every whole-text decode agreed while 629 slices did not, so a fixture of whole
+    texts would have shipped the bug.
+    """
+    import os
+
+    rig = os.environ.get("LAYA_FIXTURE_CHECKPOINTS", DEFAULT_CHECKPOINT_ROOT)
+
+    # Chosen for where a decoder breaks, not for coverage of prose.
+    texts = [
+        "Hello world",
+        "",
+        " ",
+        "   ",                                  # an added token whose content is literal spaces
+        "\t",
+        "a\tb\nc",                              # multilingual inserts a space after the newline
+        "café résumé",
+        "注文をキャンセル",     # 3-byte characters, split often
+        "مرحبا",
+        "क्‌ष",             # ZWNJ, which is Cf and not a mark
+        "\U0001f600",                           # 4-byte, the shortest ByteFallback run
+        "emoji \U0001f600 here",
+        "\U0001f1ec\U0001f1e7",                 # a flag: two regional indicators
+        "▁literal marker",                 # the Metaspace marker as ORDINARY TEXT
+        "pre▁fix",
+        " nbsp figure",
+        "<0x41>",                               # a byte token spelled out in ordinary text
+        "a<0xFF>b",
+        "",
+        "",                               # private use
+        "\U000f0000",                           # unassigned: four ByteFallback tokens
+        "I cannot log in and need a password reset.",
+        "Esta mensagem e confidencial.",
+    ]
+
+    out = {"texts": texts, "by": {}}
+    for name in ("english", "multilingual"):
+        root = os.path.join(rig, name)
+        tokenizer_json = os.path.join(root, "tokenizer", "tokenizer.json")
+        if not os.path.isfile(tokenizer_json):
+            out["by"][name] = {"skipped": "checkpoint not present at %s" % root}
+            continue
+        from tokenizers import Tokenizer
+
+        tok = Tokenizer.from_file(tokenizer_json)
+        cases = []
+        for text in texts:
+            ids = tok.encode(text, add_special_tokens=False).ids
+            # Every cut point at several widths: this is the predictLong shape, and the only
+            # place the ByteFallback rule is observable.
+            slices = []
+            for size in (1, 2, 3, 5):
+                for start in range(0, max(1, len(ids)), max(1, size)):
+                    chunk = ids[start:start + size]
+                    if chunk:
+                        slices.append({"start": start, "size": size,
+                                       "decoded": tok.decode(chunk)})
+            with_specials = tok.encode(text, add_special_tokens=True).ids
+            cases.append({
+                "text": text,
+                "ids": list(ids),
+                "decoded": tok.decode(ids),
+                "slices": slices,
+                "with_specials": {
+                    "ids": list(with_specials),
+                    # NOT "skipped": a lone `skipped` key is this script's marker for a family it
+                    # could not regenerate, and naming a data field that way once made this very
+                    # family look unregenerable.
+                    "skipping_specials": tok.decode(with_specials),
+                    "kept": tok.decode(with_specials, skip_special_tokens=False),
+                },
+            })
+        out["by"][name] = {
+            # What this tokenizer IS, so a fixture recorded against a different checkpoint cannot
+            # be mistaken for a matching one -- the same guard tokenizer_ids applies.
+            "decoder": _decoder_shape(tokenizer_json),
+            "cases": cases,
+        }
+    out["mixed_token"] = _mixed_token_scope()
+    out["synthetic_decoders"] = _synthetic_decoders()
+    return out
+
+
+def _synthetic_decoders():
+    """What the crate does with the decoder shapes no shipped checkpoint declares.
+
+    `TokenDecoder` implements six decoders because a checkpoint may declare any of them, but the
+    two shipped ones between them use four: english is `ByteLevel`, multilingual is
+    `Sequence[Replace, ByteFallback, Fuse]`. So `Strip` shipped with no coverage at all -- a 44
+    line decoder with a documented start/stop semantic that an adversarial mutant could gut while
+    all 191 recorded cases passed -- and the `hex` helper's refusal of lowercase byte tokens had
+    nothing exercising it either.
+
+    Rather than assert what the implementation was written to do, each shape below is a real
+    tokenizer the crate is asked to decode, exactly as `mixed_token` is. `byte_fallback` is set on
+    the model so the port's loader guard, which refuses a vocabulary that could drop a character
+    without trace, is satisfied by something other than a full byte-level alphabet.
+    """
+    import io
+    import os
+    import tempfile
+
+    try:
+        from tokenizers import Tokenizer
+    except ImportError:
+        return {"skipped": "the tokenizers package is not installed"}
+
+    def spec_for(decoder, vocab):
+        spec = {
+            "version": "1.0", "truncation": None, "padding": None,
+            "added_tokens": [], "normalizer": None, "pre_tokenizer": None,
+            "post_processor": None,
+            "model": {"type": "BPE", "dropout": None, "unk_token": None,
+                      "continuing_subword_prefix": None, "end_of_word_suffix": None,
+                      "fuse_unk": False, "byte_fallback": True, "ignore_merges": True,
+                      "vocab": vocab, "merges": []},
+        }
+        # `decoder=None` means the key is ABSENT, which is its own code path -- not a decoder
+        # whose type is null.
+        if decoder is not None:
+            spec["decoder"] = decoder
+        return spec
+
+    shapes = {
+        # Strip removes up to `start` leading and up to `stop` trailing copies of `content`, per
+        # TOKEN. The crate serialises the Python `Strip(content, left, right)` as start/stop,
+        # which is why those are the field names the port reads.
+        "strip": {
+            "why": "Strip, which no shipped checkpoint declares",
+            "spec": spec_for(
+                {"type": "Strip", "content": " ", "start": 2, "stop": 1},
+                {"  hello ": 0, " x": 1, "  ": 2, "no": 3}),
+            "ids": [[0], [1], [3], [0, 3]],
+            # The crate PANICS on these, so there is no reference answer to record: stripping 2
+            # leading spaces from the two-space token leaves an empty slice and `stop` then
+            # indexes backwards through it -- "slice index starts at 2 but ends at 1", a Rust
+            # panic that crosses the FFI boundary as pyo3_runtime.PanicException. The port guards
+            # the same arithmetic (`to > from`) and returns "". That difference is deliberate and
+            # is asserted on the Java side: a decoder that aborts the process on a token that is
+            # all `content` is not behaviour worth reproducing.
+            "crate_panics": [[2], [2, 2]],
+        },
+        # Which `<0x..>` spellings the crate reads as a BYTE. Its predicate is a length-6 token
+        # starting "<0x" and ending ">", parsed by Rust's `u8::from_str_radix(.., 16)` -- which is
+        # case-INSENSITIVE and accepts a leading "+". This port had it backwards, rejecting
+        # lowercase and "+" with a comment asserting the crate wrote these uppercase only.
+        #
+        # The "+" case needs its own token: with only the upper/lower pair here, a mutant that
+        # re-broke "+" passed all 195 cases. "<0x 5>" and "<0XFF>" record the other side of the
+        # boundary -- a space is not a digit, and the "<0x" prefix IS case-sensitive -- so the
+        # rule is pinned from both directions rather than only where it says yes.
+        "bytefallback_hex_case": {
+            "why": "which byte-token spellings the crate reads as a byte",
+            "spec": spec_for(
+                {"type": "ByteFallback"},
+                {"<0xFF>": 0, "<0xff>": 1, "<0x41>": 2, "<0x61>": 3, "a": 4,
+                 "<0x+5>": 5, "<0x 5>": 6, "<0XFF>": 7, "<0xfF>": 8,
+                 "<0xF3>": 9, "<0xB0>": 10, "<0x80>": 11}),
+            # The last four are a TRUNCATED multi-byte run, which is the only shape that can tell
+            # lossy decoding from one replacement per byte: F3 B0 is a single maximal subpart
+            # (lossy gives ONE U+FFFD) and two unusable bytes (the crate gives TWO). Every other
+            # invalid run in this vocabulary is a single byte, where both rules agree -- so a
+            # mutant that made this decoder lossy passed all 195 cases.
+            "ids": [[2], [3], [1], [0], [2, 3], [0, 0], [1, 4],
+                    [5], [6], [7], [8], [5, 4], [6, 4], [7, 4],
+                    [9, 10], [9, 10, 11], [9, 10, 11, 11], [4, 9, 10, 4]],
+        },
+        # No `decoder` key at all. The crate's fallback is `tokens.join(" ")` -- a SPACE -- and
+        # this port joined with nothing, which was wrong for every multi-token decode. Neither
+        # shipped checkpoint can reach it, because both declare a decoder.
+        "no_decoder": {
+            "why": "no decoder section: the separator the crate falls back to",
+            "spec": spec_for(None, {"ab": 0, "cd": 1, "ef": 2, " ": 3}),
+            "ids": [[0], [0, 1], [0, 1, 2], [0, 3, 1], [3, 3]],
+        },
+        # A Sequence inside a Sequence. The crate chains `decode_chain` and returns a LIST, so the
+        # outer sequence's next step sees the inner one's pieces; re-joining them collapsed the
+        # boundaries. Strip is the step that can tell, because it acts per piece.
+        "nested_sequence": {
+            "why": "a Sequence nested in a Sequence keeps its pieces",
+            "spec": spec_for(
+                {"type": "Sequence", "decoders": [
+                    {"type": "Sequence", "decoders": [
+                        {"type": "Replace", "pattern": {"String": "\u2581"}, "content": " "},
+                        {"type": "ByteFallback"}]},
+                    {"type": "Strip", "content": " ", "start": 1, "stop": 0}]},
+                {"\u2581Hello": 0, "\u2581world": 1, "\u2581": 2, "\u2581a": 3}),
+            "ids": [[0, 1], [2, 2, 0], [2, 3, 2], [0], [3]],
+        },
+        # Whether a failed ByteFallback run is one piece of N replacement characters or N pieces
+        # of one. Only a per-piece step after it can tell, so Replace looks for the PAIR: it
+        # matches if the two characters ended up in the same piece.
+        "bytefallback_piece_boundaries": {
+            "why": "a failed byte run is one piece per byte, not one piece of N",
+            "spec": spec_for(
+                {"type": "Sequence", "decoders": [
+                    {"type": "ByteFallback"},
+                    {"type": "Replace", "pattern": {"String": "\ufffd\ufffd"},
+                     "content": "X"}]},
+                {"<0xF3>": 0, "<0xB0>": 1, "<0x80>": 2, "hi": 3}),
+            "ids": [[0, 1], [0, 1, 2], [3, 0, 1, 3], [0, 1, 2, 2], [3]],
+        },
+    }
+
+    for name, shape in shapes.items():
+        path = os.path.join(tempfile.mkdtemp(), "tokenizer.json")
+        io.open(path, "w", encoding="utf-8").write(json.dumps(shape["spec"]))
+        tok = Tokenizer.from_file(path)
+        shape["cases"] = [{"ids": ids, "decoded": tok.decode(ids, skip_special_tokens=False)}
+                          for ids in shape.pop("ids")]
+        # A shape whose cases all decoded to the same thing would pin nothing, and these are
+        # hand-chosen rather than swept, so the check is worth its one line.
+        distinct = {case["decoded"] for case in shape["cases"]}
+        if len(distinct) < 2:
+            raise AssertionError(
+                "the %s shape's cases all decode to %r, so they cannot tell any rule apart"
+                % (name, distinct.pop()))
+    return shapes
+
+
+def _mixed_token_scope():
+    """Whether the ByteLevel fallback is scoped to a TOKEN or to a CHARACTER, from the crate.
+
+    Neither real checkpoint can answer this. Their byte-level tokens are entirely stand-in
+    alphabet and their added tokens are entirely literal whitespace, so both rules produce the
+    same bytes for every token in both vocabularies -- a mutant that swaps per-token for
+    per-character passed all 190 recorded cases. The rules differ only for a token that MIXES
+    the two, so this builds a vocabulary that has one and records what the crate does with it.
+
+    The separating token is "Ġ ": U+0120 is the stand-in for byte 0x20, and the literal
+    space after it is not in the alphabet at all.
+
+      per TOKEN     -> every character contributes its own UTF-8 bytes: C4 A0 20 -> "Ġ "
+      per CHARACTER -> the mapped one contributes its byte:             20 20     -> "  "
+
+    The spec travels in the fixture rather than being written twice, so the Java test loads the
+    same bytes the crate was asked about.
+    """
+    import io
+    import os
+    import tempfile
+
+    try:
+        from tokenizers import Tokenizer
+    except ImportError:
+        return {"skipped": "the tokenizers package is not installed"}
+
+    mixed = "Ġ "
+
+    # Every single-byte alphabet symbol, from the crate's own table rather than a transcription.
+    # The port's loader refuses a vocabulary that cannot represent some text, and a vocabulary of
+    # three tokens cannot -- so the three interesting tokens join a complete byte-level one. They
+    # do not interact: decoding is driven by the ids this records, not by what else is present.
+    from tokenizers.pre_tokenizers import ByteLevel as ByteLevelPre
+
+    vocab = {}
+    for symbol in sorted(ByteLevelPre.alphabet()):
+        vocab[symbol] = len(vocab)
+    interesting = {}
+    for token in (mixed, "Ġhi", "   "):
+        if token not in vocab:
+            vocab[token] = len(vocab)
+        interesting[token] = vocab[token]
+
+    spec = {
+        "version": "1.0", "truncation": None, "padding": None,
+        "added_tokens": [], "normalizer": None,
+        # The pre-tokenizer matches the decoder. It plays no part in decoding, but the port's
+        # loader refuses a vocabulary where a character could be dropped without trace -- no
+        # unk_token, no byte_fallback, no byte-level pre-tokenizer -- and that guard is right.
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": True,
+                          "use_regex": True},
+        "post_processor": None,
+        "decoder": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": True,
+                    "use_regex": True},
+        "model": {"type": "BPE", "dropout": None, "unk_token": None,
+                  "continuing_subword_prefix": None, "end_of_word_suffix": None,
+                  "fuse_unk": False, "byte_fallback": False, "ignore_merges": True,
+                  "vocab": vocab, "merges": []},
+    }
+
+    path = os.path.join(tempfile.mkdtemp(), "tokenizer.json")
+    io.open(path, "w", encoding="utf-8").write(json.dumps(spec))
+    tok = Tokenizer.from_file(path)
+
+    cases = [
+        {"why": "the mixed token alone: the whole point",
+         "ids": [interesting[mixed]]},
+        {"why": "entirely in the alphabet", "ids": [interesting["Ġhi"]]},
+        {"why": "entirely literal", "ids": [interesting["   "]]},
+        {"why": "a mixed token beside a plain one",
+         "ids": [interesting[mixed], interesting["Ġhi"]]},
+    ]
+    for case in cases:
+        case["decoded"] = tok.decode(case["ids"], skip_special_tokens=False)
+
+    scope = "token" if cases[0]["decoded"] == mixed else (
+        "character" if cases[0]["decoded"] == "  " else "neither")
+    if scope != "token":
+        raise AssertionError(
+            "the crate's ByteLevel fallback is scoped per %s, and the port assumes per token; "
+            "decoding the mixed token gave %r" % (scope, cases[0]["decoded"]))
+    return {"spec": spec, "separating_token": mixed, "scope": scope, "cases": cases}
+
+
+def _decoder_shape(tokenizer_json):
+    """The decoder section's type chain, flattened, so the fixture says what it was recorded on."""
+    import io
+    import json
+
+    document = json.load(io.open(tokenizer_json, encoding="utf-8"))
+    node = document.get("decoder")
+    if node is None:
+        return None
+
+    def shape(n):
+        kind = n.get("type")
+        if kind == "Sequence":
+            return {"type": "Sequence",
+                    "decoders": [shape(step) for step in n.get("decoders", [])]}
+        return {"type": kind}
+
+    return shape(node)
+
+
 FAMILIES = {
     "lang_tables.json": lang_tables,
     "lang_detect.json": lang_detect,
@@ -2095,6 +2438,7 @@ FAMILIES = {
     "router.json": router,
     "shortlist.json": shortlist,
     "tokenizer_ids.json": tokenizer_ids,
+    "decode_text.json": decode_text,
     "sequences.json": sequences,
     "decode.json": decode_answers,
     "python_json.json": python_json,
@@ -2139,8 +2483,41 @@ def unverifiable(payload):
     # always present, so requiring every section to be skipped let a payload through whose two
     # per-checkpoint halves were both skip markers -- and the write replaced a 107 KB fixture with
     # a 9 KB one. Partial regeneration is still unsafe to write.
-    return any("skipped" in value
-               for value in payload.values() if isinstance(value, dict))
+    #
+    # At ANY depth, not just one level down. This looked only at the payload's immediate values,
+    # and `decode_text.json` groups its per-checkpoint sections under a `by` key -- so the skip
+    # markers sat two levels down, the payload was judged regenerable, and both halves of this
+    # docstring came true at once: on a machine without the checkpoints, `--check` reported the
+    # committed fixture as stale, and a plain run replaced 75 KB of parity expectations with 7 KB
+    # of skip markers. Measured, not reasoned about. A family should not have to keep its sections
+    # at the top level to be seen, so the search descends instead.
+    return _mentions_skip(payload)
+
+
+def _mentions_skip(node):
+    """True when a skip MARKER appears anywhere in the payload.
+
+    A marker is a dict of exactly one `skipped` key, which is what every builder above writes.
+    Merely containing a `skipped` key is not enough, and that is not a hypothetical distinction:
+    `decode_text.json` records, per text, what the reference returns with special tokens skipped
+    and without, and the first version of that family named the first of those two fields
+    `skipped`. The recursion below read it as a marker, so a fully recorded family reported itself
+    unregenerable -- with the checkpoints present it was left alone instead of checked, and
+    `--strict` in the parity lane would have failed on a family that had just been recorded
+    correctly.
+
+    That field is now `skipping_specials`, so the collision no longer exists in this script and
+    nothing here depends on the exact-key rule to avoid it. The rule stays because it is the
+    correct test for a marker, and because the next family to record a `skipped` field should not
+    have to discover this interaction the way that one did.
+    """
+    if isinstance(node, dict):
+        if set(node) == {"skipped"}:
+            return True
+        return any(_mentions_skip(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_mentions_skip(item) for item in node)
+    return False
 
 
 def main(argv=None):

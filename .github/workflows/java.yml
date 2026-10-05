@@ -70,7 +70,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 585 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 625 --allow-aborted
 
       # The samples are single-file source programs, deliberately NOT a Gradle module: a
       # `samples` subproject would inherit the root build's MavenPublication and
@@ -226,7 +226,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 585 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 625 --allow-aborted
           --require-passed TestJvmVersionTest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
@@ -263,13 +263,28 @@ jobs:
           - name: tokenizer
             checkpoints: english multilingual
             graph: false
-            families: --only tokenizer_ids.json --only sequences.json --only decode.json
+            families: >-
+              --only tokenizer_ids.json --only sequences.json --only decode.json
+              --only decode_text.json
             tests: >-
               --tests com.convaiinnovations.laya.tokenizer.TokenizerParityTest
               --tests com.convaiinnovations.laya.sequence.SequenceParityTest
               --tests com.convaiinnovations.laya.decode.DecoderParityTest
               --tests com.convaiinnovations.laya.tokenizer.PreTokenizerTablesTest
-            min-tests: 175
+              --tests com.convaiinnovations.laya.tokenizer.TokenDecoderTest
+            # Measured locally. The margin is deliberately smaller than the 8 the 183/175 pair
+            # used, because the smallest class in this cell is PreTokenizerTablesTest at 5 tests
+            # and a margin of 8 let that whole class be dropped with the floor still green
+            # (measured: 369 of 374, exit 0). A floor below the total minus the smallest class
+            # does not bind any single class.
+            #
+            # What this does NOT protect, despite an earlier version of this comment saying so:
+            # the window SLICES. A count floor cannot see them -- the 403 slice assertions live
+            # inside 46 of the ~195 dynamic tests, because the factory bundles all of one text's
+            # slices into a single test, and a slice list that emptied would still register its
+            # test. The slices are guarded inside the suite instead, by the `total >= 400`
+            # assertion in TokenDecoderTest and the `cases.size() >= 23` corpus floor beside it.
+            min-tests: 374
             timeout: 25
           # The one cell that needs the traced graph, and the only checkpoint the end-to-end
           # golden was recorded from.

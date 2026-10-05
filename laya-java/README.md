@@ -296,8 +296,15 @@ import java.nio.file.Path;
 Tokenizer tok = Tokenizer.fromModelDirectory(Path.of("./checkpoint"));
 int[] ids = tok.encode("charged twice");
 int[] capped = tok.encode(longText, 48);          // stops early; same prefix as the full encoding
+String text = tok.decode(ids);                    // ids back to text; special tokens dropped
+String withSpecials = tok.decode(ids, false);     // ...kept
 AgentConfig cfg = AgentConfig.fromModelDirectory(Path.of("./checkpoint"));
 ```
+
+`decode` follows the reference rather than tidying after it, and on the multilingual checkpoint
+that means it is **lossy**: `Metaspace` prepends its marker, so `decode(encode("Hello world"))` is
+`" Hello world"`. The English checkpoint happens to round-trip. Correcting the space would make
+every window of a long document tokenize differently from the reference, so the loss is kept.
 
 `Agent.using(tokenizer, config, session)` assembles an agent from parts — for a caller that already
 holds them, or to drive the batching and usage accounting through a stub
