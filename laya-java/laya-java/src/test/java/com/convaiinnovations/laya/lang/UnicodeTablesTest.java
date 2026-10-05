@@ -125,6 +125,54 @@ class UnicodeTablesTest {
     }
 
     @Test
+    @DisplayName("isMark is the Mn/Mc/Me categories on every code point")
+    void mark() {
+        assertPredicate("mark", UnicodeTables::isMark);
+    }
+
+    @Test
+    @DisplayName("isInitial is the Lu/Lt/Lo categories on every code point")
+    void initial() {
+        assertPredicate("initial", UnicodeTables::isInitial);
+    }
+
+    @Test
+    @DisplayName("isMark is not the combining class, and isInitial is not str.isupper")
+    void theTwoNewTablesAreNotTheOldOnes() {
+        // Both were nearly implemented by reusing a table that already existed, and both reuses
+        // would have been wrong on a large, specific set. Asserted so that a later simplification
+        // has to argue with a number rather than with a comment.
+        int markWithZeroCombiningClass = 0;
+        int initialThatIsNotUpper = 0;
+        int upperThatIsNotInitial = 0;
+        for (int cp = 0; cp < 0x110000; cp++) {
+            if (UnicodeTables.isMark(cp) && !UnicodeTables.isCombining(cp)) {
+                markWithZeroCombiningClass++;
+            }
+            if (UnicodeTables.isInitial(cp) && !UnicodeTables.isUpper(cp)) {
+                initialThatIsNotUpper++;
+            }
+            if (UnicodeTables.isUpper(cp) && !UnicodeTables.isInitial(cp)) {
+                upperThatIsNotInitial++;
+            }
+        }
+        assertEquals(1528, markWithZeroCombiningClass,
+                "isCombining is the canonical combining CLASS; these are category M with class 0");
+        assertEquals(131643, initialThatIsNotUpper,
+                "every caseless script: str.isupper() is false for all of them");
+        assertEquals(120, upperThatIsNotInitial,
+                "the Uppercase property holds symbols that are not letters, such as U+24B6");
+        // The three that make the difference observable in a sign-off's name.
+        assertTrue(UnicodeTables.isInitial(0x01C5), "U+01C5 is Lt, a name may begin with it");
+        assertFalse(UnicodeTables.isUpper(0x01C5), "and str.isupper() rejects it");
+        assertTrue(UnicodeTables.isInitial(0x5C71), "U+5C71 is Lo, a name may begin with it");
+        assertTrue(UnicodeTables.isUpper(0x24B6), "U+24B6 is Uppercase...");
+        assertFalse(UnicodeTables.isInitial(0x24B6), "...but it is category So, not a letter");
+        assertTrue(UnicodeTables.isMark(0x034F), "U+034F is Mn...");
+        assertFalse(UnicodeTables.isCombining(0x034F), "...with a canonical combining class of 0");
+    }
+
+    @Test
     @DisplayName("pythonLower maps every code point the way Python's str.lower does")
     void pythonLower() {
         MessageDigest digest = sha256();

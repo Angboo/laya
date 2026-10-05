@@ -161,6 +161,22 @@ def render():
     lower = ranges(lambda cp: chr(cp).islower())
     space = ranges(lambda cp: chr(cp).isspace())
     printable = ranges(lambda cp: chr(cp).isprintable())
+    # `laya.email` needs two properties none of the tables above supply.
+    #
+    # MARK is the Mn/Mc/Me categories, which `_drop_marks` spells `unicodedata.category(ch)
+    # .startswith("M")` and the TS port spells `\p{M}`. COMBINING is NOT a substitute: it is the
+    # canonical combining CLASS, and 1,528 code points are category M with class zero --
+    # U+034F COMBINING GRAPHEME JOINER, the Cyrillic Me numerals, the Thaana vowels. Using it
+    # would leave those marks in the tail that `_is_english_signoff` matches structurally, so a
+    # name carrying one would stop reading as a name.
+    #
+    # INITIAL is the Lu/Lt/Lo categories, the test `_is_english_signoff` applies to each token's
+    # first letter. UPPER is not a substitute either: `str.isupper()` is the Uppercase property,
+    # true of 1,951 code points against these 133,474, and the two sets are not nested -- it
+    # holds circled and squared letters that are category So, and rejects every caseless script,
+    # so `Obrigado, 山田` would stop being a sign-off and `Thanks, Ⓐ` would start being one.
+    mark = ranges(lambda cp: unicodedata.category(chr(cp)).startswith("M"))
+    initial = ranges(lambda cp: unicodedata.category(chr(cp)) in ("Lu", "Lt", "Lo"))
 
     # Every code point whose lowercase is more than one code point. In Unicode 15 there is
     # exactly one, and `laya/lang.py` depends on it: it replaces U+0130 before lowering, because
@@ -241,6 +257,11 @@ public final class UnicodeTables {
                      "     * sorted. {@link #LOWER_TO} holds what each one maps to.")
         + "\n"
         + "\n"
+        + table("MARK", mark,
+                "The Mn/Mc/Me categories: what {@code laya.email} drops before matching a\n"
+                "sign-off's tail, and what the other ports spell {@code \\p{M}}.")
+        + table("INITIAL", initial,
+                "The Lu/Lt/Lo categories: the letters a name may begin with, in any script.")
         + table("PRINTABLE", printable,
                 "Python's {@code str.isprintable()}, which is what {@code repr} leaves\n"
                 "     * unescaped. Everything else it spells as a numeric escape.")
@@ -262,6 +283,8 @@ public final class UnicodeTables {
             ("LOWER", lambda cp: chr(cp).islower()),
             ("SPACE", lambda cp: chr(cp).isspace()),
             ("PRINTABLE", lambda cp: chr(cp).isprintable()),
+            ("MARK", lambda cp: unicodedata.category(chr(cp)).startswith("M")),
+            ("INITIAL", lambda cp: unicodedata.category(chr(cp)) in ("Lu", "Lt", "Lo")),
         ))
     )
 
@@ -393,6 +416,26 @@ public final class UnicodeTables {
      */
     public static boolean isSpace(int codePoint) {
         return contains(SPACE, codePoint);
+    }
+
+    /**
+     * Whether this code point is a combining mark: the Mn, Mc and Me categories.
+     *
+     * <p>Not {@link #isCombining}, which is the canonical combining CLASS. They disagree on 1,528
+     * code points that are category M with class zero, so the two are not interchangeable here.
+     */
+    public static boolean isMark(int codePoint) {
+        return contains(MARK, codePoint);
+    }
+
+    /**
+     * Whether a name may begin with this code point: the Lu, Lt and Lo categories.
+     *
+     * <p>Not {@link #isUpper}, which is Python's {@code str.isupper()} -- the Uppercase property,
+     * which holds caseless symbols this does not and misses every caseless script this does.
+     */
+    public static boolean isInitial(int codePoint) {
+        return contains(INITIAL, codePoint);
     }
 
     /** Python's {@code str.strip()} with no argument. */

@@ -100,7 +100,7 @@ def _unicode_digests():
 
     A digest rather than a table: the committed Java tables already hold the ranges, and what
     needs proving is that they still agree with CPython over the WHOLE of Unicode and not just
-    over the corpus below. Nine hashes do that in 500 bytes of fixture, and they fail the moment
+    over the corpus below. Eleven hashes do that in 700 bytes of fixture, and they fail the moment
     a JDK upgrade, a table edit or a CPython bump moves a single code point.
 
     Surrogates are included for the predicates -- Python reports every one of them false, and so
@@ -118,6 +118,13 @@ def _unicode_digests():
         "upper": lambda ch: ch.isupper(),
         "lower": lambda ch: ch.islower(),
         "space": lambda ch: ch.isspace(),
+        # `laya.email`'s two. `mark` is the Mn/Mc/Me categories, which the `combining` digest
+        # above does NOT cover: that is the canonical combining class, and the two disagree on
+        # 1,528 code points. `initial` is Lu/Lt/Lo, which `upper` does not cover either --
+        # `str.isupper()` is the Uppercase property, and the two sets are not nested in either
+        # direction.
+        "mark": lambda ch: unicodedata.category(ch).startswith("M"),
+        "initial": lambda ch: unicodedata.category(ch) in ("Lu", "Lt", "Lo"),
     }
     out = {}
     for name, predicate in predicates.items():
