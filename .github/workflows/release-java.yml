@@ -118,7 +118,7 @@ jobs:
       - name: Publish
         env:
           LAYA_SIGNING_KEY: ${{ secrets.LAYA_SIGNING_KEY }}
-        LAYA_SIGNING_PASSWORD: ${{ secrets.LAYA_SIGNING_PASSWORD }}
+          LAYA_SIGNING_PASSWORD: ${{ secrets.LAYA_SIGNING_PASSWORD }}
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
         run: |
