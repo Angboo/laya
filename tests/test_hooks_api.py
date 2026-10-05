@@ -87,6 +87,9 @@ check_param("Router.__init__", Router.__init__, "revisions", None)
 check_param("Router.__init__", Router.__init__, "agent_kwargs", None)
 # ...and the per-checkpoint digests that `revisions` has always had a sibling need for
 check_param("Router.__init__", Router.__init__, "sha256_digests", None)
+# ...and the checkpoints a caller registers beside the built-ins: `resolve` and `unregister` are the instance side
+check_true("Router/resolve", callable(getattr(Router, "resolve", None)))
+check_param("Router.unregister", Router.unregister, "name", inspect.Parameter.empty)
 
 # What the constructor does NOT raise over is part of its contract too: a shared
 # `agent_kwargs["expected_sha256"]` overlapping a per-checkpoint `sha256_digests` entry on one file
