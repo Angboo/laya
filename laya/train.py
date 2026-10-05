@@ -39,6 +39,7 @@ import torch
 
 from .calibrate import MIN_TYPE_N, fit_temperature_map
 from .common import (
+    OPTION_LAYOUTS,
     QTYPE_NAMES,
     QTYPES,
     TEMP_MAX,
@@ -51,6 +52,7 @@ from .common import (
     proper_reward,
     render_options,
     serialize_state,
+    uses_parallel_layout,
 )
 
 LOSSES = ("soft-ce", "rlcd")
@@ -70,6 +72,8 @@ class TrainConfig:
     `max_len` / `head_max_len` default to the checkpoint's own config. Whatever is used is
     written into the saved config, so inference sees the same budgets training did.
     `amp` defaults to on for CUDA only; `gradient_checkpointing` defaults to following `amp`.
+    `option_layout` defaults to the checkpoint's own (`"sequential"` for every published one);
+    `"parallel"` trains on `common.parallel_layout` and is written into the saved config.
     """
 
     epochs: int = 4
@@ -87,6 +91,7 @@ class TrainConfig:
     w_sph: float = 0.75
     w_rps: float = 1.0
     shuffle_options: Tuple[str, ...] = ()
+    option_layout: Optional[str] = None
     freeze_encoder: bool = False
     calib_max: int = 400
     calib_frac: float = 0.1
@@ -104,6 +109,9 @@ class TrainConfig:
         unknown = sorted(set(self.shuffle_options) - set(QTYPES))
         if unknown:
             raise ValueError("shuffle_options names unknown question type(s): %s" % ", ".join(unknown))
+        if self.option_layout is not None and self.option_layout not in OPTION_LAYOUTS:
+            raise ValueError("option_layout must be one of %s, got %r"
+                             % (", ".join(OPTION_LAYOUTS), self.option_layout))
         for name in ("epochs", "micro_batch", "grad_accum", "rl_samples"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -233,18 +241,21 @@ def read_jsonl(path: str) -> List[Dict[str, Any]]:
 
 
 def encode_item(tok, item: Dict[str, Any], max_len: int, head_max_len: int,
-                option_order: Optional[List[int]] = None) -> Dict[str, Any]:
+                option_order: Optional[List[int]] = None, parallel: bool = False) -> Dict[str, Any]:
     """The model input for an item, with options in `option_order` and the target to match.
 
     `build_sequence` puts option `option_order[s]` in slot `s`, so the slot-ordered target is
     `target[option_order[s]]` -- the inverse of what `unpermute_probs` does at inference.
     """
-    ids, markers = build_sequence(tok, None, item["q"], max_len, head_max_len,
-                                  option_order=option_order, state_ids=item["state_ids"])
+    ids, markers, *layout = build_sequence(tok, None, item["q"], max_len, head_max_len, option_order=option_order,
+                                           state_ids=item["state_ids"], return_layout=parallel)
     target = item["target"]
     if option_order is not None:
         target = [target[i] for i in option_order]
-    return {"ids": ids, "markers": markers, "qtype": item["qtype"], "target": target}
+    encoded = {"ids": ids, "markers": markers, "qtype": item["qtype"], "target": target}
+    if layout:
+        encoded["layout"] = layout[0]
+    return encoded
 
 
 def draw_option_order(item: Dict[str, Any], rng: random.Random,
@@ -359,17 +370,21 @@ def save_checkpoint(model, tok, cfg: Dict[str, Any], path: str) -> None:
 def _forward(model, batch, device, amp: bool, detach_encoder: bool):
     args = (batch["input_ids"].to(device), batch["attention_mask"].to(device),
             batch["marker_pos"].to(device), batch["marker_mask"].to(device), batch["qtype"].to(device))
+    kwargs = {"detach_encoder": detach_encoder}
+    if "option_ids" in batch:
+        kwargs.update(position_ids=batch["position_ids"].to(device), option_ids=batch["option_ids"].to(device))
     if amp:
         with torch.autocast(device.type, dtype=torch.float16):
-            logits, _act = model(*args, detach_encoder=detach_encoder)
+            logits, _act = model(*args, **kwargs)
     else:
-        logits, _act = model(*args, detach_encoder=detach_encoder)
+        logits, _act = model(*args, **kwargs)
     return logits.float()
 
 
 def train_model(model, tok, items: Sequence[Dict[str, Any]], config: TrainConfig, device: torch.device,
                 max_len: int, head_max_len: int,
-                on_epoch_end: Optional[Callable[[int, float], None]] = None) -> List[float]:
+                on_epoch_end: Optional[Callable[[int, float], None]] = None,
+                parallel: bool = False) -> List[float]:
     """Train `model` in place on `items`; returns the mean loss of each epoch."""
     config.validate()
     if not items:
@@ -411,7 +426,7 @@ def train_model(model, tok, items: Sequence[Dict[str, Any]], config: TrainConfig
         optimizer.zero_grad(set_to_none=True)
         for start in range(0, len(epoch_items), config.micro_batch):
             chunk = [encode_item(tok, it, max_len, head_max_len,
-                                 draw_option_order(it, order_rng, config.shuffle_options))
+                                 draw_option_order(it, order_rng, config.shuffle_options), parallel)
                      for it in epoch_items[start:start + config.micro_batch]]
             batch = collate_items([chunk], tok.pad_token_id)
             logits = _forward(model, batch, device, amp, config.freeze_encoder)
@@ -455,13 +470,14 @@ def train_model(model, tok, items: Sequence[Dict[str, Any]], config: TrainConfig
 
 @torch.no_grad()
 def calibration_records(model, tok, items: Sequence[Dict[str, Any]], device: torch.device,
-                        max_len: int, head_max_len: int, batch_size: int = 16):
+                        max_len: int, head_max_len: int, batch_size: int = 16, parallel: bool = False):
     """`(qtype, logits, target, k)` records for `fit_temperature_map`, options in canonical order."""
     model.eval()
     records = []
     for start in range(0, len(items), batch_size):
         chunk = items[start:start + batch_size]
-        batch = collate_items([[encode_item(tok, it, max_len, head_max_len) for it in chunk]], tok.pad_token_id)
+        batch = collate_items([[encode_item(tok, it, max_len, head_max_len, parallel=parallel) for it in chunk]],
+                              tok.pad_token_id)
         logits = _forward(model, batch, device, amp=False, detach_encoder=False).cpu().numpy()
         for row, it in zip(logits, chunk):
             records.append((it["qtype"], row[:it["k"]], it["target"], it["k"]))
@@ -535,6 +551,9 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
     model, tok, cfg = load_checkpoint(model_dir)
     max_len = config.max_len or cfg.get("max_len", 512)
     head_max_len = config.head_max_len or cfg.get("head_max_len", 192)
+    if config.option_layout is not None:
+        cfg = dict(cfg, option_layout=config.option_layout)
+    parallel = uses_parallel_layout(cfg)
 
     items, skipped = items_from_rows(tok, read_jsonl(data), max_len, head_max_len)
     if not items:
@@ -548,9 +567,9 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
                         os.path.join(output_dir, "checkpoint_latest"))
 
     history = train_model(model, tok, train_items, config, dev, max_len, head_max_len,
-                          on_epoch_end=checkpoint_latest)
+                          on_epoch_end=checkpoint_latest, parallel=parallel)
 
-    records = calibration_records(model, tok, calib_items, dev, max_len, head_max_len)
+    records = calibration_records(model, tok, calib_items, dev, max_len, head_max_len, parallel=parallel)
     fitted = fit_temperature_map(records)
     calibration = calibration_report(records, fitted["temperature"])
     for name, entry in calibration.items():
