@@ -142,6 +142,11 @@ class ONNXAgent(HookRegistry):
 
         with open(cfg_path) as f:
             self.cfg = json.load(f)
+        if self.cfg.get("option_layout", "sequential") != "sequential":
+            # The exported graph takes the five sequential-layout inputs only, so it would run this
+            # checkpoint without the masks it was trained with.
+            raise ValueError("option_layout=%r is not supported by the ONNX runtime; load this "
+                             "checkpoint with laya.Agent" % (self.cfg.get("option_layout"),))
 
         if not os.path.exists(onnx_path):
             raise FileNotFoundError(
