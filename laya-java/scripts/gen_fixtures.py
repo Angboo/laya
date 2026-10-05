@@ -1895,6 +1895,32 @@ def email_clean():
         ("header-next-devanagari-year",
          q + "\n\nFrom: Maria Souza\nDate: 3 Sep \u0968\u0966\u0968\u096B\nolder"),
 
+        # -- the signature window, `max(1, min(int(len * 0.6), len - 8))`. Every part of that
+        # formula was unpinned: a review mutated the ratio to 0.55 and to 0.9, the offset to 9
+        # and to 2, and the floor to 2, and all five left the suite green. These five cases are
+        # the smallest inputs under 60 lines on which each mutant's window reaches a different
+        # line from the real one -- found by searching, not derived, because deriving them by
+        # hand gets the `min` the wrong way round.
+        ("window-floor-of-one", "\n".join(["Regards, Ana" if i == 1 else q for i in range(2)])),
+        ("window-offset-dominates", "\n".join(["Regards, Ana" if i == 1 else q for i in range(4)])),
+        ("window-offset-excludes", "\n".join(["Regards, Ana" if i == 1 else q for i in range(10)])),
+        ("window-ratio-excludes", "\n".join(["Regards, Ana" if i == 9 else q for i in range(18)])),
+        ("window-ratio-includes", "\n".join(["Regards, Ana" if i == 12 else q for i in range(21)])),
+
+        # -- the device-footer width gate, 60 code points against the sign-off's 40. Both
+        # directions, because a review found `<= 60` mutable to 41 and to 200 with nothing
+        # failing.
+        ("footer-at-the-width-limit",
+         "\n".join([q] * 9 + ["Sent from my iphone using " + "a" * 34])),
+        ("footer-just-over-the-limit",
+         "\n".join([q] * 9 + ["Sent from my iphone using " + "a" * 35])),
+
+        # -- the body-side strip is Python's `str.strip()`, which takes U+00A0 and U+2007 where
+        # `String.trim()` does not. The subject side was pinned and the body side was not, and
+        # swapping it for `trim()` left the suite green while returning a leading space.
+        ("body-strip-is-pythons", "\u00a0Refund please\u2007"),
+        ("body-strip-both-ends", "\u2007\u00a0Please refund\u00a0"),
+
         # -- outside the BMP. The first sweep of this port had no astral character in it and
         # passed on 40,000 cases; a corpus of them found four defects at once. Each case below
         # is one of them, because the units the reference counts are CODE POINTS and the units

@@ -425,6 +425,11 @@ public final class UnicodeTables {
      * code points that are category M with class zero, so the two are not interchangeable here.
      */
     public static boolean isMark(int codePoint) {
+        if (codePoint < 0x80) {
+            long mask = codePoint < 64 ? MARK_ASCII_LOW >>> codePoint
+                    : MARK_ASCII_HIGH >>> (codePoint - 64);
+            return (mask & 1L) != 0L;
+        }
         return contains(MARK, codePoint);
     }
 
@@ -435,6 +440,11 @@ public final class UnicodeTables {
      * which holds caseless symbols this does not and misses every caseless script this does.
      */
     public static boolean isInitial(int codePoint) {
+        if (codePoint < 0x80) {
+            long mask = codePoint < 64 ? INITIAL_ASCII_LOW >>> codePoint
+                    : INITIAL_ASCII_HIGH >>> (codePoint - 64);
+            return (mask & 1L) != 0L;
+        }
         return contains(INITIAL, codePoint);
     }
 

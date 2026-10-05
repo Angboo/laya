@@ -2,6 +2,8 @@ package com.convaiinnovations.laya;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
@@ -30,17 +32,80 @@ import org.junit.jupiter.api.TestFactory;
  */
 final class EmailTest {
 
+    /**
+     * Cases the corpus must hold by NAME, not by count.
+     *
+     * <p>A count is not coverage. Trimmed to its old floors -- which were 70 against 86 and 5
+     * against 9 -- this corpus still passed while losing every astral case and eleven
+     * near-misses, and three mutants that the full corpus kills then survived: the code-point
+     * width gate, the surrogate-safe cut and the UNICODE_CHARACTER_CLASS flag on `\b`. Each
+     * name below is a rule nothing else in the corpus pins.
+     */
+    private static final List<String> REQUIRED_CLEANED = List.of(
+            // near-misses: the cleaner must NOT fire. More of these than hits, because a cleaner
+            // that is too eager deletes what the sender actually wrote.
+            "not-signoff-pt-with-name", "not-signoff-sentence",
+            "not-signoff-lowercase-other-script", "not-signoff-symbol-name", "not-signoff-zwnj",
+            "not-signoff-obrigado-mas", "not-signoff-merci-mais", "not-footer-with-request",
+            "not-disclaimer-question", "not-disclaimer-colon", "not-disclaimer-print",
+            "not-disclaimer-contract", "not-disclaimer-fr-contract",
+            "not-signoff-baseless-mark", "not-signoff-too-wide", "not-signoff-four-tokens",
+            // outside the BMP, where the reference counts code points and Java reaches for chars
+            "astral-word-char-breaks-no-boundary", "astral-elsewhere-still-matches",
+            "astral-signoff-at-the-width-limit", "astral-signoff-just-over-the-limit",
+            "astral-mark-in-a-disclaimer",
+            // the signature window's five parameters, the footer width in both directions, and
+            // the body-side strip -- each the only case that tells its rule from a plausible
+            // wrong one
+            "window-floor-of-one", "window-offset-dominates", "window-offset-excludes",
+            "window-ratio-excludes", "window-ratio-includes",
+            "footer-at-the-width-limit", "footer-just-over-the-limit",
+            "body-strip-is-pythons", "body-strip-both-ends");
+
+    private static final List<String> REQUIRED_BUDGETS = List.of(
+            "budget-four-x-bound", "budget-splits-a-surrogate-pair",
+            "budget-ends-on-a-surrogate-pair", "budget-all-astral",
+            "budget-four-x-bound-astral");
+
     @SuppressWarnings("unchecked")
     private static List<Object> rows(String key) {
         return (List<Object>) Fixtures.load("email.json").get(key);
+    }
+
+    private static List<String> names(String key) {
+        List<String> out = new ArrayList<>();
+        for (Object entry : rows(key)) {
+            out.add((String) asMap(entry).get("name"));
+        }
+        return out;
+    }
+
+    @Test
+    @DisplayName("the corpus still holds every case that pins a rule nothing else pins")
+    void corpusHoldsItsLoadBearingCases() {
+        List<String> cleaned = names("cleaned");
+        for (String required : REQUIRED_CLEANED) {
+            assertTrue(cleaned.contains(required),
+                    () -> "the corpus lost " + required + ", which is the only case pinning its "
+                          + "rule; regenerate from a gen_fixtures.py that still has it");
+        }
+        List<String> budgets = names("budgets");
+        for (String required : REQUIRED_BUDGETS) {
+            assertTrue(budgets.contains(required),
+                    () -> "the corpus lost the budget case " + required);
+        }
+        assertEquals(95, cleaned.size(), "cases were added or removed; update the count knowingly");
+        assertEquals(9, budgets.size(), "budget cases were added or removed");
+        assertEquals(7, names("states").size(), "state cases were added or removed");
     }
 
     @TestFactory
     @DisplayName("every cleaned body is byte-identical to the reference")
     List<DynamicTest> cleanedMatches() {
         List<Object> cases = rows("cleaned");
-        assertTrue(cases.size() >= 70,
-                () -> "the email corpus lost cases: " + cases.size() + " of at least 70");
+        assertEquals(95, cases.size(),
+                "the email corpus changed size; corpusHoldsItsLoadBearingCases says which "
+                + "cases may not go");
         List<DynamicTest> tests = new ArrayList<>();
         for (Object entry : cases) {
             Map<String, Object> row = asMap(entry);
@@ -56,7 +121,7 @@ final class EmailTest {
     @DisplayName("every budget cuts where the reference cuts")
     List<DynamicTest> budgetsMatch() {
         List<Object> cases = rows("budgets");
-        assertTrue(cases.size() >= 5, "the budget cases vanished");
+        assertEquals(9, cases.size(), "the budget cases changed size");
         List<DynamicTest> tests = new ArrayList<>();
         for (Object entry : cases) {
             Map<String, Object> row = asMap(entry);
@@ -74,7 +139,7 @@ final class EmailTest {
     @SuppressWarnings("unchecked")
     List<DynamicTest> statesMatch() {
         List<Object> cases = rows("states");
-        assertTrue(cases.size() >= 7, "the state cases vanished");
+        assertEquals(7, cases.size(), "the state cases changed size");
         List<DynamicTest> tests = new ArrayList<>();
         for (Object entry : cases) {
             Map<String, Object> row = asMap(entry);
@@ -96,11 +161,42 @@ final class EmailTest {
     }
 
     @Test
-    @DisplayName("the question set is the same object graph as the preset")
+    @DisplayName("the re-export is the preset, and hands out a fresh map each time")
     void questionsAreThePreset() {
-        assertEquals(Presets.email().keySet(), LayaEmail.emailQuestions().keySet());
+        // The DisplayName used to say "the same object graph", which is the opposite of true and
+        // of what is wanted: `Presets.email()` builds a fresh map, so a caller cannot corrupt a
+        // later caller's questions. Comparing two key sets could not tell the difference.
+        Map<String, Question> first = LayaEmail.emailQuestions();
+        Map<String, Question> second = LayaEmail.emailQuestions();
+        assertEquals(Presets.email().keySet(), first.keySet());
+        assertNotSame(first, second, "each call must hand out its own map");
+        first.remove(first.keySet().iterator().next());
+        assertEquals(Presets.email().keySet(), LayaEmail.emailQuestions().keySet(),
+                "mutating a returned map changed what a later caller gets");
         assertEquals(Boolean.TRUE, Fixtures.load("email.json").get("questions_match_presets"),
                 "the reference's re-export no longer equals laya.presets.email_questions");
+    }
+
+    @Test
+    @DisplayName("the categories overload passes the caller's categories through")
+    void questionsWithCategories() {
+        // Untested until a review pointed it out: `Presets.email(categories)` could have been
+        // `Presets.email(null)` -- silently ignoring the argument -- with nothing failing.
+        Map<String, String> categories = new LinkedHashMap<>();
+        categories.put("refund", "the sender wants money back");
+        categories.put("access", "the sender cannot log in");
+        Map<String, Question> questions = LayaEmail.emailQuestions(categories);
+        assertEquals(Presets.email(categories).keySet(), questions.keySet());
+        // The labels, not toString(): `Question` has no toString, so comparing those compared
+        // identity hashes and was true however the method behaved. The first version of this
+        // test did exactly that and the mutant that drops the argument survived it.
+        assertEquals(List.of("refund", "access"), questions.get("category").labels(),
+                "the overload returned the DEFAULT questions, so the categories were dropped");
+        assertEquals(Presets.email(categories).get("category").renderOptions(),
+                questions.get("category").renderOptions());
+        assertNotEquals(Presets.email().get("category").labels(),
+                questions.get("category").labels(),
+                "the caller's categories are indistinguishable from the defaults");
     }
 
     // ------------------------------------------------------------------ the sign-off rule
@@ -110,12 +206,12 @@ final class EmailTest {
     void signoffInitials() {
         // Each of these is a rule UPPER would get wrong; see UnicodeTablesTest for the counts.
         assertTrue(LayaEmail.isEnglishSignoff("Regards, Ana"));
-        assertTrue(LayaEmail.isEnglishSignoff("Regards, Łukasz"), "Lu outside Latin-1");
-        assertTrue(LayaEmail.isEnglishSignoff("Regards, 山田"), "Lo: a caseless script");
-        assertTrue(LayaEmail.isEnglishSignoff("Regards, ǅarko"), "Lt: titlecase");
-        assertFalse(LayaEmail.isEnglishSignoff("Thanks, Ⓐ"),
+        assertTrue(LayaEmail.isEnglishSignoff("Regards, \u0141ukasz"), "Lu outside Latin-1");
+        assertTrue(LayaEmail.isEnglishSignoff("Regards, \u5C71\u7530"), "Lo: a caseless script");
+        assertTrue(LayaEmail.isEnglishSignoff("Regards, \u01C5arko"), "Lt: titlecase");
+        assertFalse(LayaEmail.isEnglishSignoff("Thanks, \u24B6"),
                 "U+24B6 is Uppercase but category So, so it is not a letter");
-        assertFalse(LayaEmail.isEnglishSignoff("Thanks, żaneta"), "a lowercase name is prose");
+        assertFalse(LayaEmail.isEnglishSignoff("Thanks, \u017Caneta"), "a lowercase name is prose");
         assertFalse(LayaEmail.isEnglishSignoff("Thanks for the quick reply."));
         assertFalse(LayaEmail.isEnglishSignoff("Regards, Ana Maria Souza Lima"),
                 "the tail allows at most three tokens");
@@ -124,16 +220,16 @@ final class EmailTest {
     @Test
     @DisplayName("a mark rides on its base, and a mark without one still separates tokens")
     void marksAreDroppedOnlyWithABase() {
-        assertEquals("Jose", LayaEmail.dropMarks("José"), "a mark with a base goes");
-        assertEquals("Jose", LayaEmail.dropMarks("Jo͏se"),
+        assertEquals("Jose", LayaEmail.dropMarks("Jose\u0301"), "a mark with a base goes");
+        assertEquals("Jose", LayaEmail.dropMarks("Jo\u034Fse"),
                 "including U+034F, whose canonical combining class is zero");
-        assertEquals("́Ana", LayaEmail.dropMarks("́Ana"),
+        assertEquals("\u0301Ana", LayaEmail.dropMarks("\u0301Ana"),
                 "a mark opening the string has no base");
-        assertEquals("a ́b", LayaEmail.dropMarks("a ́b"),
+        assertEquals("a \u0301b", LayaEmail.dropMarks("a \u0301b"),
                 "nor does one following a space");
         // and the consequence, which is the reason the rule exists
-        assertTrue(LayaEmail.isEnglishSignoff("Regards, José"));
-        assertFalse(LayaEmail.isEnglishSignoff("Regards, ́Ana"),
+        assertTrue(LayaEmail.isEnglishSignoff("Regards, Jose\u0301"));
+        assertFalse(LayaEmail.isEnglishSignoff("Regards, \u0301Ana"),
                 "a kept mark is not a token opener, so this is not a sign-off");
     }
 
@@ -160,7 +256,17 @@ final class EmailTest {
                 assertEquals(pattern, spelled, String.format("U+%04X", cp));
             }
         }
-        assertEquals(0x110000 - 2048, examined, "every code point but the surrogates");
+        // Not asserted against a constant the loop itself produces -- that only restates the
+        // loop. What matters is that the comparison ran on a lot of code points and on the ones
+        // where the two classes are known to disagree.
+        final int compared = examined;
+        assertTrue(compared > 1_000_000, () -> "only " + compared + " code points examined");
+        for (int codePoint : new int[] {0x0301, 0x200C, 0x200D, 0x00BD, 0x2160, 0x11001, 0x10107}) {
+            final int cp = codePoint;
+            boolean spelled = (Boolean) javaWord.invoke(null, cp);
+            assertEquals(word.matcher(new String(Character.toChars(cp))).matches(), spelled,
+                    () -> String.format("U+%04X, a code point the two word classes argue about", cp));
+        }
     }
 
     @Test
@@ -168,18 +274,24 @@ final class EmailTest {
     void boundaryViewSubstitutes() {
         assertSame("plain ascii", LayaEmail.boundaryView("plain ascii"),
                 "an ASCII-only message is returned without copying");
-        assertSame("café résumé", LayaEmail.boundaryView("café résumé"),
+        assertSame("caf\u00E9 r\u00E9sum\u00E9", LayaEmail.boundaryView("caf\u00E9 r\u00E9sum\u00E9"),
                 "ordinary accented letters are word characters in both, so nothing is rewritten");
         // Java says word, Python says not -> U+0000, a non-word character to Java too.
-        assertEquals("a b", LayaEmail.boundaryView("áb"), "a combining mark");
-        assertEquals("a b", LayaEmail.boundaryView("a‌b"), "ZWNJ, a join control");
-        assertEquals("a b", LayaEmail.boundaryView("a‍b"), "ZWJ");
+        assertEquals("a\u0000b", LayaEmail.boundaryView("a\u0301b"), "a combining mark");
+        assertEquals("a\u0000b", LayaEmail.boundaryView("a\u200Cb"), "ZWNJ, a join control");
+        assertEquals("a\u0000b", LayaEmail.boundaryView("a\u200Db"), "ZWJ");
         // Python says word, Java says not -> '0', which no literal in any pattern contains.
-        assertEquals("a0b", LayaEmail.boundaryView("a½b"), "U+00BD is No: Python's word, not Java's");
-        // Length is preserved, so the [^.]{0,N} windows count the same characters.
-        for (String text : List.of("áb", "a‌b", "a½b", "x́½‌y")) {
-            assertEquals(text.length(), LayaEmail.boundaryView(text).length(),
-                    () -> "boundaryView changed the length of " + text);
+        assertEquals("a0b", LayaEmail.boundaryView("a\u00BDb"), "U+00BD is No: Python's word, not Java's");
+        // CODE POINT count is preserved, which is the unit a regex quantifier counts in -- and
+        // not the char count, which an astral disagreement does change: U+1D16D is two chars and
+        // one code point, and its substitute is one of each. Asserting chars passed only because
+        // every case in the list was in the BMP.
+        for (String text : List.of("a\u0301b", "a\u200Cb", "a\u00BDb", "x\u0301\u00BD\u200Cy",
+                                   "a\uD834\uDD6Db", "a\uD800\uDD07b")) {
+            String view = LayaEmail.boundaryView(text);
+            assertEquals(text.codePointCount(0, text.length()),
+                    view.codePointCount(0, view.length()),
+                    () -> "boundaryView changed the code point count of " + text);
         }
     }
 
@@ -187,32 +299,107 @@ final class EmailTest {
     @DisplayName("neither substitute can appear in a pattern literal")
     void substitutesAreNotLiterals() throws Exception {
         // The whole argument for substituting is that the replacement cannot complete or break a
-        // literal. That holds only while no pattern here holds a digit or a NUL as a literal, so
-        // it is checked rather than asserted in a comment.
+        // literal. Checked BEHAVIOURALLY: an earlier version scanned the pattern source for a
+        // raw NUL, which no pattern can hold -- `appendEscaped` writes every class member as a
+        // backslash-u escape -- while the two forms a NUL literal actually takes in a Java
+        // regex, backslash-x-zero-zero and backslash-u-four-zeros, both read as ordinary text to
+        // `indexOf`. So it could not fail from any plausible edit. (Spelled out rather than
+        // written, because the compiler translates a backslash-u escape before it lexes, even
+        // inside a comment, and an invalid one there is a compile error.)
+        String nul = "\u0000";
         for (Pattern pattern : allPatterns()) {
-            String source = pattern.pattern();
-            assertFalse(source.indexOf(' ') >= 0,
-                    () -> "a pattern holds a literal NUL: " + source.substring(0, 40));
+            assertFalse(pattern.matcher(nul).find(),
+                    () -> "this pattern matches a lone NUL, so U+0000 is no longer a safe "
+                          + "substitute: " + head(pattern.pattern()));
         }
-        // A digit may only appear inside the generated \d class or as a quantifier bound, never
-        // as a literal to be matched, so the DISCLAIMER branches are checked directly.
-        Pattern disclaimer = (Pattern) patternField("DISCLAIMER");
-        assertFalse(disclaimer.pattern().matches(".*[^{,0-9]\\d[^}0-9,].*"),
+        // And the digit side, for DISCLAIMER, which is the only pattern the view ever reaches.
+        // Quantifier bounds are stripped first: `[^.]{0,60}` is not a digit literal, and a check
+        // that did not strip them could not see `covid19` either, because every digit there is
+        // next to another one.
+        String disclaimer = ((Pattern) patternField("DISCLAIMER")).pattern()
+                .replaceAll("\\{\\d+(,\\d+)?\\}", "");
+        assertFalse(disclaimer.matches(".*\\d.*"),
                 "a digit became a literal in DISCLAIMER; '0' is no longer a safe substitute");
+        // the guard above is only meaningful if it would notice one
+        assertTrue(("x" + disclaimer + "7").matches(".*\\d.*"),
+                "the digit check cannot see a digit, so it proves nothing");
+    }
+
+    /** A pattern's opening, for a failure message, without risking its length. */
+    private static String head(String source) {
+        return source.substring(0, Math.min(40, source.length()));
     }
 
     @Test
-    @DisplayName("the disclaimer filter never rejects what the pattern would accept")
-    void hintIsANecessaryCondition() throws Exception {
+    @DisplayName("every literal in the disclaimer filter is load-bearing")
+    void everyHintLiteralIsNecessary() throws Exception {
         Pattern hint = (Pattern) patternField("DISCLAIMER_HINT");
         Pattern disclaimer = (Pattern) patternField("DISCLAIMER");
-        // A filter is only sound as a NECESSARY condition: a false positive costs time, a false
-        // negative keeps a disclaimer in the model's input. Checked over every recorded case,
-        // which includes one example of every branch of the pattern.
+
+        // One disclaimer per literal, chosen so that literal is the ONLY one the filter can
+        // match it by. That is what makes each row a test of necessity rather than of
+        // membership: the previous version of this test checked thirteen examples against the
+        // whole filter, every example was satisfied by SOME literal, and five literals could be
+        // deleted with the suite green -- leaking "Esta mensagem e sigilosa.", "Destinada
+        // exclusivamente ao destinatario." and "Reserve uniquement au destinataire." into the
+        // model's input.
+        String[][] perLiteral = {
+            {"confidenc", "Esta mensagem e confidencial."},
+            {"confidenti", "This email is confidential and intended solely for the addressee."},
+            {"sigilos", "Esta mensagem e sigilosa."},
+            {"privil[e\u00e9]gi", "Ce message est privilegie."},
+            {"antes de imprimir", "Antes de imprimir pense no meio ambiente."},
+            {"received this", "If you have received this email in error please delete it."},
+            {"receb", "Se recebeu esta mensagem por engano, apague."},
+            {"recib", "Usted ha recibido este mensaje por error."},
+            {"avez re[\u00e7c]u", "Vous avez recu ce message par erreur."},
+            {"exclusiv", "Uso exclusivo do destinatario desta mensagem."},
+            {"[\u00fau]nicamente", "Unicamente ao destinatario desta mensagem."},
+            {"uniquement", "Reserve uniquement au destinataire."},
+        };
+        List<String> alternatives = List.of(hint.pattern().split("\\|"));
+        assertEquals(perLiteral.length, alternatives.size(),
+                () -> "the filter has " + alternatives.size() + " literals and this test names "
+                      + perLiteral.length + "; a literal with no example is a literal that can "
+                      + "be deleted without failing anything");
+
+        for (String[] row : perLiteral) {
+            String literal = row[0];
+            String example = row[1];
+            assertTrue(alternatives.contains(literal),
+                    () -> "the filter no longer holds the literal " + literal);
+            // the example really is a disclaimer, so leaking it would matter
+            assertTrue(disclaimer.matcher(LayaEmail.boundaryView(example)).find(),
+                    () -> "this is no longer a disclaimer at all: " + example);
+            assertTrue(hint.matcher(example).find(),
+                    () -> "the filter rejects a disclaimer the pattern accepts: " + example);
+            // and WITHOUT this literal the filter misses it, which is what "necessary" means
+            StringBuilder reduced = new StringBuilder();
+            for (String alternative : alternatives) {
+                if (alternative.equals(literal)) {
+                    continue;
+                }
+                if (reduced.length() > 0) {
+                    reduced.append('|');
+                }
+                reduced.append(alternative);
+            }
+            Pattern without = Pattern.compile(reduced.toString(),
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNIX_LINES);
+            assertFalse(without.matcher(example).find(),
+                    () -> "deleting " + literal + " from the filter would still catch "
+                          + example + ", so this row does not test that literal");
+        }
+    }
+
+    @Test
+    @DisplayName("the filter rejects nothing the pattern accepts, over the whole corpus")
+    void hintIsNecessaryOverTheCorpus() throws Exception {
+        Pattern hint = (Pattern) patternField("DISCLAIMER_HINT");
+        Pattern disclaimer = (Pattern) patternField("DISCLAIMER");
         int fired = 0;
         for (Object entry : rows("cleaned")) {
-            Map<String, Object> row = asMap(entry);
-            String body = (String) row.get("body");
+            String body = (String) asMap(entry).get("body");
             for (String raw : body.split("\n", -1)) {
                 final String paragraph = raw;
                 if (disclaimer.matcher(LayaEmail.boundaryView(paragraph)).find()) {
@@ -223,34 +410,13 @@ final class EmailTest {
                 }
             }
         }
+        // A secondary check. `everyHintLiteralIsNecessary` is the coverage gate -- it proves each
+        // literal is load-bearing -- and this one proves the implication holds on real bodies as
+        // well as on the twelve constructed ones.
         final int hits = fired;
-        assertTrue(hits >= 9,
-                () -> "the corpus no longer exercises the disclaimer pattern: " + hits + " hits");
-
-        // The corpus count is a floor, not coverage. Every BRANCH of the pattern is named here,
-        // so a branch whose required literal is missing from the filter fails this rather than
-        // waiting for a message in production to be the first to notice.
-        String[] oneExamplePerBranch = {
-            "This email and its contents are confidential and intended solely for the addressee.",
-            "This message is confidential and may also privileged.",
-            "If you have received this email in error please delete it.",
-            "Esta mensagem e seus anexos sao confidenciais e de uso exclusivo do destinatario.",
-            "Este mensaje es confidencial y para uso exclusivo del destinatario.",
-            "Uso exclusivo do destinatario desta mensagem.",
-            "Se recebeu esta mensagem por engano, apague-a.",
-            "Usted ha recibido este mensaje por error.",
-            "Antes de imprimir pense no meio ambiente.",
-            "Pense no meio ambiente antes de imprimir.",
-            "Ce message est confidentiel et destine uniquement au destinataire.",
-            "Vous avez recu ce message par erreur.",
-            "Usage exclusif du destinataire.",
-        };
-        for (String example : oneExamplePerBranch) {
-            assertTrue(disclaimer.matcher(LayaEmail.boundaryView(example)).find(),
-                    () -> "this no longer matches DISCLAIMER at all: " + example);
-            assertTrue(hint.matcher(example).find(),
-                    () -> "the filter would reject a disclaimer the pattern accepts: " + example);
-        }
+        assertEquals(11, hits,
+                "the corpus's disclaimer coverage changed; this is a count, so change it "
+                + "knowingly rather than lowering it");
     }
 
     // ------------------------------------------------------------------------- the state
@@ -295,7 +461,7 @@ final class EmailTest {
     void subjectStripIsPythons() {
         // U+00A0 and U+2007 are whitespace to str.strip() and not to String.trim(). The same gap
         // sat in the router's checkpoint names and routed a caller to the wrong model.
-        assertEquals("Refund", LayaEmail.emailState(" Refund ", "b").get("subject"));
+        assertEquals("Refund", LayaEmail.emailState("\u00A0Refund\u2007", "b").get("subject"));
         assertTrue(UnicodeTables.isSpace(0x00a0) && UnicodeTables.isSpace(0x2007),
                 "the premise of the assertion above");
     }

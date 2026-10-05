@@ -401,6 +401,51 @@
       "result": "I cannot log in and need a password reset."
     },
     {
+      "name": "window-floor-of-one",
+      "body": "I cannot log in and need a password reset.\nRegards, Ana",
+      "result": "I cannot log in and need a password reset."
+    },
+    {
+      "name": "window-offset-dominates",
+      "body": "I cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.",
+      "result": "I cannot log in and need a password reset."
+    },
+    {
+      "name": "window-offset-excludes",
+      "body": "I cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.",
+      "result": "I cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
+    },
+    {
+      "name": "window-ratio-excludes",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
+    },
+    {
+      "name": "window-ratio-includes",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, Ana\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
+    },
+    {
+      "name": "footer-at-the-width-limit",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nSent from my iphone using aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
+    },
+    {
+      "name": "footer-just-over-the-limit",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nSent from my iphone using aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nSent from my iphone using aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "body-strip-is-pythons",
+      "body": " Refund please ",
+      "result": "Refund please"
+    },
+    {
+      "name": "body-strip-both-ends",
+      "body": "  Please refund ",
+      "result": "Please refund"
+    },
+    {
       "name": "astral-word-char-breaks-no-boundary",
       "body": "Esta mensagem𒐲 e confidencial.",
       "result": "Esta mensagem𒐲 e confidencial."

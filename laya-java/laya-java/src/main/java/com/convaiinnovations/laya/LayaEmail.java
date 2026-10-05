@@ -95,6 +95,17 @@ public final class LayaEmail {
             }
             cp++;
         }
+        // An empty class is `[]` or `[^]`, which Java rejects -- and it would arrive as
+        // ExceptionInInitializerError on the first call and NoClassDefFoundError on every one
+        // after, naming neither the table nor this method. A table that lost its contents is a
+        // generator regression, so it says so.
+        if (space.length() == 1 || digit.length() == 1) {
+            throw new IllegalStateException(
+                    "UnicodeTables gave an empty class: isSpace matched "
+                    + (space.length() == 1 ? "no" : "some") + " code points and isDigit matched "
+                    + (digit.length() == 1 ? "no" : "some")
+                    + "; regenerate with laya-java/scripts/gen_unicode_tables.py");
+        }
         String spaces = space.append(']').toString();
         return new String[] {spaces, "[^" + spaces.substring(1), digit.append(']').toString()};
     }
@@ -160,21 +171,20 @@ public final class LayaEmail {
     /**
      * The patterns, built on first use.
      *
-     * <p>A holder rather than fields of {@code LayaEmail}, because deriving the character classes
-     * from {@link UnicodeTables} walks all 1,114,112 code points and costs about 80 ms. That is a
-     * fair price for classes that cannot disagree with CPython, but only for a caller who cleans
-     * an email: paid in {@code LayaEmail}'s own initialiser it would land on every caller of the
-     * package, including one that only ever opens an {@link Agent}.
+     * <p>A holder rather than fields of {@code LayaEmail}, because this costs about 55 ms --
+     * one walk of all 1,114,112 code points to build the character classes, plus compiling the
+     * patterns. That is a fair price for classes that cannot disagree with CPython, but only for
+     * a caller who cleans an email: paid in {@code LayaEmail}'s own initialiser it would land on
+     * every caller of the package, including one that only ever opens an {@link Agent}.
      */
     private static final class Patterns {
 
         /**
          * {@code \s}, {@code \S} and {@code \d}, built in ONE walk of Unicode.
          *
-         * <p>Three calls to {@code classOf} is three walks of 1,114,112 code points, and this is
-         * the whole cost of the first call into this class. Measured on the first
-         * {@code cleanEmailBody}: 160 ms when the unused word class was still built here, about
-         * 100 ms with three walks, about 35 ms with one.
+         * <p>One walk of 1,114,112 code points rather than one per class. The walk itself is
+         * 15.8 ms warm; the first {@code cleanEmailBody} is 52 to 57 ms, most of it compiling
+         * the patterns. It was about 160 ms when a fourth, unused class was built here too.
          */
         private static final String[] CLASSES = classes();
 
@@ -201,9 +211,6 @@ public final class LayaEmail {
         static final String BB = "\\b";
         static final String BA = "\\b";
 
-        /** Java's {@code \w}, probed rather than assumed, because it is the JDK's and not ours. */
-        static final Pattern JAVA_WORD =
-                Pattern.compile("\\w", Pattern.UNICODE_CHARACTER_CLASS);
 
         static final List<Pattern> QUOTE_HEADERS = List.of(
                 compile("^" + S + "*On .{0,300}wrote:" + S + "*$"),
@@ -231,7 +238,14 @@ public final class LayaEmail {
         // next line. That tail cuts too, and takes the `On/Em/El/Le ...` head it belongs to with
         // it. The French tail keeps its spaced colon.
         static final Pattern ATTRIBUTION_TAIL = compile(
-                "^.{0,120}" + NS + "@" + NS + "+" + S + "+(wrote|escreveu|escribi[óo]|a [eé]crit)"
+                // `\S++` POSSESSIVE, not greedy. `.{0,120}` offers 121 starting points, and at
+                // each one a greedy `\S+` runs to the end of the line and then gives every
+                // character back, because the `\s+` after it can never match where a `\S` was
+                // just surrendered -- the two classes are complements. The result was 121 full
+                // scans of the line: measured 55 ms on a 4,000,000-character line at the default
+                // budget and 4.8 s at `maxChars` of 300,000, against 0.018 ms for an ordinary
+                // message. Possessive forbids the backtracking that could never have succeeded.
+                "^.{0,120}" + NS + "@" + NS + "++" + S + "+(wrote|escreveu|escribi[óo]|a [eé]crit)"
                 + S + "*:" + S + "*$");
         static final Pattern ATTRIBUTION_HEAD = compile("^" + S + "*(On|Em|El|Le) (?=.*" + D + ")");
 
@@ -314,27 +328,47 @@ public final class LayaEmail {
                 + BB + "(usage exclusif|exclusivement|uniquement)" + BA + "[^.]{0,30}destinataire)");
 
         /**
-         * A necessary condition for DISCLAIMER, checked first because it is 40 times cheaper.
+         * A necessary condition for DISCLAIMER, checked first.
          *
-         * <p>Every branch of DISCLAIMER requires at least one of these literals, so a paragraph
-         * holding none of them cannot match and does not have to be scanned by a pattern whose
-         * twenty alternations each carry two word-boundary lookarounds over a 10,000-character
-         * class. Measured: DISCLAIMER alone was 4.9 ms per case on the sweep corpus, which was
-         * the whole cost of cleaning a message.
+         * <p>Each of DISCLAIMER's twelve top-level alternations requires at least one of these
+         * literals, so a paragraph holding none of them cannot match and does not have to be
+         * scanned by the full pattern. Eleven of the twelve carry word boundaries -- 26 of them
+         * between them; the "received this ... in error" branch carries none.
+         *
+         * <p>It is worth far less than it was. When `\b` was a lookaround over a
+         * 10,622-character class this filter took DISCLAIMER from 4.9 ms per case to 0.018 ms and
+         * was the difference between usable and not. Once `\b` became Java's own, DISCLAIMER
+         * stopped being expensive, and this is now an ordinary literal alternation of the same
+         * shape as the pattern it guards -- measured at parity with it on a paragraph holding no
+         * literal, and worth 1.16x on the committed corpus and 1.4x on ordinary paragraphs. It
+         * is kept for that, and because a cheap necessary condition in front of a complicated
+         * sufficient one is the right shape, not because it is 40 times anything.
          *
          * <p>This is a filter, never a decision: a hit still runs DISCLAIMER, so a false positive
          * costs only time. What would be a defect is a false NEGATIVE, so the literals are
-         * matched with the same flags as DISCLAIMER itself -- `re.I` folds more than lowercasing
-         * does, U+017F LATIN SMALL LETTER LONG S against `s` among it, and a filter that lowered
-         * the text instead would reject a paragraph the pattern accepts. EmailTest asserts the
-         * implication over every branch and over the whole corpus.
+         * matched case-insensitively with Unicode folding, exactly as `re.I` on a str pattern
+         * folds -- it folds more than lowercasing does, U+017F LATIN SMALL LETTER LONG S against
+         * `s` among it, and a filter that lowered the text instead would reject a paragraph the
+         * pattern accepts. DISCLAIMER additionally carries UNICODE_CHARACTER_CLASS, which it
+         * needs for `\b` and this has no use for, having no class of its own.
          */
         static final Pattern DISCLAIMER_HINT = compile(
-                "confidential|confidencia|sigilos|privilegiad|confidentiel|privil[eé]gi"
+                // Each literal is the SHORTEST form that covers its branch, and every one of
+                // them is load-bearing: `EmailTest` gives each a disclaimer whose only hint
+                // literal is that one, and asserts that removing it stops the filter matching.
+                // An earlier version listed the branches' own words -- `confidential`,
+                // `recebeu|recebido|receber`, `uso exclusivo|exclusivamente|usage exclusif` --
+                // and five of those were deletable with the suite still green, because every
+                // example that reached the filter satisfied it through some OTHER literal.
+                //
+                // Shortening is always safe in this direction. The filter has to be a NECESSARY
+                // condition for DISCLAIMER and nothing more, so a literal that matches more than
+                // its branch costs time on a paragraph that then fails the real pattern; a
+                // literal that matches less lets a disclaimer through to the model.
+                "confidenc|confidenti|sigilos|privil[eé]gi"
                 + "|antes de imprimir|received this"
-                + "|recebeu|recebido|receber|ha recibido|recibi[óo]|recibe|avez re[çc]u"
-                + "|uso exclusivo|exclusivamente|[úu]nicamente|usage exclusif|exclusivement"
-                + "|uniquement");
+                + "|receb|recib|avez re[çc]u"
+                + "|exclusiv|[úu]nicamente|uniquement");
 
         static final Pattern SENTENCE = compile("(?<=[.!?])" + S + "+");
         static final Pattern BLANK_LINE = compile("\n" + S + "*\n");
@@ -360,9 +394,11 @@ public final class LayaEmail {
      * <p>Two substitutes, chosen so a replacement cannot change which literal matches:
      * <ul>
      *   <li>Java says word, Python says not: U+0000, which Java also calls a non-word character.
-     *   <li>Python says word, Java says not: {@code '0'}, which Java calls a word character. No
-     *       literal in any pattern here contains a digit, so a digit can neither complete nor
-     *       break one.
+     *   <li>Python says word, Java says not: {@code '0'}, which Java calls a word character.
+     *       DISCLAIMER is the only pattern matched against the view, and no literal in it
+     *       contains a digit, so a digit can neither complete nor break one. (Other patterns do
+     *       hold digits -- DEVICE_FOOTER's {@code [a-z0-9_.+-]}, HEADER_NEXT's four-digit year --
+     *       and none of them ever sees this string.)
      * </ul>
      * Both substitutes are matched by the {@code [^.]} windows the patterns measure, so a window
      * counts the same number of characters as it does in the original.
@@ -408,7 +444,7 @@ public final class LayaEmail {
      * <p>Spelled out from the definition {@code java.util.regex.Pattern} documents for
      * {@code \w} under {@code UNICODE_CHARACTER_CLASS} -- alphabetic, the three mark categories,
      * decimal digits, connector punctuation and the join controls -- rather than asked of a
-     * {@link Patterns#JAVA_WORD} matcher, which allocates a string and a matcher per character
+     * a matcher on Java's own {@code \\w}, which allocates a string and a matcher per character
      * and cost more than the rest of the cleaner put together. Every term reads the JDK's own
      * Unicode, so this stays whatever that JDK's {@code \w} is, which is the point: the view is
      * built by comparing the JDK against the recorded table, so this side has to be the JDK's
@@ -642,8 +678,8 @@ public final class LayaEmail {
         // alternations whose cost grows with input length, and only maxChars are ever returned.
         //
         // In CODE POINTS, because Python slices a str by code point. Cutting by char index splits
-        // a surrogate pair, and the replacement character that comes out is not what the
-        // reference returns -- measured on 4,641 cases of an astral corpus.
+        // a surrogate pair, and the half character that comes out is not what the reference
+        // returns -- 4,641 of 20,000 astral bodies in a one-off differential sweep.
         if (maxChars > 0) {
             text = cutToCodePoints(text, (long) maxChars * 4);
         } else {
@@ -663,7 +699,14 @@ public final class LayaEmail {
                     && Patterns.HEADER_NEXT.matcher(source[i + 1]).lookingAt()) {
                 break;
             }
-            if (Patterns.ATTRIBUTION_TAIL.matcher(line).lookingAt() && !lines.isEmpty()) {
+            // `!lines.isEmpty()` and the trailing colon first, because both are necessary and
+            // both are O(1) against a pattern whose cost grows with the line. The colon really is
+            // necessary: the pattern ends `\s*:\s*$`, a line split on "\n" holds no newline,
+            // and UNIX_LINES makes `$` the end of input -- so a tail that matches is a line whose
+            // rstrip ends with a colon. Together with the possessive quantifier above this is
+            // 55 ms to 11 ms at the default budget, and 4.8 s to 0.1 s at 300,000.
+            if (!lines.isEmpty() && stripTrailing(line).endsWith(":")
+                    && Patterns.ATTRIBUTION_TAIL.matcher(line).lookingAt()) {
                 if (Patterns.ATTRIBUTION_HEAD.matcher(lines.get(lines.size() - 1)).lookingAt()) {
                     lines.remove(lines.size() - 1);
                 }
@@ -719,8 +762,11 @@ public final class LayaEmail {
      * takes.
      *
      * <p>Never cuts between a high and a low surrogate: a half pair is not a character the
-     * reference can return, and the budget cases of the astral corpus are 4,641 proofs that
-     * cutting by char index returns one.
+     * reference can return. Cutting by char index returned one, and a one-off differential sweep
+     * of 20,000 astral bodies against the reference disagreed on 4,641 of them for this reason
+     * alone. That sweep is not in the tree -- generated corpora are not committed here -- so the
+     * cases that hold the line are the four named {@code budget-*} entries of
+     * {@code fixtures/email.json}, each of which fails if this reverts to a char index.
      */
     private static String cutToCodePoints(String text, long limit) {
         if (limit <= 0) {
@@ -796,8 +842,12 @@ public final class LayaEmail {
      * behaviour and is why it is not validated. A {@code null} value is dropped, as the reference
      * drops it.
      *
-     * @return a mutable, insertion-ordered map: {@code subject}, {@code body}, then {@code from}
-     *         if a sender was given, then the extras
+     * @return a mutable, insertion-ordered map: {@code subject}, {@code body}, then
+     *         {@code from} if a sender was given, then the extras. An extra named
+     *         {@code subject}, {@code body} or {@code from} REPLACES that value and keeps the
+     *         original position, as Python's {@code dict.update} does; a null key is permitted,
+     *         again as the reference permits it. Both are input mutations rather than errors,
+     *         which is the reference's choice and is why neither is validated.
      */
     public static Map<String, Object> emailState(String subject, String body, String sender,
                                                  boolean clean, int maxChars,
