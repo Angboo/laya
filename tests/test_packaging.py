@@ -269,9 +269,11 @@ def _headings(path):
 _md = []
 for _dirpath, _dirnames, _filenames in os.walk("."):
     # `.pytest_cache` ships a README of its own and `.venv` is where CONTRIBUTING tells
-    # contributors to install; neither is part of the repository.
+    # contributors to install; neither is part of the repository. `.hf-cache` holds
+    # third-party dataset cards downloaded by setup_laya.sh (gitignored).
     _dirnames[:] = [d for d in _dirnames
-                    if d not in (".git", "__pycache__", "node_modules", ".pytest_cache", ".venv")]
+                    if d not in (".git", "__pycache__", "node_modules", ".pytest_cache",
+                                 ".venv", ".hf-cache")]
     _md.extend(os.path.normpath(os.path.join(_dirpath, f))
                for f in _filenames if f.endswith(".md"))
 _md = sorted(_md)
