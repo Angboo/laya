@@ -816,8 +816,11 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
                 if qid not in sample_questions:
                     sample_questions[qid] = qdef
                 elif sample_questions[qid] != qdef:
-                    import warnings
-                    warnings.warn("Conflicting schema detected for question %r across rows; keeping first seen definition." % (qid,))
+                    # `warnings` is imported at module scope. A function-local `import warnings`
+                    # here would make the name local for the whole of `finetune`, and the
+                    # calibration warnings above it would then raise UnboundLocalError.
+                    warnings.warn("Conflicting schema detected for question %r across rows; "
+                                  "keeping first seen definition." % (qid,))
     if sample_questions:
         for d in (output_dir, os.path.join(output_dir, "checkpoint_latest")):
             os.makedirs(d, exist_ok=True)
