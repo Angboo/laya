@@ -405,12 +405,13 @@ laya-evals evidence --checkpoint ./my-checkpoint [--report report.json] [--json 
 
 A checkpoint directory must contain `rl_agent_config.json`. Calibration evidence is derived from
 the persisted `training.laya_train_calibration` block: a legacy checkpoint with no training
-metadata is `UNKNOWN`; a question type with zero items is `MISSING`; fewer than `MIN_TYPE_N` items
-or a fit with recorded limitations (below `CALIB_WARN_N`, clamped, unchanged at 1.0) is
-`INSUFFICIENT`; a clean supported fit is `PRESENT`. When torch is unavailable, the thresholds
-fall back to the documented `MIN_TYPE_N`/`CALIB_WARN_N` values and the summary says so.
+metadata is `UNKNOWN`; a question type with zero items is `MISSING`; a type whose entry records
+any upstream `issues` text (not fitted, below `MIN_TYPE_N`/`CALIB_WARN_N`, clamped, unchanged
+fit) is `INSUFFICIENT`; a clean fit is `PRESENT`. The helper trusts the persisted `issues`
+written by #933 instead of keeping a second numeric threshold source.
 
 The eval report's identity fields (`schema`, `dataset_sha256`, `questions_sha256`, `laya_version`)
 are reported with the same semantics as `run`. The checkpoint↔report relationship is claimed only
-when the shared identity fields provably agree; a real conflict is `INCOMPARABLE`, and shared
-nothing is `UNKNOWN` — never an inference from paths or names.
+as a deterministic conflict: if both artifacts expose the same `dataset_sha256`/`questions_sha256`
+with different values, it is `INCOMPARABLE`. Everything else is `UNKNOWN` — matching `laya_version`
+alone never proves a match, and differing `laya_version` alone never proves a conflict.

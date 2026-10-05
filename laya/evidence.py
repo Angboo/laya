@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 PRESENT = "PRESENT"
 MISSING = "MISSING"
@@ -29,19 +29,6 @@ INCOMPARABLE = "INCOMPARABLE"
 # read-only command cannot import them without pulling torch in. We prefer the live
 # constants when torch is importable and fall back to the documented values with an
 # explicit provenance note when it is not; we never silently duplicate.
-_FALLBACK_MIN_TYPE_N = 10
-_FALLBACK_CALIB_WARN_N = 50
-
-
-def _thresholds() -> Tuple[int, int, str]:
-    try:
-        from .calibrate import MIN_TYPE_N  # noqa: F401  (imports torch on success)
-        from .train import CALIB_WARN_N
-        return int(MIN_TYPE_N), int(CALIB_WARN_N), "upstream modules"
-    except Exception:
-        return _FALLBACK_MIN_TYPE_N, _FALLBACK_CALIB_WARN_N, "documented fallback (torch unavailable)"
-
-
 def _entry(state: str, reason: str, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     out = {"state": state, "reason": reason}
     if detail:
@@ -57,39 +44,32 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
     calibration = training.get("laya_train_calibration")
     if not isinstance(calibration, dict):
         return _entry(UNKNOWN, "training metadata present but no calibration block; checkpoint predates #933")
-    min_type_n, calib_warn_n, threshold_source = _thresholds()
     types: Dict[str, Any] = {}
     for name, entry in calibration.items():
         if not isinstance(entry, dict) or not isinstance(entry.get("items"), int):
             types[name] = _entry(UNKNOWN, "calibration entry is malformed")
             continue
         items = entry["items"]
-        issues = entry.get("issues") if isinstance(entry.get("issues"), list) else []
         if items == 0:
             types[name] = _entry(MISSING, "question type present but zero calibration items", {"items": 0})
-        elif items < min_type_n:
-            types[name] = _entry(INSUFFICIENT, "not fitted: %d items, below MIN_TYPE_N=%d, temperature stays 1.0"
-                                 % (items, min_type_n), {"items": items, "issues": issues})
+            continue
+        # Persisted issues are the authoritative limitation text (#933 writes
+        # not-fitted/below-floor/clamped/unchanged-fit there); we do not keep a
+        # second numeric source of truth.
+        issues = entry.get("issues")
+        if not isinstance(issues, list):
+            types[name] = _entry(UNKNOWN, "calibration entry has no issues list; cannot tell limitations")
         elif issues:
-            insufficient = [i for i in issues if "fitted on only" in i or "clamp" in i or "unchanged at 1.0" in i]
-            if insufficient:
-                types[name] = _entry(INSUFFICIENT, "fitted with evidence limitations: " + "; ".join(issues),
-                                     {"items": items, "issues": issues})
-            else:
-                types[name] = _entry(PRESENT, "fitted; issues recorded: " + "; ".join(issues),
-                                     {"items": items, "issues": issues, "temperature": entry.get("temperature")})
-        elif items < calib_warn_n:
-            types[name] = _entry(INSUFFICIENT, "fitted on only %d items, below CALIB_WARN_N=%d"
-                                 % (items, calib_warn_n), {"items": items, "issues": issues})
+            types[name] = _entry(INSUFFICIENT, "fitted with recorded limitations: " + "; ".join(str(i) for i in issues),
+                                 {"items": items, "issues": issues})
         else:
-            types[name] = _entry(PRESENT, "fitted on %d items with no recorded issues" % items,
+            types[name] = _entry(PRESENT, "fitted with no recorded issues on %d items" % items,
                                  {"items": items, "temperature": entry.get("temperature")})
     present = sum(1 for t in types.values() if t["state"] == PRESENT)
     overall = PRESENT if types and present == len(types) else (
         MISSING if types and all(t["state"] == MISSING for t in types.values()) else INSUFFICIENT)
     return {
         "state": overall,
-        "threshold_source": threshold_source,
         "types": types,
     }
 
@@ -110,24 +90,41 @@ def inspect_report(report: Dict[str, Any]) -> Dict[str, Any]:
     return {"state": overall, "fields": fields}
 
 
+_IDENTITY_CONFLICT_KEYS = ("dataset_sha256", "questions_sha256")
+
+
+def _field(config_like: Any, key: str) -> Any:
+    if not isinstance(config_like, dict):
+        return None
+    if config_like.get(key) is not None:
+        return config_like.get(key)
+    nested = config_like.get("training")
+    if isinstance(nested, dict):
+        for inner in (nested.get("laya_train"),):
+            if isinstance(inner, dict) and inner.get(key) is not None:
+                return inner.get(key)
+    return None
+
+
 def relate(config: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
-    """Deterministic checkpoint <-> report relationship. Never infers from names/paths."""
+    """Deterministic checkpoint <-> report relationship.
+
+    v1 is deliberately conservative: it emits INCOMPARABLE only when both artifacts
+    expose the same deterministic identity key with conflicting values, and it never
+    infers a PRESENT match from `laya_version` (which names the software, not the
+    checkpoint). Everything else is UNKNOWN -- current artifacts expose no immutable
+    shared checkpoint identity.
+    """
     report_config = report.get("config") if isinstance(report.get("config"), dict) else {}
-    training = config.get("training") if isinstance(config.get("training"), dict) else {}
-    laya_train = training.get("laya_train") if isinstance(training.get("laya_train"), dict) else {}
     conflicts = []
-    matches = []
-    # Only compare keys that exist on both sides with a real value.
-    for key in ("laya_version",):
-        a = laya_train.get(key) or config.get(key)
-        b = report_config.get(key) or (report.get("config") or {}).get("checkpoint", {}).get("laya")
-        if a is not None and b is not None:
-            (matches if str(a) == str(b) else conflicts).append(key)
+    for key in _IDENTITY_CONFLICT_KEYS:
+        a = _field(config, key)
+        b = _field(report_config, key)
+        if a is not None and b is not None and str(a) != str(b):
+            conflicts.append(key)
     if conflicts:
         return _entry(INCOMPARABLE, "checkpoint and report disagree on: " + ", ".join(conflicts))
-    if matches:
-        return _entry(PRESENT, "checkpoint and report agree on: " + ", ".join(matches))
-    return _entry(UNKNOWN, "no shared identity field between this checkpoint config and this report")
+    return _entry(UNKNOWN, "no immutable shared checkpoint identity between this checkpoint artifact and the report")
 
 
 def inspect_checkpoint(checkpoint_dir: str, report_path: Optional[str] = None) -> Dict[str, Any]:
@@ -153,7 +150,7 @@ def inspect_checkpoint(checkpoint_dir: str, report_path: Optional[str] = None) -
 def format_summary(result: Dict[str, Any]) -> str:
     lines: List[str] = ["evidence summary for %s" % result["checkpoint"]]
     cal = result["calibration"]
-    lines.append("calibration: %s (thresholds: %s)" % (cal["state"], cal.get("threshold_source", "n/a")))
+    lines.append("calibration: %s" % cal["state"])
     for name, t in (cal.get("types") or {}).items():
         lines.append("  %-24s %s -- %s" % (name, t["state"], t["reason"]))
     if cal.get("state") == UNKNOWN and "reason" in cal:

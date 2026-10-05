@@ -80,9 +80,11 @@ check("identity at top level still read", evidence.inspect_report(toplevel)["sta
 # ------------------------------------------------------ relationship
 config = {"training": {"laya_train": {"laya_version": "0.3.28"}}}
 match = evidence.relate(config, {"config": {"laya_version": "0.3.28"}})
-check("agreeing laya_version -> PRESENT", match["state"], evidence.PRESENT)
+check("same laya_version alone must NOT prove PRESENT", match["state"], evidence.UNKNOWN)
 conflict = evidence.relate(config, {"config": {"laya_version": "0.3.20"}})
-check("disagreeing laya_version -> INCOMPARABLE", conflict["state"], evidence.INCOMPARABLE)
+check("different laya_version must NOT become INCOMPARABLE", conflict["state"], evidence.UNKNOWN)
+conflict_ds = evidence.relate({"dataset_sha256": "a"}, {"config": {"dataset_sha256": "b"}})
+check("deterministic identity conflict -> INCOMPARABLE", conflict_ds["state"], evidence.INCOMPARABLE)
 unknown = evidence.relate(config, {"config": {}})
 check("no shared identity field -> UNKNOWN", unknown["state"], evidence.UNKNOWN)
 
@@ -121,7 +123,7 @@ _BLOCK = (
     "from laya import evals_cli, evidence\n"
     "rc = evals_cli.main(['evidence', '--checkpoint', ckpt])\n"
     "res = evidence.inspect_checkpoint(ckpt)\n"
-    "print('RC', rc, 'THRESH', res['calibration']['threshold_source'], 'TORCH', 'torch' in sys.modules)\n"
+    "print('RC', rc, 'TORCH', 'torch' in sys.modules)\n"
 )
 proc = subprocess.run([sys.executable, "-c", _BLOCK], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       capture_output=True, text=True, timeout=120)
@@ -129,7 +131,6 @@ print(proc.stdout.strip(), proc.stderr.strip()[-300:])
 out = proc.stdout
 check_true("evidence CLI works with torch blocked", "RC 0" in out)
 check_true("torch not imported when blocked", "TORCH False" in out)
-check_true("threshold fallback used when torch blocked", "documented fallback" in out)
 
 if FAIL:
     print("\nFAILURES:", FAIL)
