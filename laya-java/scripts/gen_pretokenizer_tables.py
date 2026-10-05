@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record the GPT-2 pre-tokenizer's letter and number classes FROM THE REFERENCE, as Java source.
+r"""Record the GPT-2 pre-tokenizer's letter and number classes FROM THE REFERENCE, as Java source.
 
 WHY THIS EXISTS. The GPT-2 pre-tokenizer pattern is
 
@@ -20,8 +20,16 @@ and the same jar gives different ids on a different JDK.
 
 So the classes are recorded here from the reference and compiled in, which is what every other
 table in this port does. The probe is behavioural rather than a property lookup, because the
-property is not exposed: a code point is a LETTER if "<cp>'s" leaves "'s" as its own piece, and a
-NUMBER if "1<cp>" stays one piece. Both follow from the pattern above.
+property is not exposed. A code point is a LETTER if "a<cp>" stays ONE piece and a NUMBER if
+"1<cp>" stays one piece: the only way the first match can reach past the "a" is ` ?\p{L}+`
+consuming the code point, and past the "1" is ` ?\p{N}+`, so one piece means membership and two
+means non-membership, with no third reading.
+
+An earlier probe asked instead whether "<cp>'s" leaves "'s" as its own piece. That is NOT a test
+of membership: it is true for every code point that fails to absorb the apostrophe, which includes
+every whitespace code point and every digit. It marked TAB, LF, CR, NBSP, U+2007 and all 1,911
+digits as letters, so a letter run swallowed the inner whitespace of "a  b\t\tc" and the scanner
+returned 11 ids where the reference returns 14.
 
     python laya-java/scripts/gen_pretokenizer_tables.py --tokenizer <path/to/tokenizer.json>
     python laya-java/scripts/gen_pretokenizer_tables.py --check --tokenizer <path>
@@ -46,7 +54,7 @@ def classes_from_reference(tokenizer_path):
     pre = Tokenizer.from_file(tokenizer_path).pre_tokenizer
     letters, numbers = [], []
     for name, probe, judge in (
-        ("letter", lambda ch: ch + "'s", lambda pieces: pieces[-1][0] == "'s"),
+        ("letter", lambda ch: "a" + ch, lambda pieces: len(pieces) == 1),
         ("number", lambda ch: "1" + ch, lambda pieces: len(pieces) == 1),
     ):
         runs, start = [], None
@@ -54,8 +62,10 @@ def classes_from_reference(tokenizer_path):
             hit = False
             if cp not in SURROGATES:
                 ch = chr(cp)
-                # A whitespace or control code point can make the probe degenerate; the judge
-                # below is written so that only a genuine class membership answers true.
+                # Both probes are anchored by a character of the class being tested, so a
+                # second piece means the code point is outside it. Nothing else can join the
+                # anchor, which is what makes the judge a membership test rather than a
+                # statement about the apostrophe.
                 try:
                     hit = judge(pre.pre_tokenize_str(probe(ch)))
                 except Exception:
