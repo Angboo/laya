@@ -237,8 +237,6 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="checkpoint directory containing rl_agent_config.json")
     evidence_cmd.add_argument("--report", default=None,
                               help="an existing laya-evals report JSON")
-    evidence_cmd.add_argument("--json", dest="json_out", default=None,
-                              help="write the full inspection JSON to this path")
 
     return parser
 
@@ -452,9 +450,6 @@ def _cmd_evidence(args) -> int:
         print("laya-evals: %s" % exc, file=sys.stderr)
         return 2
     print(evidence.format_summary(result))
-    if args.json_out:
-        with open(args.json_out, "w", encoding="utf-8") as handle:
-            json.dump(result, handle, ensure_ascii=False, indent=2, sort_keys=True)
     return 0
 
 

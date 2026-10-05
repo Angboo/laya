@@ -400,7 +400,7 @@ what evidence exists, what is missing, and what is insufficient. It loads no mod
 does not require torch.
 
 ```bash
-laya-evals evidence --checkpoint ./my-checkpoint [--report report.json] [--json out.json]
+laya-evals evidence --checkpoint ./my-checkpoint [--report report.json]
 ```
 
 A checkpoint directory must contain `rl_agent_config.json`. Calibration evidence is derived from
