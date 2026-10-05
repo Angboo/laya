@@ -310,6 +310,48 @@ class LossTests(unittest.TestCase):
                 bad.validate()
 
 
+class TrainingLoopTests(unittest.TestCase):
+    def test_partial_accumulation_window_averages_its_own_steps(self):
+        class ScalarModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = torch.nn.Identity()
+                self.value = torch.nn.Parameter(torch.tensor(0.0))
+
+        model = ScalarModel()
+        tok = type("Tokenizer", (), {"pad_token_id": 0})()
+        item = {"q": {"t": "choice"}, "k": 2}
+        batch = {
+            "marker_mask": torch.ones((1, 1), dtype=torch.bool),
+            "target": torch.ones((1, 1)),
+        }
+        config = TrainConfig(
+            epochs=1,
+            micro_batch=1,
+            grad_accum=2,
+            head_lr=1.0,
+            min_lr=1.0,
+            weight_decay=0.0,
+            grad_clip=100.0,
+            loss="soft-ce",
+            freeze_encoder=True,
+            amp=False,
+            log_every=0,
+        )
+
+        with patch("laya.train.encode_item", return_value={}), \
+                patch("laya.train.collate_items", return_value=batch), \
+                patch("laya.train._forward", side_effect=lambda current, *_args: current.value), \
+                patch("laya.train.soft_ce_loss", side_effect=lambda logits, *_args: logits), \
+                patch("laya.train.torch.optim.AdamW",
+                      side_effect=lambda groups, weight_decay: torch.optim.SGD(
+                          groups, weight_decay=weight_decay)):
+            train_model(model, tok, [item] * 3, config, torch.device("cpu"), 1, 1)
+
+        # The full two-step window and the final one-step window each contribute one update.
+        self.assertAlmostEqual(model.value.item(), -2.0)
+
+
 class EndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

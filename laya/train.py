@@ -408,7 +408,9 @@ def train_model(model, tok, items: Sequence[Dict[str, Any]], config: TrainConfig
                                  config.rl_samples, config.w_sph, config.w_rps)
             else:
                 loss = soft_ce_loss(logits, target, mask)
-            scaled = loss / config.grad_accum
+            window_start = (n_steps // config.grad_accum) * config.grad_accum
+            window_size = min(config.grad_accum, steps_per_epoch - window_start)
+            scaled = loss / window_size
             if scaler is not None:
                 scaler.scale(scaled).backward()
             else:
