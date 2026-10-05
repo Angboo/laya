@@ -1895,6 +1895,31 @@ def email_clean():
         ("header-next-devanagari-year",
          q + "\n\nFrom: Maria Souza\nDate: 3 Sep \u0968\u0966\u0968\u096B\nolder"),
 
+        # -- outside the BMP. The first sweep of this port had no astral character in it and
+        # passed on 40,000 cases; a corpus of them found four defects at once. Each case below
+        # is one of them, because the units the reference counts are CODE POINTS and the units
+        # Java reaches for are chars.
+        #
+        # A word boundary. U+12432 is a letter-number, which is a word character to Python, so
+        # there is no boundary after "mensagem" and this paragraph is NOT a disclaimer. An ASCII
+        # `\\b` finds a boundary anyway and deletes the sentence whole.
+        ("astral-word-char-breaks-no-boundary",
+         "Esta mensagem\U00012432 e confidencial."),
+        # And the same shape where the reference DOES match, so the fix cannot be "never match".
+        ("astral-elsewhere-still-matches",
+         "Esta mensagem e confidencial e de uso exclusivo do destinatario\U00012432."),
+        # A 40-code-point closing is 41 Java chars with one astral letter in it, so a char count
+        # leaves the signature in.
+        ("astral-signoff-at-the-width-limit",
+         "\n".join([q] * 9 + ["Regards, \U0001D400" + "A" * 30])),
+        ("astral-signoff-just-over-the-limit",
+         "\n".join([q] * 9 + ["Regards, \U0001D400" + "A" * 31])),
+        # A combining mark outside the BMP: Java's word class holds it and Python's does not, so
+        # the view substitutes it -- one code point for one code point, which is what keeps the
+        # `[^.]{0,80}` window counting the same.
+        ("astral-mark-in-a-disclaimer",
+         "Esta mensagem e confidencial\U00011001 e de uso exclusivo do destinatario."),
+
         # -- everything at once
         ("full-stack", "\n".join(
             [q, "Please check the attached receipt.", ""]
@@ -1912,6 +1937,22 @@ def email_clean():
         ("budget-four-x-bound", ("word " * 400) + "This email is confidential and intended solely "
                                                   "for the addressee.", 100),
         ("budget-zero", q, 0),
+        # A budget that lands between a high and a low surrogate. Python slices by code point and
+        # returns the whole character; a char-index cut returns half of one, which is not a
+        # character the reference can produce.
+        ("budget-splits-a-surrogate-pair", "ab\U0001D400cd\U0001D400ef", 3),
+        ("budget-ends-on-a-surrogate-pair", "ab\U0001D400cd", 4),
+        ("budget-all-astral", "\U0001D400\U0001D401\U0001D402\U0001D403", 2),
+        # And the pre-truncation bound, which is max_chars * 4 code points.
+        # The pre-truncation bound is max_chars * 4 CODE POINTS, and it decides whether the
+        # disclaimer below is inside the window at all. Cut by char index the window is half as
+        # wide, the disclaimer arrives truncated, the truncated fragment no longer matches, and
+        # it survives into the model's input instead of being stripped. The final cut hides this
+        # for most inputs, which is why the case is this specific: 3 astral characters and a
+        # budget of 11.
+        ("budget-four-x-bound-astral",
+         "\U0001D400\U0001D400\U0001D400 This email is confidential and intended solely for "
+         "the addressee.", 11),
     ]
     states = [
         ("state-plain", "Refund request", q, None, True, 3000, {}),

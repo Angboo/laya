@@ -401,6 +401,31 @@
       "result": "I cannot log in and need a password reset."
     },
     {
+      "name": "astral-word-char-breaks-no-boundary",
+      "body": "Esta mensagem𒐲 e confidencial.",
+      "result": "Esta mensagem𒐲 e confidencial."
+    },
+    {
+      "name": "astral-elsewhere-still-matches",
+      "body": "Esta mensagem e confidencial e de uso exclusivo do destinatario𒐲.",
+      "result": ""
+    },
+    {
+      "name": "astral-signoff-at-the-width-limit",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, 𝐀AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
+    },
+    {
+      "name": "astral-signoff-just-over-the-limit",
+      "body": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, 𝐀AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "result": "I cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nRegards, 𝐀AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "astral-mark-in-a-disclaimer",
+      "body": "Esta mensagem e confidencial𑀁 e de uso exclusivo do destinatario.",
+      "result": ""
+    },
+    {
       "name": "full-stack",
       "body": "I cannot log in and need a password reset.\nPlease check the attached receipt.\n\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nAtenciosamente,\nAna Souza\nEnviado do meu iPhone\n\nEsta mensagem e confidencial e de uso exclusivo do destinatario.\n\nEm ter., 3 de set. de 2025, Bruno <bruno@x.com> escreveu:\n> mensagem antiga",
       "result": "I cannot log in and need a password reset.\nPlease check the attached receipt.\n\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset.\nI cannot log in and need a password reset."
@@ -435,6 +460,30 @@
       "name": "budget-zero",
       "body": "I cannot log in and need a password reset.",
       "max_chars": 0,
+      "result": ""
+    },
+    {
+      "name": "budget-splits-a-surrogate-pair",
+      "body": "ab𝐀cd𝐀ef",
+      "max_chars": 3,
+      "result": "ab𝐀"
+    },
+    {
+      "name": "budget-ends-on-a-surrogate-pair",
+      "body": "ab𝐀cd",
+      "max_chars": 4,
+      "result": "ab𝐀c"
+    },
+    {
+      "name": "budget-all-astral",
+      "body": "𝐀𝐁𝐂𝐃",
+      "max_chars": 2,
+      "result": "𝐀𝐁"
+    },
+    {
+      "name": "budget-four-x-bound-astral",
+      "body": "𝐀𝐀𝐀 This email is confidential and intended solely for the addressee.",
+      "max_chars": 11,
       "result": ""
     }
   ],

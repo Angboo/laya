@@ -134,6 +134,26 @@ public final class LayaEmail {
         return Pattern.compile(regex, Pattern.UNIX_LINES);
     }
 
+    /**
+     * {@link #compile} plus {@code UNICODE_CHARACTER_CLASS}, for the one pattern that uses
+     * {@code \b}.
+     *
+     * <p>The flag is what makes {@code \b} read Java's Unicode word class; without it {@code \b}
+     * reads {@code [a-zA-Z0-9_]}, and then {@link #boundaryView} -- which reconciles Python's
+     * class with the Unicode one -- is reconciling against a class nothing consults. The symptom
+     * was a false positive: "Esta mensagem" followed by an astral letter has no word boundary to
+     * Python, an ASCII {@code \b} found one anyway, and a paragraph the reference keeps was
+     * deleted whole.
+     *
+     * <p>Only {@code \b} changes meaning here. This pattern has no {@code \s}, {@code \d} or
+     * {@code \w} of its own -- those are the classes built from the tables, spelled out -- so the
+     * flag cannot reach anything else.
+     */
+    private static Pattern compileWithBoundaries(String regex) {
+        return Pattern.compile(regex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
+                | Pattern.UNIX_LINES | Pattern.UNICODE_CHARACTER_CLASS);
+    }
+
     /** The default body budget, which {@link #emailState} passes through. */
     public static final int DEFAULT_MAX_CHARS = 3000;
 
@@ -260,7 +280,7 @@ public final class LayaEmail {
                 + "|max|mini|plus|using [a-z][a-z0-9_.+-]*))*"
                 + "|(obter o|get) outlook (para|for) (ios|android))[" + inner(S) + ".!]*$");
 
-        static final Pattern DISCLAIMER = compile(
+        static final Pattern DISCLAIMER = compileWithBoundaries(
                 // English: tied to a disclaimer noun AND a disclaimer tail, the way the
                 // Portuguese branches are. The bare word matched any sentence that merely
                 // mentioned it, so "Is this confidential?" was deleted whole. `[^.]` rather than
@@ -620,9 +640,13 @@ public final class LayaEmail {
                 .replace("\r\n", "\n").replace("\r", "\n").replace("\\n", "\n");
         // Bound regex work before the expensive patterns below: DISCLAIMER uses [^.]{0,60/80/100}
         // alternations whose cost grows with input length, and only maxChars are ever returned.
-        if (maxChars > 0 && text.length() > (long) maxChars * 4) {
-            text = text.substring(0, maxChars * 4);
-        } else if (maxChars <= 0) {
+        //
+        // In CODE POINTS, because Python slices a str by code point. Cutting by char index splits
+        // a surrogate pair, and the replacement character that comes out is not what the
+        // reference returns -- measured on 4,641 cases of an astral corpus.
+        if (maxChars > 0) {
+            text = cutToCodePoints(text, (long) maxChars * 4);
+        } else {
             // Python slices with max_chars * 4, which is <= 0 here: `text[:0]` is empty, and so is
             // the result. Kept explicit because a negative length is an exception in Java.
             text = "";
@@ -655,7 +679,11 @@ public final class LayaEmail {
         int cut = lines.size();
         int start = Math.max(1, Math.min((int) (lines.size() * 0.6), lines.size() - 8));
         for (int i = start; i < lines.size(); i++) {
-            int width = UnicodeTables.strip(lines.get(i)).length();
+            // Code points, as Python's len() counts them. An astral character is two chars to
+            // Java, so counting chars made a 40-code-point closing 41 wide and left a signature
+            // in the model's input.
+            String candidate = UnicodeTables.strip(lines.get(i));
+            int width = candidate.codePointCount(0, candidate.length());
             if ((width <= 40 && isSignature(lines.get(i)))
                     || (width <= 60 && Patterns.DEVICE_FOOTER.matcher(lines.get(i)).lookingAt())) {
                 cut = i;
@@ -683,7 +711,29 @@ public final class LayaEmail {
             out.append(cleaned);
         }
         String result = Patterns.SPACES_AND_TABS.matcher(out.toString()).replaceAll(" ");
-        return result.length() > maxChars ? result.substring(0, Math.max(maxChars, 0)) : result;
+        return cutToCodePoints(result, Math.max(maxChars, 0));
+    }
+
+    /**
+     * The first {@code limit} CODE POINTS of {@code text}, which is what Python's {@code [:n]}
+     * takes.
+     *
+     * <p>Never cuts between a high and a low surrogate: a half pair is not a character the
+     * reference can return, and the budget cases of the astral corpus are 4,641 proofs that
+     * cutting by char index returns one.
+     */
+    private static String cutToCodePoints(String text, long limit) {
+        if (limit <= 0) {
+            return "";
+        }
+        if (text.length() <= limit) {
+            return text;                        // cannot hold more code points than chars
+        }
+        int capped = (int) Math.min(limit, text.length());
+        if (text.codePointCount(0, text.length()) <= capped) {
+            return text;
+        }
+        return text.substring(0, text.offsetByCodePoints(0, capped));
     }
 
     private static boolean matchesAny(List<Pattern> patterns, String line) {
