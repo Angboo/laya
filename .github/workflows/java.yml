@@ -70,7 +70,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 440 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 480 --allow-aborted
 
       # LAST, deliberately. This gate and the tests are independent signals -- the tests compare
       # against the COMMITTED fixture, this compares the committed fixture against a fresh
@@ -141,11 +141,19 @@ jobs:
       # them under the hosted tool cache, which Gradle's own directory scan does not look in, so
       # `fromEnv` names the variables it exports.
       #
-      # What makes a misconfiguration LOUD is the pair below it: `auto-download=false` plus
-      # `launcherFor`, which fails the build outright -- "Cannot find a Java installation on your
-      # machine matching: {languageVersion=N}" -- rather than quietly running on the compile JDK
-      # and reporting a pass for the wrong JVM. `TestJvmVersionTest` then asserts the same thing
-      # from inside the suite, because the JUnit XML cannot record it.
+      # These are `-P`, not `-D`, and that is not a style choice: Gradle ignores
+      # `org.gradle.java.installations.*` given as `-D`. Measured on this build --
+      # `auto-detect=false` as `-D` left all 8 locally detected toolchains in the
+      # `javaToolchains` report; as `-P` it dropped to 3. With `-D` the lane still passed, but
+      # only because setup-java makes the LAST java-version the JAVA_HOME, so Gradle's
+      # "current JVM" supplier happened to provide the right launcher -- a coincidence, and the
+      # exact fragility naming the variables was meant to remove.
+      #
+      # With `-P` the three together make a misconfiguration loud: `auto-detect=false` means the
+      # only installations are the two named, and `launcherFor` with `auto-download=false` then
+      # fails the build outright -- "Cannot find a Java installation on your machine matching:
+      # {languageVersion=N}" -- instead of quietly running on the compile JDK. Verified both
+      # ways: without `fromEnv` the build exits 1 with that message; with it, 0.
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
@@ -157,19 +165,28 @@ jobs:
         working-directory: laya-java
         run: >
           ./gradlew --no-daemon
-          -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_17_${{ runner.arch }},JAVA_HOME_${{ matrix.jdk }}_${{ runner.arch }}
-          -Dorg.gradle.java.installations.auto-download=false
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_${{ runner.arch }},JAVA_HOME_${{ matrix.jdk }}_${{ runner.arch }}
+          -Porg.gradle.java.installations.auto-detect=false
+          -Porg.gradle.java.installations.auto-download=false
           -PtestJavaVersion=${{ matrix.jdk }}
           test
       # That the tests ran on the RIGHT JVM is asserted inside the suite, by
       # `TestJvmVersionTest` against the `laya.test.expectedJavaVersion` the build sets from
       # `-PtestJavaVersion`. It cannot be checked from here: Gradle writes `<properties/>` empty
       # into the JUnit XML, so the report cannot tell 17 from 24.
-      - name: Model-free suite was not vacuous
+      #
+      # `--require-passed` is what stops that assertion being optional. The test is
+      # `@EnabledIfSystemProperty`, so if `-PtestJavaVersion` ever stops reaching the build it is
+      # SKIPPED rather than failed -- and `--allow-aborted`, which this lane needs because the
+      # checkpoint-backed factories abort here, would forgive it. Measured: with the flag
+      # dropped, Gradle exits 0 and the floor alone exits 0 on 488 tests, having run JDK 17 twice
+      # and reported it as two JDKs. With `--require-passed` it exits 1.
+      - name: Model-free suite was not vacuous, and ran on the right JVM
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 440 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 480 --allow-aborted
+          --require-passed TestJvmVersionTest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
         with:
@@ -238,19 +255,33 @@ jobs:
           pip install "torch==2.14.0" --index-url https://download.pytorch.org/whl/cpu
           pip install -r laya-dotnet/tools/requirements-regen.txt
 
-      # The export is the slow part (download, trace, verify) and depends only on the pinned
-      # revision, the exporter and the model definition, so that is the cache key.
-      - name: Cache pinned Hugging Face downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/huggingface/hub
-          key: laya-java-hf-${{ runner.os }}-${{ hashFiles('laya-java/scripts/prepare_checkpoint.py') }}
+      # The export is the slow part (download, trace, verify) and depends on the PINNED REVISION
+      # as well as the exporter and the model definition, so `prepare_checkpoint.py` -- which is
+      # where HF_REVISION lives -- is part of the key. It was not, and that was not cosmetic:
+      # `prepare_checkpoint.py` short-circuits on an existing graph, so a revision bump changed
+      # nothing in the old key, the graph traced from the PREVIOUS revision was restored and
+      # reused, and `predict.json` was then recorded from that same stale graph. Both sides of
+      # the comparison agreed, nine tests passed, and the cell was green having never measured
+      # the pinned checkpoint -- with the drift step showing `predict.json` unchanged, which
+      # reads as reassurance. The script now also stamps the revision beside the graph and
+      # re-exports when it differs, so this key is defence in depth rather than the only guard.
+      #
+      # There is NO Hugging Face download cache, deliberately. There was one, on
+      # `~/.cache/huggingface/hub`, and it never held anything: `prepare_checkpoint.py` passes
+      # `local_dir` to `snapshot_download`, which writes the files there and not into the hub
+      # cache. Measured against the pinned huggingface_hub -- with a `revision` pinned, as here,
+      # the hub cache is not even created; without one it gets a `refs/main` pointer and zero
+      # blobs. So the step always missed on restore, saved nothing, and read like a download
+      # cost that was being avoided when it was being paid in full every run. Making it real
+      # means giving `snapshot_download` a `cache_dir`, or caching `.work/checkpoints` (which
+      # the revision stamp now makes safe) and accepting a multi-gigabyte entry for the
+      # weight-bearing cell; neither is this change's call to make.
       - name: Cache the exported graph
         if: ${{ matrix.graph }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: laya-java/.work/onnx
-          key: laya-java-onnx-${{ runner.os }}-${{ hashFiles('scripts/export_onnx.py', 'laya/common.py', 'laya-dotnet/tools/requirements-regen.txt') }}
+          key: laya-java-onnx-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('laya-java/scripts/prepare_checkpoint.py', 'scripts/export_onnx.py', 'laya/common.py', 'laya-dotnet/tools/requirements-regen.txt') }}
 
       - name: Prepare the checkpoints this cell owns
         run: |
@@ -300,7 +331,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests ${{ matrix['min-tests'] }}
+          laya-java/laya-java/build/test-results/test --min-tests ${{ matrix.min-tests }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
