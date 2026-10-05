@@ -508,6 +508,30 @@
       "result": ""
     },
     {
+      "name": "budget-negative-small",
+      "body": "I cannot log in and need a password reset.",
+      "max_chars": -5,
+      "result": "I cannot log in a"
+    },
+    {
+      "name": "budget-negative-one",
+      "body": "I cannot log in and need a password reset.",
+      "max_chars": -1,
+      "result": "I cannot log in and need a password r"
+    },
+    {
+      "name": "budget-negative-astral",
+      "body": "𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀",
+      "max_chars": -2,
+      "result": "𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀𝐀"
+    },
+    {
+      "name": "budget-negative-empties",
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "max_chars": -12,
+      "result": ""
+    },
+    {
       "name": "budget-splits-a-surrogate-pair",
       "body": "ab𝐀cd𝐀ef",
       "max_chars": 3,

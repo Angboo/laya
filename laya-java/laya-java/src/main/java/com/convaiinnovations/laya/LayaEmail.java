@@ -680,13 +680,11 @@ public final class LayaEmail {
         // In CODE POINTS, because Python slices a str by code point. Cutting by char index splits
         // a surrogate pair, and the half character that comes out is not what the reference
         // returns -- 4,641 of 20,000 astral bodies in a one-off differential sweep.
-        if (maxChars > 0) {
-            text = cutToCodePoints(text, (long) maxChars * 4);
-        } else {
-            // Python slices with max_chars * 4, which is <= 0 here: `text[:0]` is empty, and so is
-            // the result. Kept explicit because a negative length is an exception in Java.
-            text = "";
-        }
+        // Unconditional, because the helper is a no-op when the bound exceeds the length and
+        // because a NEGATIVE bound has a meaning of its own: Python drops the last |n| code
+        // points. The `len(text) > max_chars * 4` guard the reference writes is redundant once
+        // the slice is faithful -- it is always true for a negative bound anyway.
+        text = cutToCodePoints(text, (long) maxChars * 4);
         String[] source = text.split("\n", -1);
         List<String> lines = new ArrayList<>(source.length);
         for (int i = 0; i < source.length; i++) {
@@ -754,12 +752,21 @@ public final class LayaEmail {
             out.append(cleaned);
         }
         String result = Patterns.SPACES_AND_TABS.matcher(out.toString()).replaceAll(" ");
-        return cutToCodePoints(result, Math.max(maxChars, 0));
+        return cutToCodePoints(result, maxChars);
     }
 
     /**
-     * The first {@code limit} CODE POINTS of {@code text}, which is what Python's {@code [:n]}
-     * takes.
+     * Python's {@code text[:n]} in code points, for any {@code n} -- including a negative one,
+     * which drops the LAST {@code |n|} code points rather than returning nothing.
+     *
+     * <p>That sign is not a curiosity. {@code clean_email_body} slices twice, once at
+     * {@code max_chars * 4} and once at {@code max_chars}, and a negative budget runs through
+     * both: the reference answers {@code "I cannot log in a"} for a budget of -5 where this
+     * returned the empty string. 17 of 171 body-and-budget combinations differed, every one of
+     * them negative, and the test that was here asserted the empty string as correct.
+     *
+     * <p>The sibling port has the same semantics for free -- JavaScript's {@code slice} reads a
+     * negative end the way Python does -- which is why only this port needed the helper.
      *
      * <p>Never cuts between a high and a low surrogate: a half pair is not a character the
      * reference can return. Cutting by char index returned one, and a one-off differential sweep
@@ -769,17 +776,18 @@ public final class LayaEmail {
      * {@code fixtures/email.json}, each of which fails if this reverts to a char index.
      */
     private static String cutToCodePoints(String text, long limit) {
-        if (limit <= 0) {
-            return "";
-        }
-        if (text.length() <= limit) {
+        if (limit >= 0 && text.length() <= limit) {
             return text;                        // cannot hold more code points than chars
         }
-        int capped = (int) Math.min(limit, text.length());
-        if (text.codePointCount(0, text.length()) <= capped) {
+        int codePoints = text.codePointCount(0, text.length());
+        long end = limit < 0 ? codePoints + limit : Math.min(limit, codePoints);
+        if (end <= 0) {
+            return "";
+        }
+        if (end >= codePoints) {
             return text;
         }
-        return text.substring(0, text.offsetByCodePoints(0, capped));
+        return text.substring(0, text.offsetByCodePoints(0, (int) end));
     }
 
     private static boolean matchesAny(List<Pattern> patterns, String line) {
@@ -843,15 +851,18 @@ public final class LayaEmail {
      * drops it.
      *
      * @return a mutable, insertion-ordered map: {@code subject}, {@code body}, then
-     *         {@code from} if a sender was given, then the extras. An extra named
-     *         {@code subject}, {@code body} or {@code from} REPLACES that value and keeps the
-     *         original position, as Python's {@code dict.update} does; a null key is permitted,
-     *         again as the reference permits it. Both are input mutations rather than errors,
-     *         which is the reference's choice and is why neither is validated.
+     *         {@code from} if a sender was given, then the extras. An extra named {@code from}
+     *         replaces that value and keeps its position, as Python's {@code dict.update} does,
+     *         and a null key is permitted, again as the reference permits it -- both are input
+     *         mutations rather than errors, which is the reference's choice. An extra naming a
+     *         PARAMETER of this method is refused; see {@link #refuseReservedKeys}.
+     * @throws IllegalArgumentException if {@code extra} names {@code subject}, {@code body},
+     *         {@code sender}, {@code clean} or {@code max_chars}
      */
     public static Map<String, Object> emailState(String subject, String body, String sender,
                                                  boolean clean, int maxChars,
                                                  Map<String, Object> extra) {
+        refuseReservedKeys(extra);
         Map<String, Object> state = new LinkedHashMap<>();
         state.put("subject", UnicodeTables.strip(subject == null ? "" : subject));
         state.put("body", clean ? cleanEmailBody(body, maxChars) : (body == null ? "" : body));
@@ -868,6 +879,35 @@ public final class LayaEmail {
             }
         }
         return state;
+    }
+
+    /**
+     * Refuse an {@code extra} that names one of this method's own parameters.
+     *
+     * <p>In the reference these cannot be state fields at all: {@code subject}, {@code body} and
+     * {@code max_chars} raise a {@code TypeError}, and {@code sender} and {@code clean} bind the
+     * parameter instead. A Java {@code Map} has no such protection, so every one of them was
+     * being {@code put} into the state -- and {@code body} is the one that bites, because the
+     * state is model input and the value lands there UNCLEANED: no quoted history removed, no
+     * signature cut, no budget applied. A caller translating {@code email_state(**payload)} got
+     * silence where the reference gives an error.
+     *
+     * <p>Refusing all five rather than emulating the two that bind: a Java caller has explicit
+     * parameters for those, so an entry naming one is ambiguous rather than meaningful, and
+     * erroring is the direction that cannot ship the wrong thing to a model.
+     */
+    private static void refuseReservedKeys(Map<String, Object> extra) {
+        if (extra == null) {
+            return;
+        }
+        for (String reserved : List.of("subject", "body", "sender", "clean", "max_chars")) {
+            if (extra.containsKey(reserved)) {
+                throw new IllegalArgumentException(
+                        "extra may not contain \"" + reserved + "\": it names a parameter of "
+                        + "emailState, and the reference cannot put it in a state either. Pass it "
+                        + "as the argument instead.");
+            }
+        }
     }
 
     /**

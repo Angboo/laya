@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
@@ -65,7 +66,10 @@ final class EmailTest {
     private static final List<String> REQUIRED_BUDGETS = List.of(
             "budget-four-x-bound", "budget-splits-a-surrogate-pair",
             "budget-ends-on-a-surrogate-pair", "budget-all-astral",
-            "budget-four-x-bound-astral");
+            "budget-four-x-bound-astral",
+            // a negative budget is not a zero budget
+            "budget-negative-small", "budget-negative-one", "budget-negative-astral",
+            "budget-negative-empties");
 
     @SuppressWarnings("unchecked")
     private static List<Object> rows(String key) {
@@ -95,7 +99,7 @@ final class EmailTest {
                     () -> "the corpus lost the budget case " + required);
         }
         assertEquals(95, cleaned.size(), "cases were added or removed; update the count knowingly");
-        assertEquals(9, budgets.size(), "budget cases were added or removed");
+        assertEquals(13, budgets.size(), "budget cases were added or removed");
         assertEquals(7, names("states").size(), "state cases were added or removed");
     }
 
@@ -121,7 +125,7 @@ final class EmailTest {
     @DisplayName("every budget cuts where the reference cuts")
     List<DynamicTest> budgetsMatch() {
         List<Object> cases = rows("budgets");
-        assertEquals(9, cases.size(), "the budget cases changed size");
+        assertEquals(13, cases.size(), "the budget cases changed size");
         List<DynamicTest> tests = new ArrayList<>();
         for (Object entry : cases) {
             Map<String, Object> row = asMap(entry);
@@ -447,13 +451,54 @@ final class EmailTest {
     }
 
     @Test
-    @DisplayName("a non-positive budget returns nothing rather than throwing")
-    void nonPositiveBudget() {
-        // Python slices with max_chars * 4 and then max_chars, and a slice to a non-positive
-        // bound is empty. In Java a negative length is an exception, so the case is explicit.
-        assertEquals("", LayaEmail.cleanEmailBody("a message", 0));
-        assertEquals("", LayaEmail.cleanEmailBody("a message", -5));
+    @DisplayName("a negative budget drops the tail, as Python's slice does")
+    void negativeBudget() {
+        // This test used to assert the empty string for -5, which is what the port returned and
+        // is NOT what the reference returns. Python slices twice -- at `max_chars * 4` and at
+        // `max_chars` -- and a negative index drops the LAST |n| code points.
+        //
+        // Both slices apply, which is why a short body still empties: "a message" is 9 code
+        // points, `[: -12]` already takes everything. A body only survives a budget of -n if it
+        // is longer than 5n code points. Every expectation below was read off the reference, not
+        // reasoned about -- the first version of this test guessed "a mess" and was wrong.
+        assertEquals("", LayaEmail.cleanEmailBody("a message", 0), "zero really is empty");
         assertEquals("a", LayaEmail.cleanEmailBody("a message", 1));
+        assertEquals("", LayaEmail.cleanEmailBody("a message", -3),
+                "9 code points less 12 is nothing, before the second slice is reached");
+        assertEquals("", LayaEmail.cleanEmailBody("a message", -99));
+        assertEquals("I cannot log in a", LayaEmail.cleanEmailBody(
+                "I cannot log in and need a password reset.", -5),
+                "41 code points: the first slice keeps 21, the second drops 5 of those");
+        // code points, not chars, on the negative side too
+        assertEquals("\uD835\uDC00".repeat(10), LayaEmail.cleanEmailBody(
+                "\uD835\uDC00".repeat(20), -2),
+                "20 astral characters: the first slice keeps 12, the second drops 2");
+        assertEquals("", LayaEmail.cleanEmailBody("\uD835\uDC00".repeat(3), -1),
+                "and a short astral body empties the same way a short ASCII one does");
+    }
+
+    @Test
+    @DisplayName("an extra may not name a parameter of emailState")
+    void extraMayNotShadowAParameter() {
+        // `body` is the one that bites: the state is model input, so a silently accepted `body`
+        // extra ships an UNCLEANED body -- no quoted history removed, no signature cut, no
+        // budget. The reference cannot do this at all; `email_state(**{"body": x})` raises.
+        for (String reserved : List.of("subject", "body", "sender", "clean", "max_chars")) {
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put(reserved, "shadowed");
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> LayaEmail.emailState("S", "b", null, true, 3000, extra),
+                    () -> "an extra named " + reserved + " was accepted into the state");
+            assertTrue(refused.getMessage().contains(reserved),
+                    () -> "the refusal does not name the key: " + refused.getMessage());
+        }
+        // `from` is NOT reserved -- the reference lets it through, and it replaces the sender in
+        // place rather than being appended.
+        Map<String, Object> from = new LinkedHashMap<>();
+        from.put("from", "override@x.com");
+        Map<String, Object> state = LayaEmail.emailState("S", "b", "ana@x.com", true, 3000, from);
+        assertEquals(List.of("subject", "body", "from"), new ArrayList<>(state.keySet()));
+        assertEquals("override@x.com", state.get("from"));
     }
 
     @Test

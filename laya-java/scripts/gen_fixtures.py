@@ -1963,6 +1963,15 @@ def email_clean():
         ("budget-four-x-bound", ("word " * 400) + "This email is confidential and intended solely "
                                                   "for the addressee.", 100),
         ("budget-zero", q, 0),
+        # A NEGATIVE budget is not a zero budget. Python slices twice, at `max_chars * 4` and at
+        # `max_chars`, and a negative index drops the LAST |n| code points rather than everything
+        # -- so the reference answers with a tail-trimmed body where this port used to answer
+        # with nothing. Every one of the 17 differing body-and-budget combinations a review found
+        # was negative, and the Java test asserted the empty string as correct.
+        ("budget-negative-small", q, -5),
+        ("budget-negative-one", q, -1),
+        ("budget-negative-astral", "\U0001D400" * 20, -2),
+        ("budget-negative-empties", "x" * 60, -12),
         # A budget that lands between a high and a low surrogate. Python slices by code point and
         # returns the whole character; a char-index cut returns half of one, which is not a
         # character the reference can produce.
