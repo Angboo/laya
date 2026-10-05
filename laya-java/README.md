@@ -274,6 +274,27 @@ LAYA_ONNX_GRAPH=/path/to/model/laya.onnx \
   ./gradlew test
 ```
 
+A blank value counts as absent, so a CI cell that owns no graph can set `LAYA_ONNX_GRAPH=''`
+without turning an abort into a failure.
+
+### Testing on another JDK
+
+The artifact is compiled for 17 and the toolchain pins the **compiler** to 17, so installing a
+different JDK does not change what the tests run on. `-PtestJavaVersion` moves the test JVM only —
+the bytecode stays at release 17:
+
+```bash
+./gradlew test -PtestJavaVersion=24    # compiled for 17, executed on 24
+```
+
+This matters more here than in most ports. `\p{L}` and `\p{N}` in `java.util.regex` follow the
+JDK's own Unicode version, and `Character.isLetter` disagrees with itself across JDK 17 (Unicode
+13.0) and JDK 24 (Unicode 16.0) on 751 of the code points this port has to classify — 0 of 751 on
+one, 751 of 751 on the other. Everything Unicode-shaped is therefore compiled in from the
+reference, and this flag is how that is checked. `TestJvmVersionTest` asserts the tests really are
+running on the JDK that was asked for, because Gradle writes `<properties/>` empty into the JUnit
+XML and nothing downstream can tell 17 from 24.
+
 ## Parity: generated, not asserted
 
 `laya-java/fixtures/*.json` are generated **from** the Python package and committed. The drift check

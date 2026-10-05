@@ -102,19 +102,126 @@ jobs:
           name: java-build-diagnostics
           path: laya-java/laya-java/build/reports
 
-  parity:
-    # ONE job, not a per-checkpoint matrix. The .NET lane matrixes over checkpoints because its
-    # goldens are per-checkpoint directories; these fixtures are not -- `tokenizer_ids.json`,
-    # `sequences.json` and `decode.json` each carry BOTH checkpoints' sections in one document, so
-    # a job holding only one of them can never regenerate them and `--strict` fails by
-    # construction. That is what happened on the first run of this lane.
-    #
-    # Only the checkpoint the end-to-end golden was recorded from needs a graph, so the other is
-    # fetched without its weights.
-    name: jvm parity
+
+  # The SDK is compiled for 17 and the toolchain pins the COMPILER to 17, so a lane that merely
+  # installs another JDK still compiles and tests on 17 and proves nothing. `-PtestJavaVersion`
+  # moves only the JVM that executes the tests; `options.release` keeps the bytecode at 17, so
+  # what a consumer downloads is byte-for-byte the same artifact.
+  #
+  # This axis exists because a JDK-version dependency shipped. `\p{L}` and `\p{N}` in
+  # java.util.regex follow the JDK's own Unicode version, so the pre-tokenizer gave different
+  # token ids from the same jar on different JDKs. Corretto 17 carries Unicode 13.0 and Corretto
+  # 24 carries 16.0: `Character.isLetter` disagrees with itself across them on 751 of the code
+  # points this port classifies, answering 0 of 751 on one and 751 of 751 on the other.
+  #
+  # The model-free suite is the right scope for it, because the JDK-sensitive tests are exactly
+  # the ones that need no model: the Unicode tables (a sha256 over all 1,114,112 code points),
+  # the White_Space predicate, the pre-tokenizer's letter and number classes, CPython's float
+  # repr and the rounding rules. All of those are compiled in FROM the reference, so the answer
+  # must not move when the host JDK's own Unicode does -- and that is what this measures.
+  jdk-matrix:
+    name: jvm model-free tests (jdk ${{ matrix.jdk }})
     runs-on: ubuntu-latest
     continue-on-error: true   # advisory: see the header
-    timeout-minutes: 75
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # 17 is covered by the build job above. 21 is the LTS most consumers are on; 24 is the
+        # newest with a different Unicode version from 17, and is the one verified by hand.
+        jdk: ["21", "24"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # For check_test_results.py only -- it is standard library, so there is nothing to install.
+      # Pinned rather than relying on whatever `python` the runner image happens to expose.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      # Both: 17 for the compiler toolchain, the matrix JDK for the test JVM. setup-java puts
+      # them under the hosted tool cache, which Gradle's own directory scan does not look in, so
+      # `fromEnv` names the variables it exports.
+      #
+      # What makes a misconfiguration LOUD is the pair below it: `auto-download=false` plus
+      # `launcherFor`, which fails the build outright -- "Cannot find a Java installation on your
+      # machine matching: {languageVersion=N}" -- rather than quietly running on the compile JDK
+      # and reporting a pass for the wrong JVM. `TestJvmVersionTest` then asserts the same thing
+      # from inside the suite, because the JUnit XML cannot record it.
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            ${{ matrix.jdk }}
+          cache: gradle
+      - name: Tests that need no model, on JDK ${{ matrix.jdk }}
+        working-directory: laya-java
+        run: >
+          ./gradlew --no-daemon
+          -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_17_${{ runner.arch }},JAVA_HOME_${{ matrix.jdk }}_${{ runner.arch }}
+          -Dorg.gradle.java.installations.auto-download=false
+          -PtestJavaVersion=${{ matrix.jdk }}
+          test
+      # That the tests ran on the RIGHT JVM is asserted inside the suite, by
+      # `TestJvmVersionTest` against the `laya.test.expectedJavaVersion` the build sets from
+      # `-PtestJavaVersion`. It cannot be checked from here: Gradle writes `<properties/>` empty
+      # into the JUnit XML, so the report cannot tell 17 from 24.
+      - name: Model-free suite was not vacuous
+        if: ${{ !cancelled() }}
+        run: >
+          python laya-java/scripts/check_test_results.py
+          laya-java/laya-java/build/test-results/test --min-tests 440 --allow-aborted
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ failure() }}
+        with:
+          name: java-jdk${{ matrix.jdk }}-diagnostics
+          path: laya-java/laya-java/build/reports
+
+  # Split along the axis that actually costs something: whether the cell needs an exported ONNX
+  # graph. Three of the four checkpoint-backed test classes need only `tokenizer.json` and
+  # `rl_agent_config.json`, which are kilobytes; one needs the traced graph, which is gigabytes
+  # and is the whole runtime of this lane. Running them in one job made a 13-second check wait on
+  # a 40-minute export.
+  #
+  # NOT split per checkpoint, which is where the .NET lane splits. Two reasons, both measured.
+  # The fixtures are not per-checkpoint documents -- `tokenizer_ids.json`, `sequences.json` and
+  # `decode.json` each carry BOTH checkpoints' sections in one file, so a job holding one of them
+  # cannot regenerate any of the three and `--strict` fails by construction; that is what
+  # happened on the first run of this lane. And the Java tests assert that both checkpoints' cases
+  # are present, a floor that exists because a @TestFactory whose fixture key emptied used to
+  # generate zero assertions and still exit 0. Splitting per checkpoint would mean deleting that
+  # floor to buy nothing: the two tokenizers together are a few megabytes, so there is no export
+  # to parallelise away.
+  parity:
+    name: jvm parity (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    continue-on-error: true   # advisory: see the header
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Tokenizers and configs only -- no weights, nothing traced. The three families here
+          # are the ones whose builders read a checkpoint but never a graph.
+          - name: tokenizer
+            checkpoints: english multilingual
+            graph: false
+            families: --only tokenizer_ids.json --only sequences.json --only decode.json
+            tests: >-
+              --tests com.convaiinnovations.laya.tokenizer.TokenizerParityTest
+              --tests com.convaiinnovations.laya.sequence.SequenceParityTest
+              --tests com.convaiinnovations.laya.decode.DecoderParityTest
+              --tests com.convaiinnovations.laya.tokenizer.PreTokenizerTablesTest
+            min-tests: 175
+            timeout: 25
+          # The one cell that needs the traced graph, and the only checkpoint the end-to-end
+          # golden was recorded from.
+          - name: predict
+            checkpoints: multilingual
+            graph: true
+            families: --only predict.json
+            tests: --tests com.convaiinnovations.laya.PredictParityTest
+            min-tests: 9
+            timeout: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -139,57 +246,66 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: laya-java-hf-${{ runner.os }}-${{ hashFiles('laya-java/scripts/prepare_checkpoint.py') }}
       - name: Cache the exported graph
+        if: ${{ matrix.graph }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: laya-java/.work/onnx
           key: laya-java-onnx-${{ runner.os }}-${{ hashFiles('scripts/export_onnx.py', 'laya/common.py', 'laya-dotnet/tools/requirements-regen.txt') }}
 
-      # english: tokenizer and config only. The tokenizer and sequence fixtures need it, nothing
-      # here traces it, so its weights would be a few gigabytes of nothing.
-      - name: Prepare the english checkpoint (no weights, no graph)
-        run: python laya-java/scripts/prepare_checkpoint.py --checkpoint english --no-graph
-      # multilingual: the checkpoint the end-to-end golden is recorded from, so it needs the graph.
-      - name: Prepare the multilingual checkpoint and export its graph
-        run: python laya-java/scripts/prepare_checkpoint.py --checkpoint multilingual
+      - name: Prepare the checkpoints this cell owns
+        run: |
+          for c in ${{ matrix.checkpoints }}; do
+            if [ "${{ matrix.graph }}" = "true" ]; then
+              python laya-java/scripts/prepare_checkpoint.py --checkpoint "$c"
+            else
+              python laya-java/scripts/prepare_checkpoint.py --checkpoint "$c" --no-graph
+            fi
+          done
 
-      # Re-recorded from the Python code at THIS commit, and `--strict` makes a family this job
-      # could not regenerate an error: here, a skip means the download or export failed rather than
-      # that the machine has no model.
-      - name: Regenerate every fixture from Python
+      # Re-recorded from the Python code at THIS commit. `--strict` makes a family this cell could
+      # not regenerate an error rather than a skip: here a skip means the download or the export
+      # failed, not that the machine has no model. It is scoped by `--only` to the families this
+      # cell owns, and between the two cells all four checkpoint-backed families are covered.
+      - name: Regenerate this cell's fixtures from Python
         env:
           LAYA_FIXTURE_CHECKPOINTS: ${{ github.workspace }}/laya-java/.work/checkpoints
-          LAYA_ONNX_GRAPH: ${{ github.workspace }}/laya-java/.work/onnx/multilingual/laya.onnx
+          LAYA_ONNX_GRAPH: ${{ matrix.graph && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
           LAYA_PREDICT_MODEL: multilingual
-        run: python laya-java/scripts/gen_fixtures.py --strict
+        run: python laya-java/scripts/gen_fixtures.py --strict ${{ matrix.families }}
+      # The pre-tokenizer's letter and number classes are probed out of the reference tokenizer,
+      # so this is the one generator gate that needs a checkpoint. It belongs to the cheap cell.
       - name: Pre-tokenizer class tables match the reference
+        if: ${{ !matrix.graph }}
         run: >
           python laya-java/scripts/gen_pretokenizer_tables.py --check
           --tokenizer laya-java/.work/checkpoints/english/tokenizer/tokenizer.json
-      # Informational: float noise across platforms is expected in the model-backed family, and the
-      # Java test's tolerance is the gate rather than byte equality of the file.
+      # Informational: float noise across platforms is expected in the model-backed family, and
+      # the Java test's tolerance is the gate rather than byte equality of the file.
       - name: Fixture drift vs. committed (informational)
         run: |
           git --no-pager diff --stat -- laya-java/fixtures
           git status --short -- laya-java/fixtures
 
-      - name: Run every test against the fresh fixtures
+      - name: Run this cell's tests against the fresh fixtures
         working-directory: laya-java
         env:
           LAYA_CHECKPOINTS: ${{ github.workspace }}/laya-java/.work/checkpoints
-          LAYA_ONNX_GRAPH: ${{ github.workspace }}/laya-java/.work/onnx/multilingual/laya.onnx
-        run: ./gradlew --no-daemon test
-      # A checkpoint-backed factory that aborts is not a pass. With the checkpoints present nothing
-      # may abort, and the floor catches a suite that silently stopped registering its cases.
+          LAYA_ONNX_GRAPH: ${{ matrix.graph && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
+        run: ./gradlew --no-daemon test ${{ matrix.tests }}
+      # A checkpoint-backed factory that aborts is not a pass. With this cell's checkpoints present
+      # nothing it runs may abort, and the floor catches a suite that silently stopped registering
+      # its cases -- which is a thing that has happened here: five @TestFactory bodies generated
+      # zero assertions when their fixture key emptied, and the suite still exited 0.
       - name: No parity test was skipped
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 590
+          laya-java/laya-java/build/test-results/test --min-tests ${{ matrix['min-tests'] }}
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
         with:
-          name: java-parity-diagnostics
+          name: java-parity-${{ matrix.name }}-diagnostics
           path: |
             laya-java/laya-java/build/reports
             laya-java/fixtures
