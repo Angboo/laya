@@ -231,7 +231,8 @@ def _build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--gate-policy", metavar="FILE",
                          help="apply opt-in per-slice quality rules from a JSON policy")
     evidence_cmd = sub.add_parser("evidence",
-                                  help="read-only evidence inspection over a checkpoint config and an eval report")
+                                  help="read-only evidence inspection over a checkpoint config and an eval report",
+                                  epilog="example: laya-evals evidence --checkpoint ./my-checkpoint --report report.json")
     evidence_cmd.add_argument("--checkpoint", required=True,
                               help="checkpoint directory containing rl_agent_config.json")
     evidence_cmd.add_argument("--report", default=None,

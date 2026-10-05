@@ -148,7 +148,8 @@ def inspect_checkpoint(checkpoint_dir: str, report_path: Optional[str] = None) -
 
 
 def format_summary(result: Dict[str, Any]) -> str:
-    lines: List[str] = ["evidence summary for %s" % result["checkpoint"]]
+    lines: List[str] = ["evidence summary for %s" % result["checkpoint"],
+                        "(reports evidence and limitations found in existing artifacts; this is not a deployment verdict)"]
     cal = result["calibration"]
     lines.append("calibration: %s" % cal["state"])
     for name, t in (cal.get("types") or {}).items():
