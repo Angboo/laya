@@ -1232,6 +1232,39 @@ cost `k` of them. On 62 banking intents shortlisted to 20 over 49 states, averag
 the share of answers that change with presentation order from 16.3% to 6.1%. Omitting
 `option_order` keeps the canonical order and the behaviour every existing caller already has.
 
+#### Order-invariant checkpoints (`option_layout: "parallel"`)
+
+Averaging reduces the position effect; a checkpoint trained on the parallel option layout does not
+have one. Every option starts at the same position id, the instruction's closing `[SEP]` and the
+state continue after the longest option, and options cannot attend to each other (the local layers
+keep their window, measured in position ids). The decision head has no positional encoding, so
+reordering the options can only reorder the logits: `option_order` and any other permutation return
+the same probabilities per label, up to float rounding. The idea is the one Parallel Context Windows
+([Ratner et al., 2023](https://arxiv.org/abs/2212.10947)) uses for long contexts, applied to options.
+
+The layout is a property of the weights, so it is set in the checkpoint's `rl_agent_config.json`
+(`"option_layout": "parallel"`) and picked up by `laya.load`; every published checkpoint stays on the
+default sequential layout. Train one with `laya.train`:
+
+```python
+from laya.train import TrainConfig, finetune
+
+finetune("train.jsonl", "./laya_base", "./laya_parallel", TrainConfig(option_layout="parallel"))
+```
+
+Fine-tuned from `convaiinnovations/laya` on typed-decisions (4 epochs, same recipe and seed per arm,
+one T4, 2,000 test decisions; each question also re-asked under a random `option_order`):
+
+| layout | accuracy (listed order) | accuracy (shuffled) | ECE | same answer when shuffled |
+|---|---|---|---|---|
+| sequential | 0.779 | 0.767 | 0.153 | 91.7% |
+| sequential + `shuffle_options` | 0.757 | 0.750 | 0.136 | 95.0% |
+| parallel | 0.764 | 0.764 | 0.143 | 100% |
+
+One seed per arm; the sequential arm moved by 0.008 between two runs of the same recipe. The
+parallel layout needs transformers>=5 and runs on the eager backend only: the ONNX runtime, the
+TileLang fast path and `compile=True` refuse such a checkpoint, and `backend="auto"` resolves to eager.
+
 ---
 
 ## MCP Server (Optional)
