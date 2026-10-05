@@ -1081,12 +1081,12 @@ def shortlist():
             "k": k,
             "questions": original,
             "asked": agent.seen["questions"],
-            "shortlist": result["shortlist"],
+            "shortlist": _round_shortlist(result["shortlist"]),
             "caller_questions_unmutated": original == {qid: dict(q)
                                                        for qid, q in questions.items()},
         })
 
-    return {
+    payload = {
         "score_decimals": _SCORE_DECIMALS,
         "default_k": mod.DEFAULT_SHORTLIST_K,
         "embed_dim": _EMBED_DIM,
@@ -1100,6 +1100,8 @@ def shortlist():
         "refusals": refusals,
         "predicts": predicts,
     }
+    _assert_scores_are_rounded(payload)
+    return payload
 
 
 # How many decimals of a cosine are safe to record. The reference computes its scores with
@@ -1146,6 +1148,60 @@ def _cache_counter_cases():
         calls.append({"texts": list(texts), "size": info["size"], "maxsize": info["maxsize"],
                       "hits": info["hits"], "misses": info["misses"]})
     return calls
+
+
+def _round_shortlist(shortlist):
+    """Round the scores inside a `predict_shortlist` result, as the `cases` section rounds.
+
+    The reference's rankings were being handed through VERBATIM here, so their scores were raw
+    float64 -- sixteen and seventeen significant digits -- while the same numbers in `cases` went
+    through `_round_score`. That is the drift the build lane caught: three values in this section
+    differed in their last bit between arm64 and x64, because the recorded form kept every bit
+    there was to differ in.
+    """
+    out = {}
+    for question_id, ranking in shortlist.items():
+        copy = dict(ranking)
+        scores = copy.get("scores")
+        if scores is not None:
+            copy["scores"] = [_round_score(v) for v in scores]
+        out[question_id] = copy
+    return out
+
+
+def _assert_scores_are_rounded(payload):
+    """Refuse to emit a shortlist fixture holding a score finer than the recorded precision.
+
+    The bug this prevents was not the precision, it was a MISSED call site: one section rounded and
+    another did not, and nothing said so. A grep for `_round_score` found two call sites and both
+    looked right; what was wrong was a third place that needed one and had none. So the check is on
+    the OUTPUT rather than on the code -- every float under a "scores" key, anywhere in the family,
+    at any depth.
+    """
+    bad = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "scores" and isinstance(value, list):
+                    for i, score in enumerate(value):
+                        if not isinstance(score, float):
+                            continue        # a tagged non-finite, which has no decimals
+                        if score != round(score, _SCORE_DECIMALS):
+                            bad.append(("%s/scores[%d]" % (path, i), score))
+                else:
+                    walk(value, path + "/" + str(key))
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, path + "[%d]" % i)
+
+    walk(payload, "")
+    if bad:
+        lines = "\n".join("    %s = %r" % (where, value) for where, value in bad[:10])
+        raise SystemExit(
+            "gen_fixtures: %d score(s) are recorded finer than %d decimals, so the fixture cannot "
+            "survive a different BLAS:\n%s\n  round them with _round_score at the site that "
+            "emits them." % (len(bad), _SCORE_DECIMALS, lines))
 
 
 def _round_score(value):
