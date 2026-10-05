@@ -175,6 +175,9 @@ for param in ("max_len", "head_max_len"):
 check_param("shortlist_choice", laya.shortlist_choice, "return_scores", False,
             inspect.Parameter.KEYWORD_ONLY)
 
+# predict_tournament splits a choice into groups of 16 labels unless the caller picks a size
+check_param("predict_tournament", laya.predict_tournament, "group_size", 16)
+
 # route() and route_batch() take per-call hooks so a hook can pin a checkpoint for one call
 for label, fn in (("Router.route", Router.route),
                   ("Router.route_batch", Router.route_batch)):

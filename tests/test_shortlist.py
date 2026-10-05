@@ -793,6 +793,9 @@ class Ranker:
             for qid, qdef in questions.items() if qdef["type"] == "choice"}}
 
 
+check_true("export/predict_tournament", laya.predict_tournament is predict_tournament)
+check_true("all/predict_tournament", "predict_tournament" in laya.__all__)
+
 # A ranker that is consistent across groups must see its best label win from any position.
 for n, calls in ((77, 2), (257, 3)):
     labels = ["l%03d" % i for i in range(n)]
