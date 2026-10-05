@@ -72,6 +72,25 @@ jobs:
           python laya-java/scripts/check_test_results.py
           laya-java/laya-java/build/test-results/test --min-tests 585 --allow-aborted
 
+      # The samples are single-file source programs, deliberately NOT a Gradle module: a
+      # `samples` subproject would inherit the root build's MavenPublication and
+      # `publishAllPublicationsToCentralRepository` would push it, which is why the empty
+      # `laya-java-client` module was taken out of settings.gradle.kts in the first place. A
+      # version burned on Central cannot be replaced.
+      #
+      # Compiled here so they cannot rot: a sample that stops matching the API fails the build
+      # rather than sitting in the tree misleading a reader. `-Werror` because the samples are the
+      # first code a user copies.
+      - name: The samples still compile against the built classes
+        working-directory: laya-java
+        run: |
+          mkdir -p "$RUNNER_TEMP/samples"
+          javac -Xlint:all -Werror \
+            -cp "laya-java/build/classes/java/main:$(find ~/.gradle/caches/modules-2 \
+                 -name 'onnxruntime-*.jar' | head -1)" \
+            -d "$RUNNER_TEMP/samples" samples/*.java
+          echo "compiled:"; find samples -name '*.java' -print
+
       # LAST, deliberately. This gate and the tests are independent signals -- the tests compare
       # against the COMMITTED fixture, this compares the committed fixture against a fresh
       # recording -- and running it first meant a stale fixture skipped the build and the tests

@@ -20,6 +20,14 @@ Not implemented yet: hooks, `predictLong`, structured `decide`, the
 `laya-java-client` HTTP module, Android. **Not published to Maven Central** — see
 [Installing](#installing).
 
+## Where to go next
+
+| | |
+|---|---|
+| [MODELS.md](MODELS.md) | how to get the checkpoint and the graph `Agent.open` takes |
+| [samples/](samples/) | three runnable programs: quickstart, routing and shortlisting, benchmark |
+| [CHANGELOG.md](CHANGELOG.md) | what is in 0.1.0, and where Java is not Python |
+
 ## Export a graph (once per checkpoint)
 
 ```bash
