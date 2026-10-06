@@ -2569,6 +2569,60 @@ def test_server_shortlist_k_default():
        "schema=%r library=%r" % (advertised, DEFAULT_SHORTLIST_K))
 
 
+def test_cli_mcp_page_tool_argument_rows():
+    """Every single-shot tool row on the MCP docs page names every parameter the handler takes.
+
+    The "Main inputs" cell is a fourth copy of the shape, after the validator error message, each
+    tool's registered description, and the README. The existing gate at
+    `test_batch_item_shape_as_documented` covers the batch rows' per-request keys but does not
+    read the six single-shot rows, so a whole control can fall off the table while the tool
+    accepts it. The `laya_decide` row was in that state: the server registers
+    `laya_decide_tool(state, schema, model='auto', min_confidence=None)` and the tool's own
+    description spells out `min_confidence`, but the docs row read
+    "`state`, `schema`, optional `model`" -- so a caller who trusts the table hand-rolls the
+    abstention check on `values`, never learning the tool already nulls an unsure field.
+
+    Each row's third cell is read straight from `docs/cli-mcp.md`, and every public parameter
+    `inspect.signature()` sees on the registered handler must appear backticked in the cell.
+    Batch tools are skipped because their cell uses a `{...}` item shape that the sibling gate
+    above already holds against `batch_item_key_doc`. The pre-fix wording is banned by direct
+    substring so the check fails if the `laya_decide` row reverts.
+    """
+    import inspect
+
+    from laya.mcp import server as server_mod
+
+    page = (Path(__file__).resolve().parents[1] / "docs" / "cli-mcp.md").read_text(encoding="utf-8")
+
+    def row_cell(tool):
+        for line in page.splitlines():
+            if line.startswith("| `%s` |" % tool):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) >= 3:
+                    return cells[2]
+        return None
+
+    for tool in ("laya_status", "laya_route", "laya_predict",
+                 "laya_shortlist", "laya_preset", "laya_decide"):
+        cell = row_cell(tool)
+        ok("docs-mcp/args_row_%s_present" % tool, cell is not None, "row not found")
+        if cell is None:
+            continue
+        handler = getattr(server_mod, "%s_tool" % tool)
+        params = [
+            p.name for p in inspect.signature(handler).parameters.values()
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+            and not p.name.startswith("_")
+            and p.name not in ("router", "preset_builder")  # server-injected deps
+        ]
+        missing = [p for p in params if "`%s`" % p not in cell]
+        ok("docs-mcp/args_row_%s_names_every_param" % tool, not missing,
+           "missing=%r cell=%r" % (missing, cell))
+
+    ok("docs-mcp/args_row_decide_drops_the_three_param_version",
+       "| `state`, `schema`, optional `model` |" not in page)
+
+
 test_device()
 test_real_device()
 test_private_contract()
@@ -2603,6 +2657,7 @@ test_auto_task_env()
 test_default_model_env()
 test_server_registration()
 test_server_shortlist_k_default()
+test_cli_mcp_page_tool_argument_rows()
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
