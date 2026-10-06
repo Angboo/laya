@@ -398,6 +398,324 @@ check("export/GATE_STATES is the vocabulary a caller iterates", list(GATE_STATES
       [_confidence.GATE_PASSED, _confidence.GATE_ABSTAINED, _confidence.GATE_UNEVALUATED])
 check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GATE_STATES)
 
+# --------------------------------- the two doc pages must attribute confidence per question type
+# `docs/structured.md` and `docs/questions-and-answers.md` each opened their confidence section with
+# "`confidence` is normalized entropy". Neither agent writes that for every type:
+# `Agent._decode_answers` (`laya/agent.py:1367-1404`) and `OnnxAgent._decode_answers`
+# (`laya/onnx_agent.py:682-727`) put `confidence_from_probs(p, k)` = `1 - H(p) / log(k)` in the
+# `choice` and `score` answers and `max(p_true, 1 - p_true)` in the `noul` one. Each page printed a
+# `noul` in the very block its sentence introduces, so the sentence was falsifiable from the page
+# alone: the Q&A page's sample answer is `{"type": "noul", "noul": 0.8727, "confidence": 0.8727}`,
+# where entropy over two options reads 0.45, and structured.md's `Ticket` carries `needs_human: bool`
+# beside the `department` choice. structured.md also quoted `0.71` for the field whose probabilities it
+# prints one line below as `{"billing": 0.94, "support": 0.06, "sales": 0.0}` -- 0.79 under the formula
+# the page names. So both pages are read as data here: every number they print is recomputed from the
+# distribution printed beside it, the option count from the schema's own labels, and each formula has
+# to appear in a sentence naming exactly the types the code uses it for. No weights, no pydantic.
+import ast as _ast  # noqa: E402  (`ast` itself is imported again further down)
+import re as _re  # noqa: E402  (same reason: this section must not rebind `re`)
+
+from laya.structured import questions_from_json_schema  # noqa: E402
+
+DOC_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOC_STRUCTURED = os.path.join(DOC_ROOT, "docs", "structured.md")
+DOC_QA = os.path.join(DOC_ROOT, "docs", "questions-and-answers.md")
+DOC_AGENT_PY = os.path.join(DOC_ROOT, "laya", "agent.py")
+DOC_ONNX_PY = os.path.join(DOC_ROOT, "laya", "onnx_agent.py")
+
+ATTRIBUTED = {"entropy": ["choice", "score"], "maxp": ["noul"]}
+
+# A type has to be named in the same sentence as the formula, so `choice`/`score` cannot inherit the
+# `noul` formula and back. Only backticked type tokens count: the pages use "the choice is explicit" as
+# English, and a gate that read that as a question type would pass the wrong page.
+ENTROPY_MENTION = _re.compile(r"normalized\s+entropy")
+MAXP_MENTION = _re.compile(r"max\(\s*p(?:_true)?\s*,\s*1\s*-\s*p(?:_true)?\s*\)")
+TYPE_TOKEN = _re.compile(r"`(choice|score|noul)`")
+
+# The blanket claims, and the one number that was simply wrong.
+BLANKET_ENTROPY = _re.compile(r"`?confidence`?\s+is\s+normalized\s+entropy", _re.I)
+BLANKET_SAMPLE_NOTE = _re.compile(r"normalized\s+entropy,\s+which\s+depends\s+on\s+label\s+count")
+MAXP_IN_CODE = _re.compile(r"max\(\s*float\(\s*p\[1\]\s*\)\s*,\s*1\.0\s*-\s*float\(\s*p\[1\]\s*\)\s*\)")
+
+# The pages as they ship on main, sentence for sentence. Every ban below fires on this text and every
+# attribution rule below shows this text failing it, so no rule here is a guess about what changed.
+OLD_BLANKETS = (
+    ("docs/structured.md",
+     "`confidence`. `confidence` is normalized entropy, which depends on how many options the "
+     "question had: `tests/test_confidence.py` pins that a two-option distribution comes back as "
+     "0.90 on a `noul` and 0.53 on an equivalent `choice`, so it does not compare against a "
+     "threshold."),
+    ("docs/questions-and-answers.md",
+     "`confidence` is normalized entropy: high when the distribution is peaked, low when it is "
+     "spread out, regardless of whether the top answer is correct."),
+)
+OLD_SAMPLE_LINE = ('result.confidence["department"]        '
+                   '# 0.71  normalized entropy, which depends on label count')
+
+
+def _read_page(path):
+    # newline="" plus an explicit encoding: the pages carry em-dashes, and a CRLF checkout or a
+    # non-UTF-8 locale must not change what the rules below see.
+    with open(path, encoding="utf-8", newline="") as fh:
+        return fh.read().replace("\r\n", "\n")
+
+
+def _flatten(text):
+    return " ".join(text.split())
+
+
+def _fenced_blocks(text):
+    """Every fenced block on a page, in order, as (language, body)."""
+    blocks, lang, body = [], None, []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if lang is None and stripped.startswith("```"):
+            lang = stripped[3:].strip()
+            body = []
+        elif lang is not None and stripped.startswith("```"):
+            blocks.append((lang, "\n".join(body)))
+            lang = None
+        elif lang is not None:
+            body.append(line)
+    assert lang is None, "unbalanced fence in %s" % text[:40]
+    return blocks
+
+
+def _prose(text):
+    """The page's prose: fenced blocks dropped, line wraps undone, whitespace collapsed."""
+    out, in_fence = [], False
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            out.append(line)
+    return _flatten("\n".join(out))
+
+
+def _attributions(prose):
+    """{formula: sorted question types named in the same sentence as it}."""
+    got = {}
+    for sentence in _re.split(r"(?<=[.!?])\s+", prose):
+        types = set(TYPE_TOKEN.findall(sentence))
+        if not types:
+            continue
+        if ENTROPY_MENTION.search(sentence):
+            got.setdefault("entropy", set()).update(types)
+        if MAXP_MENTION.search(sentence):
+            got.setdefault("maxp", set()).update(types)
+    return {key: sorted(value) for key, value in sorted(got.items())}
+
+
+def _decode_conf_formulas(path):
+    """{question type: the formula its `confidence` is built from}, read out of that agent's own
+    `_decode_answers` with `ast`: `entropy` where the answer dict calls `confidence_from_probs`,
+    `maxp` where it takes `max(float(p[1]), 1.0 - float(p[1]))`. A bare name resolves one hop to its
+    assignment in the same function, because the ONNX builder binds `conf_score` once and uses it for
+    both of its entropy types."""
+    src = _read_page(path)
+    fn = next((node for node in _ast.walk(_ast.parse(src))
+               if isinstance(node, _ast.FunctionDef) and node.name == "_decode_answers"), None)
+    assert fn is not None, "%s no longer defines _decode_answers" % path
+    bound = {}
+    for node in _ast.walk(fn):
+        if (isinstance(node, _ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], _ast.Name)):
+            bound[node.targets[0].id] = _ast.get_source_segment(src, node.value) or ""
+    got = {}
+    for node in _ast.walk(fn):
+        if not isinstance(node, _ast.Dict):
+            continue
+        pairs = {}
+        for key, value in zip(node.keys, node.values):
+            if isinstance(key, _ast.Constant) and isinstance(key.value, str):
+                pairs[key.value] = value
+        if "confidence" not in pairs or "type" not in pairs:
+            continue
+        qtype = pairs["type"].value
+        expr = pairs["confidence"]
+        text = bound.get(expr.id, "") if isinstance(expr, _ast.Name) else (
+            _ast.get_source_segment(src, expr) or "")
+        if "confidence_from_probs" in text:
+            formula = "entropy"
+        elif MAXP_IN_CODE.search(text):
+            formula = "maxp"
+        else:
+            raise AssertionError("%s builds `%s`'s confidence from %r" % (path, qtype, text))
+        assert qtype not in got, "%s decodes `%s` twice" % (path, qtype)
+        got[qtype] = formula
+    return got
+
+
+def _structured_sample():
+    """The `return_details=True` block as data: the number printed for each field, the probabilities
+    printed for the same field, and the option count named beside the confidence number."""
+    src = _read_page(DOC_STRUCTURED)
+
+    def printed(key):
+        m = _re.search(r'result\.' + key + r'\["department"\]\s*#\s*([0-9.]+)', src)
+        assert m, 'the sample block no longer prints result.%s["department"]' % key
+        return float(m.group(1))
+
+    m = _re.search(r'result\.probabilities\["department"\]\s*#\s*(\{[^}]*\})', src)
+    assert m, "the sample block no longer prints the probabilities the two numbers come from"
+    probs = _ast.literal_eval(m.group(1))
+    note = _re.search(r'result\.confidence\["department"\]\s*#\s*[0-9.]+\s+([^\n]*)', src)
+    assert note, "the confidence line lost its note"
+    k = _re.search(r"(\d+)-option", note.group(1))
+    assert k, "the confidence line must name the option count its formula depends on: %r" % note.group(1)
+    return printed("confidence"), printed("answer_confidence"), probs, int(k.group(1)), note.group(1)
+
+
+def test_no_page_calls_confidence_one_formula():
+    for path in (DOC_STRUCTURED, DOC_QA):
+        prose = _prose(_read_page(path))
+        assert not BLANKET_ENTROPY.search(prose), "%s still says `confidence` is entropy" % path
+    src = _read_page(DOC_STRUCTURED)
+    assert not BLANKET_SAMPLE_NOTE.search(src), "the sample note still blames the label count alone"
+    for name, old in OLD_BLANKETS:
+        assert BLANKET_ENTROPY.search(_flatten(old)), "the ban does not fire on %s's old sentence" % name
+    assert BLANKET_SAMPLE_NOTE.search(OLD_SAMPLE_LINE), "the sample-note ban does not fire on main's line"
+
+
+def test_each_page_attributes_both_formulas_to_named_types():
+    for path in (DOC_STRUCTURED, DOC_QA):
+        got = _attributions(_prose(_read_page(path)))
+        assert got == ATTRIBUTED, "%s attributes %s, want %s" % (path, got, ATTRIBUTED)
+    # main's prose satisfies neither half, so the rule could not have passed before the fix.
+    assert _attributions(_flatten(OLD_BLANKETS[1][1])) == {}, "main's Q&A sentence passes the rule"
+    assert _attributions(_flatten(OLD_BLANKETS[0][1])) == {"entropy": ["choice", "noul"]}, (
+        "main's structured.md sentence passes the rule")
+
+
+def test_the_agents_build_what_the_pages_attribute():
+    want = {}
+    for path in (DOC_AGENT_PY, DOC_ONNX_PY):
+        got = _decode_conf_formulas(path)
+        assert sorted(got) == ["choice", "noul", "score"], "%s decodes %s" % (path, sorted(got))
+        assert got == {"choice": "entropy", "score": "entropy", "noul": "maxp"}, got
+        want = got
+    derived = {"entropy": sorted(t for t, f in want.items() if f == "entropy"),
+               "maxp": sorted(t for t, f in want.items() if f == "maxp")}
+    assert derived == ATTRIBUTED, "the pages are held to a transcription, not to the agents: %s" % derived
+    for path in (DOC_STRUCTURED, DOC_QA):
+        got = _attributions(_prose(_read_page(path)))
+        assert got == derived, "%s attributes %s; the agents build %s" % (path, got, derived)
+
+
+def test_structured_page_sample_numbers_recompute():
+    conf, answer_conf, probs, k, note = _structured_sample()
+    p = np.array([probs[label] for label in probs])
+    assert k == len(p), "the page says %d-option and prints %d labels" % (k, len(p))
+    assert conf == round(confidence_from_probs(p, k), 2), (
+        "the page prints confidence %s for %s over %d options; that formula gives %s"
+        % (conf, probs, k, round(confidence_from_probs(p, k), 2)))
+    assert abs(answer_conf - float(p.max())) < 5e-3, (
+        "answer_confidence %s is not max(p)=%s of the probabilities printed beside it"
+        % (answer_conf, round(float(p.max()), 4)))
+    assert "`choice`" in note, "the confidence line must say which type the field is: %r" % note
+    # and main's number was not this formula's either way: the witness stays true while the
+    # probabilities on the page stay these.
+    assert abs(0.71 - round(confidence_from_probs(p, k), 2)) > 5e-3, (
+        "0.71 now recomputes, so this witness has gone stale: %s" % probs)
+
+
+def test_structured_page_claims_a_schema_that_mixes_the_two_types():
+    """The page says its own `Ticket` holds one `choice` field and one `noul` field, which is what
+    makes one `confidence` dict carry two scales. The compiler that builds those questions has to
+    agree, and the probabilities in the sample have to be that field's labels."""
+    src = _read_page(DOC_STRUCTURED)
+    ticket = next((body for _lang, body in _fenced_blocks(src) if "class Ticket" in body), None)
+    assert ticket is not None, "the page lost the Ticket schema the confidence sample reads"
+    fields = dict(_re.findall(r"^\s*(\w+)\s*:\s*([^\n]+?)\s*$", ticket, _re.M))
+    assert sorted(fields) == ["department", "needs_human", "urgency"], fields
+    labels = [s.strip().strip("'\"")
+              for s in _re.search(r"Literal\[(.*?)\]", fields["department"]).group(1).split(",")]
+    assert fields["needs_human"] == "bool", fields
+    _conf, _ac, probs, _k, _note = _structured_sample()
+    assert labels == list(probs), "the sample's probabilities are not the schema's labels"
+    compiled = questions_from_json_schema({
+        "type": "object",
+        "properties": {
+            "department": {"enum": labels},
+            "needs_human": {"type": "boolean"},
+        },
+    })
+    got = {qid: q["type"] for qid, q in compiled.items()}
+    assert got == {"department": "choice", "needs_human": "noul"}, got
+
+
+def _qa_answers():
+    """{question type: the sample answer the page prints for it}. Each block is a dict literal, so the
+    numbers are read as data and not matched as prose."""
+    out = {}
+    for _lang, body in _fenced_blocks(_read_page(DOC_QA)):
+        try:
+            node = _ast.literal_eval(body.strip())
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(node, dict) and "confidence" in node and "answer_confidence" in node:
+            out[node["type"]] = node
+    return out
+
+
+def test_questions_page_sample_answers_recompute():
+    answers = _qa_answers()
+    assert sorted(answers) == ["choice", "noul", "score"], (
+        "the page must show one sample answer per question type, it shows %s" % sorted(answers))
+    for qtype in ("choice", "score"):
+        ans = answers[qtype]
+        p = np.array(list(ans["probabilities"].values()))
+        entropy = confidence_from_probs(p, len(p))
+        assert abs(ans["confidence"] - entropy) <= 1e-3, (
+            "%s: printed confidence %s, entropy of %s is %s"
+            % (qtype, ans["confidence"], list(ans["probabilities"]), round(entropy, 4)))
+        assert ans["answer_confidence"] == round(float(p.max()), 4), (
+            qtype, ans["answer_confidence"], round(float(p.max()), 4))
+    ans = answers["noul"]
+    p_true = ans["noul"]
+    assert ans["confidence"] == round(max(p_true, 1.0 - p_true), 4), ans
+    assert ans["confidence"] == ans["answer_confidence"], (
+        "over two options the two are the same number, so a mismatch means the sample changed shape")
+    entropy2 = round(confidence_from_probs(np.array([1.0 - p_true, p_true]), 2), 4)
+    assert ans["confidence"] != entropy2, (
+        "the noul sample now reads as entropy, so the blanket sentence would be defensible")
+    m = _re.search(r"rather than the ([0-9.]+)", _prose(_read_page(DOC_QA)))
+    assert m, "the page must keep the counterfactual that proves its noul row is not entropy"
+    assert abs(float(m.group(1)) - entropy2) < 0.005, (m.group(1), entropy2)
+
+
+def test_questions_page_row_table_matches_its_samples():
+    body = next((b for _l, b in _fenced_blocks(_read_page(DOC_QA)) if "confidence 0." in b), None)
+    assert body is not None, "the page lost the three-row confidence/answer_confidence comparison"
+    rows = _re.findall(r"^(\w+)\s+confidence\s+([0-9.]+)\s+answer_confidence\s+([0-9.]+)", body, _re.M)
+    answers = _qa_answers()
+    named = {"dept": "choice", "urgent": "noul", "severity": "score"}
+    assert [row[0] for row in rows] == list(named), rows
+    for field, conf, ac in rows:
+        ans = answers[named[field]]
+        assert abs(float(conf) - ans["confidence"]) <= 1e-3, (field, conf, ans["confidence"])
+        assert abs(float(ac) - ans["answer_confidence"]) <= 1e-3, (field, ac, ans["answer_confidence"])
+    assert sorted(named.values()) == sorted(_decode_conf_formulas(DOC_AGENT_PY)), (
+        "the rows do not cover the three types the agents build `confidence` for")
+
+
+for _fn in (test_no_page_calls_confidence_one_formula,
+            test_each_page_attributes_both_formulas_to_named_types,
+            test_the_agents_build_what_the_pages_attribute,
+            test_structured_page_sample_numbers_recompute,
+            test_structured_page_claims_a_schema_that_mixes_the_two_types,
+            test_questions_page_sample_answers_recompute,
+            test_questions_page_row_table_matches_its_samples):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("doc-pages/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("doc-pages/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("doc-pages/%s" % _fn.__name__)
+
 # ------------------------------------------------- a preset page's conclusions follow their numbers
 # `examples/28_presets_moderation.py` prints a summary over `laya.moderation_questions()` answers,
 # and the version this section replaces hardcoded three of its conclusions:
