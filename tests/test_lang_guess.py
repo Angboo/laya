@@ -503,6 +503,74 @@ check("veto/shouted german with umlauts routes multilingual",
       _route.route("WIE SPÄT IST ES IN KÖLN")["model"], "multilingual")
 
 
+# Emphasis capitals, which the mixed-case half of the guard got wrong. The whole-state verdict
+# re-takes itself with the all-caps runs blanked, so an acronym run cannot outvote the English
+# prose around it -- but blanking *every* all-caps run deleted ordinary emphasis too, and
+# emphasis falls on the words that carry the sentence, so the words that named the language were
+# exactly the ones removed. No test covered this branch for genuine foreign prose, and all of
+# these routed english. A run of `_SHOUTED_MIN_WORD` letters is a word, not an acronym, and is
+# not blanked out of its own sentence. Eight of the ten are real MASSIVE test rows, shouted
+# where a person would shout them; the other two are hand-written, one of them the Spanish case
+# the review reported.
+EMPHASIS_STILL_FOREIGN = [
+    ("de", "sag mir das HEUTIGE DATUM"),
+    ("de", "welche wecker habe ICH GESTELLT"),
+    ("es", "quiero cancelar mi PEDIDO POR FAVOR"),
+    ("es", "QUIERO EL ESTADO DEL brillo de mi pantalla"),
+    ("pt", "quero o meu DINHEIRO DE VOLTA"),
+    ("pt", "DIZ ME O TEMPO EM barcelona daqui a dois dias"),
+    ("nl", "VERTEL ME HET weer deze week"),
+    ("fr", "passer l'aspirateur dans LE COULOIR"),
+    ("it", "CANCELLA LA MIA sveglia delle sette"),
+    ("ro", "SPUNE-MI VREMEA pentru saptamana aceasta"),
+]
+for _want, _line in EMPHASIS_STILL_FOREIGN:
+    check("emphasis/%s prose routes multilingual: %s" % (_want, _line[:30]),
+          _route.route(_line)["model"], "multilingual")
+    check("emphasis/%s prose keeps its language: %s" % (_want, _line[:30]),
+          analyse(_line)["language"], _want)
+
+# Monotonicity: adding one lowercase English token must not make foreign detection worse. The
+# fully upper-cased form is held to the shouted bar and clears it; the same text with `ok ` in
+# front used to fall into the mixed-case branch instead, which had no bar at all, and routed
+# english. 4,285 MASSIVE rows moved that way; 316 still do, against 279 at the parent.
+_SHOUT = "QUIERO CANCELAR MI PEDIDO POR FAVOR"
+check("emphasis/upper-cased spanish routes multilingual",
+      _route.route(_SHOUT)["model"], "multilingual")
+check("emphasis/one lowercase token does not undo it",
+      _route.route("ok " + _SHOUT)["model"], "multilingual")
+
+# and the acronym side the blanking exists for is still closed, which is what keeps the bar on
+# the length of the run rather than on nothing at all.
+check("emphasis/acronym run inside english prose still routes english",
+      _route.route("The MON DES EST LA codes were sent today")["model"], "english")
+check("emphasis/acronym settings line inside english prose still routes english",
+      _route.route("Please confirm the COM DOS LAN WAN VPN settings before Friday")["model"],
+      "english")
+check("emphasis/acronym run after one lowercase token still routes english",
+      _route.route("ok MON DES EST LA")["model"], "english")
+
+# Mixed cased and caseless script. Both caps bars answer by taking evidence *away* from the
+# Latin letters, and `looks_non_english`, which decides what is left, reads Latin diacritics
+# only -- so on a state that is 35% Cyrillic letters there was nothing left and an acronym run
+# with a Russian greeting in front of it went to the English checkpoint. The script promotion
+# cannot catch that fall: it needs `_non_latin_words`, which drops any run starting with a
+# capital, and in a shouted line every run does. Neither bar applies once the caseless letters
+# carry the state -- a wrong language name costs nothing there, because the checkpoint is
+# chosen on `is_english`.
+MIXED_SCRIPT_NOT_ENGLISH = [
+    "\u041f\u0420\u0418\u0412\u0415\u0422 MON DES EST LA",   # all caps: the shouted bar
+    "\u041f\u0440\u0438\u0432\u0435\u0442 MON DES EST LA",   # mixed case: the blanking
+]
+for _line in MIXED_SCRIPT_NOT_ENGLISH:
+    check("mixed-script/routes multilingual: %s" % _line[:12],
+          _route.route(_line)["model"], "multilingual")
+    check("mixed-script/is not english: %s" % _line[:12],
+          analyse(_line)["is_english"], False)
+# with no caseless letters to carry it, the same run is vetoed as before
+check("mixed-script/latin-only acronym run is still english",
+      _route.route("MON DES EST LA")["model"], "english")
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)

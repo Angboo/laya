@@ -371,6 +371,12 @@ NON_LATIN_MIN_FRACTION = 0.1
 NON_LATIN_MIN_LETTERS = 10
 
 
+def _non_latin_carries(non_latin: float, n_non_latin: int) -> bool:
+    """Whether the non-Latin letters of a Latin-plurality text are enough to carry the state."""
+    return (non_latin >= NON_LATIN_FRACTION
+            or (non_latin >= NON_LATIN_MIN_FRACTION and n_non_latin >= NON_LATIN_MIN_LETTERS))
+
+
 def _script_of(ch: str) -> Optional[str]:
     """The named non-Latin script of one letter, or None for Latin and for unclaimed letters."""
     cp = ord(ch)
@@ -518,37 +524,62 @@ _LETTER_RUN = re.compile(r"[^\W\d_]{2,}")
 # must therefore show evidence that is more than acronym-shaped before it is believed.
 #
 # The bar is on the tokens that actually scored, not on the line. Requiring one long word
-# anywhere does almost nothing: `ANGELES`, `VEGAS` and `SEGUNDO` are long and are not what named
-# Spanish -- `LOS`, `LAS` and `EL` did. Three corpora, measured against this file's own
-# `_named_prose_language`: 10,960 MASSIVE test lines upper-cased that the detector names
-# correctly (genuine shouted prose, must survive); 500,000 lines of 4-8 acronyms drawn from 5,670
-# real ones; 50,000 all-caps address and signage lines built from 18,718 real US city names.
+# anywhere does almost nothing by itself: `ANGELES`, `VEGAS` and `SEGUNDO` are long and are not
+# what named Spanish -- `LOS`, `LAS` and `EL` did.
 #
-#   rule                             prose kept      acronym FP   address FP
-#   none (before this guard)       10,960 100.00%     410           84
-#   one word >= 5 anywhere         10,854  99.03%     212           83   <- addresses untouched
-#   matched stopword >= 3          10,625  96.94%     159            9   <- keeps LOS/LAS/EL
-#   matched stopword >= 4           8,841  80.67%      14            2
-#   matched stopword >= 4 AND >=5   8,762  79.95%       6            2   <- chosen
-#   matched stopword >= 5           6,902  62.97%       0            1
+# Three corpora decide these two numbers, and `research/evals/shouted_bar_corpora.py` builds all
+# three and prints the table below: upper-cased MASSIVE test rows that the rule names as their
+# own locale with no bar at all (genuine shouted prose, must survive); 500,000 lines of 4-8
+# acronyms; 50,000 all-caps US address and signage lines. Pinned to the MASSIVE test split at
+# revision 940fd47a and `random.Random(0)`, with the acronym and place-name pools committed in
+# that script, so every row here can be rechecked when someone wants to move a constant. Each
+# row applies one bar, named in full, so the rows are comparable:
 #
-# 4 is the lowest bar that rejects `LOS`, `LAS` and `EL`; 3 leaves the reported case standing.
-# Going on to 5 is not worth it: it costs 1,860 more real lines to remove 6 more acronym runs in
-# 500,000. Non-English diacritics are accepted in place of a long stopword, because the module
-# already treats them as non-English evidence (NON_EN_DIACRITIC_RATE) and neither an acronym nor
-# a US place name carries any: that disjunct is free on both false-positive corpora (6 and 2
-# either way) and lifts prose kept from 61.58% to 79.95%.
+#   rule                                   prose kept      acronym FP   address FP
+#   none (no bar at all)                 10,960 100.00%      4,219         141
+#   diacritics only                      10,960 100.00%      4,219         141
+#   word >= 5 only                       10,854  99.03%        431         141  <- addresses stand
+#   stopword >= 3 only                   10,729  97.89%      3,751         109  <- keeps LOS/LAS/EL
+#   stopword >= 4 only                    8,841  80.67%          0           0
+#   stopword >= 5 only                    6,963  63.53%          0           0
+#   stopword >= 3 AND word >= 5          10,625  96.94%        386         109
+#   stopword >= 4 AND word >= 5           8,762  79.95%          0           0  <- chosen
+#   stopword >= 5 AND word >= 5           6,902  62.97%          0           0
+#   stopword >= 4 AND word >= 6           8,418  76.81%          0           0
+#   stopword >= 4 AND word >= 7           7,459  68.06%          0           0
+#   stopword >= 4 AND word >= 5, no dia   6,749  61.58%          0           0
+#
+# `LOS`, `LAS` and `EL` are three, three and two letters, so any bar of 4 or more rejects them;
+# what the table has to decide is the other side of that, and it is 3 that it rules out -- at 3
+# the reported address line still reads as Spanish, and 3,751 of 500,000 acronym runs and 109 of
+# 50,000 address lines still read as prose. 4 closes both columns outright. Going on to 5 buys
+# nothing measurable and costs 1,860 more real lines. Non-English diacritics are accepted in
+# place of a long stopword, because the module already treats them as non-English evidence
+# (NON_EN_DIACRITIC_RATE) and neither an acronym nor a US place name carries any: that disjunct
+# is free on both false-positive corpora (0 and 0 either way) and lifts prose kept from 61.58%
+# to 79.95%.
 _SHOUTED_MIN_STOPWORD = 4
-# A length bar on the line as well. Weak alone (row two above) but cheap on top of the stopword
-# bar -- 79 real lines for 8 of the 14 surviving acronym runs, about 10:1. Swept with the
-# stopword bar at 4: no bar 8,841 prose / 14 acronym, >=5 8,762 / 6, >=6 8,418 / 2, >=7 7,459 / 0.
-# 6 would cost 344 more real lines for 4 more acronym runs, about 86:1, so it stops at 5.
+# A length bar as well: a token of this many letters is a word rather than an acronym. Used
+# twice -- here, on an all-caps line, and in `_analyse_text` to decide whether an all-caps run
+# inside mixed-case text is an acronym worth blanking.
 #
-# What this costs is not small and is not only short lines: 2,198 of the 10,960 shouted-prose
-# lines are given up, 82.62% of them six tokens or longer, the longest a 34-token Dutch sentence.
-# Shouted text is the whole of that corpus by construction and a rarity in real input -- on
-# MASSIVE as written, routing is unchanged (0.5625 of non-English lines to multilingual, before
-# and after) -- but anyone moving these numbers should know the casualties are sentences.
+# Stated plainly, this bar is not justified by the table above: at a stopword bar of 4 both
+# false-positive columns are already 0, so the 79 real prose lines it costs (8,841 -> 8,762) buy
+# nothing those corpora can see. It is powerful on its own -- row three takes acronym false
+# positives from 4,219 to 431 -- and it is kept because the corpora it was first chosen against
+# were larger than the ones committed here (5,670 acronyms and 18,718 place names, neither
+# committed, so their counts are not reproducible and are not quoted) and did report false
+# positives surviving a stopword bar of 4. Absence on this corpus is not absence. Anyone who
+# wants those 79 lines back should widen the acronym pool in that script first and show the
+# column stays at 0. Swept with the stopword bar at 4: no bar 8,841 prose, >= 5 8,762,
+# >= 6 8,418, >= 7 7,459.
+#
+# What the pair costs is not small and is not only short lines: 2,198 of the 10,960
+# shouted-prose lines are given up, 1,816 of them (82.62%) six tokens or longer, the longest a
+# 34-token Dutch sentence. On MASSIVE as written none of this is visible -- not one of the
+# 151,674 rows holds a single uppercase character -- so it has to be measured on rows that do:
+# over the 77,324 rows of the 26 non-English Latin locales, upper-cased, the multilingual share
+# falls 0.5912 -> 0.5430, which is 3,727 rows. The casualties are sentences.
 _SHOUTED_MIN_WORD = 5
 
 
@@ -561,6 +592,11 @@ def _shouted(text: str) -> bool:
     construction. Nothing is routed on that path today (`_STOP["bn"]` is romanised, so a
     Bengali-script line is named by script and never reaches here), but the bar belongs to cased
     text and saying so here keeps it that way.
+
+    That argument covers *pure* caseless text, which never reaches a caps bar at all. Text that
+    merely contains some has no lowercase either and does reach one; `_analyse_text` keeps both
+    bars off it, because a bar that works by discarding Latin evidence has nothing to say about
+    the half of the state it cannot read.
     """
     return any(ch.isupper() for ch in text) and not any(ch.islower() for ch in text)
 
@@ -637,9 +673,8 @@ def _analyse_text(text: str) -> Dict[str, object]:
     script = _script_from_counts(counts)
     non_latin = round(1.0 - prof.get("latin", 0.0), 4) if prof else 0.0
     n_non_latin = round(non_latin * sum(ch.isalpha() for ch in text))
-    if script == "latin" and _non_latin_words(text) and (
-            non_latin >= NON_LATIN_FRACTION or (
-                non_latin >= NON_LATIN_MIN_FRACTION and n_non_latin >= NON_LATIN_MIN_LETTERS)):
+    if (script == "latin" and _non_latin_words(text)
+            and _non_latin_carries(non_latin, n_non_latin)):
         script = max((s for s in prof if s != "latin"), key=prof.get)
     if script == "unknown":
         return {"script": "unknown", "script_profile": prof, "language": None,
@@ -657,7 +692,17 @@ def _analyse_text(text: str) -> Dict[str, object]:
     # and was named foreign outright: `MON DES EST LA` routed multilingual on its own, and so did
     # the same line under one or two lines of English. Vetoing here leaves the text undecided, so
     # `looks_non_english` still decides it: a shouted line with non-English diacritics is kept.
-    if lang not in (None, "en"):
+    # Neither bar applies when the state is carried by a caseless script. Both of them answer
+    # the verdict by taking evidence *away* from the Latin letters, and `looks_non_english`,
+    # which decides what is left, reads Latin diacritics only -- it cannot see the caseless half.
+    # Nothing else catches the fall, either: the script promotion above needs
+    # `_non_latin_words`, which drops any run starting with a capital, so a shouted mixed-script
+    # line has no promotable word by construction. `ПРИВЕТ MON DES EST LA` is 35% Cyrillic
+    # letters and was being sent to the English checkpoint on the strength of disbelieving `MON
+    # DES EST LA`. Whatever the Latin part is worth, text this far from Latin is not English, so
+    # there is nothing for either bar to buy here and a wrong language name costs nothing: the
+    # checkpoint is chosen on `is_english`.
+    if lang not in (None, "en") and not _non_latin_carries(non_latin, n_non_latin):
         if _shouted(text):
             if not _shouted_evidence(_WORD.findall(text), lang,
                                      float(prof_lat["diacritic_rate"])):
@@ -670,9 +715,25 @@ def _analyse_text(text: str) -> Dict[str, object]:
             # win the margin. Re-take the verdict without the all-caps runs. `looks_non_english`
             # and `diacritic_rate` stay measured on the original text, so a foreign word that
             # happens to be shouted cannot be blanked out of the diacritic safety net.
-            blanked = _LETTER_RUN.sub(lambda m: " " if m.group().isupper() else m.group(), text)
-            if blanked != text:
-                lang = latin_profile(blanked)["language"]
+            #
+            # Only *acronym-shaped* runs are blanked. Blanking every all-caps run deleted
+            # emphasis capitals, which are ordinary in real prose and are usually on the words
+            # that carry the sentence, so when the shouted words were the ones that named the
+            # language the evidence simply went: `sag mir das HEUTIGE DATUM` and `quiero
+            # cancelar mi PEDIDO POR FAVOR` both lost their verdict and routed english. It also
+            # broke monotonicity -- the fully upper-cased form held the shouted bar, but adding
+            # one lowercase English token moved the text to this branch, where it had no bar at
+            # all. So a run is blanked only while every one of them is short enough to be an
+            # acronym, by `_shouted_evidence`'s own first test: a run of `_SHOUTED_MIN_WORD`
+            # letters is a word, and a word is not blanked out of its own sentence. Measured
+            # over the 20,708 Latin-locale MASSIVE test rows, emphasis-capitalised two ways
+            # (see the commit message): regressions 1,753 -> 293 and 3,835 -> 752.
+            caps = [m.group() for m in _LETTER_RUN.finditer(text) if m.group().isupper()]
+            if caps and not any(len(c) >= _SHOUTED_MIN_WORD for c in caps):
+                blanked = _LETTER_RUN.sub(
+                    lambda m: " " if m.group().isupper() else m.group(), text)
+                if blanked != text:
+                    lang = latin_profile(blanked)["language"]
     # Undecided is not English. Treating it as English sent every Latin-script language we hold no
     # stopwords for to the checkpoint that cannot read it, silently. When nothing identifies the
     # language, non-English letters or a shared Swedish-Danish marker can still prefer the
@@ -717,11 +778,17 @@ def _leaf_non_english(leaf: str) -> Optional[Dict[str, object]]:
         # A named language still has to survive `_named_prose_language`: acronyms and slash
         # compounds are not words. But a veto is not a verdict of English. Dropping the line here
         # skipped the diacritic branch below, which exists for exactly this -- text that carries
-        # non-English letters and that no stopword list can name. `WIE SPAET IST ES IN KOELN`
-        # with its umlauts was vetoed for having no long stopword and then thrown away, so a
-        # German field routed english. A vetoed line now falls through to that branch, which is
-        # also why `language_undecided` is no longer required there: the language was named and
-        # then disbelieved, which is the same evidential position as never having named one.
+        # non-English letters and that no stopword list can name. `WIE SPÄT IST ES IN KÖLN`
+        # was vetoed for having no long stopword and then thrown away, so a German field routed
+        # english; now it falls through and its umlauts carry it. That is also why
+        # `language_undecided` is no longer required below: a language named and then disbelieved
+        # is in the same evidential position as one never named.
+        #
+        # The ASCII spelling `WIE SPAET IST ES IN KOELN` is a different case and is not fixed
+        # here. It has no diacritics to fall through to, and its longest matched German stopword
+        # is `wie`, three letters, so `_SHOUTED_MIN_STOPWORD` vetoes it and nothing recovers it:
+        # genuine German on the English checkpoint, one of the 3,727 upper-cased casualties
+        # counted above and not an example of what this branch buys.
         named = (det["language"] not in (None, "en")
                  and _named_prose_language(sample) is not None)
         if not named:
