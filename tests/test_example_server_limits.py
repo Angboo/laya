@@ -939,8 +939,8 @@ def main():
        and "gate on a threshold you have measured" in tip, tip)
 
     OLD_JS_CHIP = 'toFixed(4)}), "entropy, not calibrated",\n        icon("info")'
-    ok("the browser's chip does not type a formula beside itself either",
-       OLD_JS_CHIP not in srv and "CERTAINTY_LABEL[kind]" in srv)
+    ok("the browser's chip reads the table by the row's type, in the block the page ships",
+       OLD_JS_CHIP not in srv and "CERTAINTY_LABEL[kind]" in demo._PLAYGROUND_JS)
     page = client.get("/").text
     ok("the browser gets the label table from this dict, not a copy of it",
        "const CERTAINTY_LABEL = " + json.dumps(label) in page, json.dumps(label))
