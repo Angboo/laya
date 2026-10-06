@@ -803,6 +803,11 @@ if len(extra_paragraph) == 1:
         "the paragraph says nothing about how `sender` is dropped: %r" % flat,
     )
     check_true(
+        "state/the null claim names the serializer behind it",
+        ("null" not in flat.lower()) or ("serialize_state" in flat),
+        "the paragraph claims a null would reach the prompt without naming what renders it: %r" % flat,
+    )
+    check_true(
         "state/doc and code agree on the filter",
         ("is not None" in inspect.getsource(email_state)) == ("None" in flat),
         "doc names the None filter=%s, code filters on `is not None`=%s"
