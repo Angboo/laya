@@ -222,7 +222,13 @@ class ONNXAgent(HookRegistry):
             self.load_calibration(calibration)
 
     def load_calibration(self, path: str) -> None:
-        """Read a JSON map written by `save_calibration` onto this agent."""
+        """Read a JSON map written by `Agent.save_calibration` onto this agent.
+
+        The file carries three fields and all three are installed: `temperature`,
+        `temperature_by_options` and `binning_map`. A file with no `binning_map` key installs
+        `None`. Temperatures outside `[TEMP_MIN, TEMP_MAX]` are clamped on the way in; binning
+        values are refused with a `ValueError` naming the field rather than clamped.
+        """
         from .calibrate import apply_calibration_payload
         with open(path) as f:
             payload = json.load(f)
