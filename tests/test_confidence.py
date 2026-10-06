@@ -603,6 +603,190 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+
+# --------------------------------------------- example 40 must not call a raw softmax calibrated
+# `examples/40_caching_and_monitoring.py` gates 15 tickets on `answer_confidence`. On main it calls
+# that field "the calibrated probability of the answer Laya reports" in both its banner and its
+# closing paragraph, and its `bucket()` docstring reads "application policy over a calibrated
+# number". `answer_confidence` is max(p) -- the quantity temperature scaling fits and ECE measures
+# -- but the README's own Calibration section says that reading holds *only* after temperatures are
+# fitted and validated, the shipped checkpoints are over-confident, and the loader emits at load
+# time `RuntimeWarning: ... choice:11+=0.10058... -> 0.5. Treat confidence from the affected
+# entries as uncalibrated.` The page now reads the temperature each shape was actually scaled by off
+# the loaded agent and states the calibration as conditional.
+#
+# No weights are loaded here: the four helpers are pulled from the example's AST and exec'd against
+# a fabricated agent, and `scale_for`'s lookup is checked against core's own `temp_bucket`, so the
+# gate drives the code the page runs instead of re-reading its prose.
+from laya.common import QTYPES as _QTYPES40, temp_bucket as _temp_bucket  # noqa: E402
+
+EXAMPLE_40 = os.path.join(ROOT, "examples", "40_caching_and_monitoring.py")
+HELPERS_40 = ("option_count", "scale_for", "clamped_buckets", "entropy_confidence")
+# Names a helper may read from the page's world: the two core symbols it must defer to, and `math`
+# for the entropy. Any other non-builtin free name means this gate cannot drive that helper.
+CORE_GLOBALS_40 = {"temp_bucket", "QTYPES", "math"}
+
+# main's page, as literal source lines. Every ban is witnessed against this text; every positive
+# rule below is witnessed by showing this text does NOT satisfy it.
+OLD_PAGE_40 = '''
+    the triage preset and gates on `answer_confidence`, the calibrated probability of the
+    """Our thresholds, not the model's: application policy over a calibrated number."""
+   The monitor gates on `answer_confidence`: the calibrated probability of the answer Laya
+   distribution has H/log(k) = %.2f, so `confidence` is %.2f while
+   """ % (entropy, 1 - entropy, vague["intent"]["answer_confidence"]))
+'''
+
+UNCONDITIONAL_CALIBRATION = re.compile(r"the calibrated probability", re.I)
+POLICY_OVER_CALIBRATED = re.compile(r"over a calibrated number", re.I)
+SUBSTITUTED_CONFIDENCE = re.compile(r"1\s*-\s*entropy")
+DERIVES_SCALING = re.compile(r"temp_bucket\(")
+READS_REPORTED_CONFIDENCE = re.compile(r"\[[\"']confidence[\"']\]")
+HARDCODED_BUCKET = re.compile(r"[\"'](choice|score|noul):[0-9]")
+
+
+def _src40():
+    with open(EXAMPLE_40, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _helpers40():
+    """Exec only the example's top-level helpers -- its `load()` call needs weights."""
+    tree = ast.parse(_src40())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS_40]
+    ns = {"temp_bucket": _temp_bucket, "QTYPES": _QTYPES40, "math": math}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), EXAMPLE_40, "exec"), ns)  # noqa: S102
+    return ns
+
+
+def _called40():
+    tree = ast.parse(_src40())
+    top = [n for n in tree.body if not isinstance(
+        n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))]
+    return {node.id for stmt in top for node in ast.walk(stmt)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+
+
+def _fn40(name):
+    for n in ast.parse(_src40()).body:
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    raise KeyError(name)
+
+
+class _FakeAgent(object):
+    """Only the three temperature attributes `scale_for` and `clamped_buckets` read."""
+
+    def __init__(self, by_options, per_type, raw=None):
+        self.temperature_by_options = by_options
+        self.temperature = per_type
+        self.temperature_by_options_raw = dict(by_options) if raw is None else raw
+
+
+def test_page40_helpers_are_live_defer_to_core():
+    defined = sorted(n.name for n in ast.parse(_src40()).body
+                     if isinstance(n, ast.FunctionDef) and n.name in HELPERS_40)
+    assert defined == sorted(HELPERS_40), "example 40 lost a helper: %s" % defined
+    ns = _helpers40()
+    unused = set(HELPERS_40) - _called40()
+    assert not unused, "defined but never called at module level: %s" % sorted(unused)
+    for name in HELPERS_40:
+        node = _fn40(name)
+        outside = sorted(n for n in _free_names(node)
+                         if not hasattr(builtins, n) and n not in CORE_GLOBALS_40)
+        assert not outside, "%s reads %s from the page, so this gate cannot drive it" % (name, outside)
+        prints = [c for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "print"]
+        assert not prints, "%s prints instead of returning" % name
+    # `scale_for` must resolve the bucket through core, not carry a typed-in table.
+    assert not HARDCODED_BUCKET.search(ast.dump(_fn40("scale_for"))), (
+        "scale_for hardcodes a bucket name instead of calling temp_bucket")
+
+
+def test_scale_for_replays_core_lookup():
+    """For every shape, scale_for returns exactly `temperature_by_options.get(bucket, per_type)`."""
+    ns = _helpers40()
+    per_type = [7.0, 8.0, 9.0]                       # choice, score, noul fallbacks
+    by_options = {"choice:6-10": 1.0, "noul:2": 1.9834, "score:3-5": 1.2514}
+    fake = _FakeAgent(by_options, per_type)
+    for qtype, k in (("choice", 6), ("noul", 2), ("score", 4), ("noul", 2)):
+        name, applied, in_map = ns["scale_for"](fake, qtype, k)
+        bucket = _temp_bucket(_QTYPES40[qtype], k)
+        assert name == bucket, (qtype, k, name, bucket)
+        assert in_map == (bucket in by_options), (bucket, in_map)
+        assert abs(applied - by_options.get(bucket, per_type[_QTYPES40[qtype]])) < 1e-9, (
+            "%s: %r not core's get(...)" % (bucket, applied))
+    # the fallback arm: an unmapped shape must fall to the per-type temperature, flagged not-in-map.
+    name, applied, in_map = ns["scale_for"](_FakeAgent({}, [0.5, 0.6, 0.7]), "choice", 12)
+    assert (name, applied, in_map) == ("choice:11+", 0.5, False), (name, applied, in_map)
+    # a mapped temperature of exactly 1.0 must be reported as 1.0, not nudged.
+    assert ns["scale_for"](_FakeAgent({"choice:6-10": 1.0}, [1.0, 1.0, 1.0]), "choice", 6) == (
+        "choice:6-10", 1.0, True)
+
+
+def test_option_count_matches_the_shipped_preset():
+    ns = _helpers40()
+    counts = {qid: ns["option_count"](q) for qid, q in laya.triage_questions().items()}
+    assert counts == {"intent": 6, "is_urgent": 2, "frustration": 4,
+                      "refund_requested": 2, "churn_risk": 2}, counts
+
+
+def test_clamped_buckets_names_only_a_shipped_value_the_runtime_refused():
+    ns = _helpers40()
+    # `choice:11+` ships below TEMP_MIN and is clamped to 0.5; everything else ships unchanged.
+    applied = {"choice:11+": 0.5, "noul:2": 1.9834}
+    raw = {"choice:11+": 0.10058280825614929, "noul:2": 1.9834}
+    out = ns["clamped_buckets"](_FakeAgent(applied, [0.5, 0.5, 0.5], raw))
+    assert out == ["choice:11+=0.1006 -> 0.5000"], out
+    # and an honest checkpoint reports nothing.
+    same = {"noul:2": 1.9834}
+    assert ns["clamped_buckets"](_FakeAgent(same, [0.5, 0.5, 0.5], dict(same))) == []
+
+
+def test_entropy_confidence_recomputes_core_exactly():
+    ns = _helpers40()
+    for dist in ([0.5, 0.3, 0.2], [0.9, 0.1], [0.25, 0.25, 0.25, 0.25], [1.0, 0.0, 0.0]):
+        p = np.array(dist, dtype=float)
+        got = ns["entropy_confidence"](dist)
+        want = confidence_from_probs(p, len(dist))
+        assert close(got, want, 1e-9), (dist, got, want)
+    assert ns["entropy_confidence"]([1.0]) == 1.0, "k<2 is 1.0 by definition"
+
+
+def test_page40_drops_the_unconditional_calibration_claim():
+    """Each ban fires on main's page and not on this one -- a ban with no witness is a guess."""
+    src = _src40()
+    for name, rule in (("'the calibrated probability'", UNCONDITIONAL_CALIBRATION),
+                       ("'over a calibrated number'", POLICY_OVER_CALIBRATED),
+                       ("prints `1 - entropy` as the confidence", SUBSTITUTED_CONFIDENCE)):
+        assert rule.search(OLD_PAGE_40), "%s does not fire on the wording it bans" % name
+        assert not rule.search(src), "%s is still in example 40" % name
+
+
+def test_page40_reads_the_scaling_and_the_reported_field():
+    """The positive half: the page must derive the temperature and print the reported field."""
+    src = _src40()
+    assert DERIVES_SCALING.search(src), "the bucket must be resolved through core's temp_bucket"
+    assert READS_REPORTED_CONFIDENCE.search(src), "the page must read the reported `confidence`"
+    # and main's page satisfies none of that, so these rules could not have passed before.
+    assert not DERIVES_SCALING.search(OLD_PAGE_40)
+    assert not READS_REPORTED_CONFIDENCE.search(OLD_PAGE_40)
+
+
+for _fn in (test_page40_helpers_are_live_defer_to_core, test_scale_for_replays_core_lookup,
+            test_option_count_matches_the_shipped_preset,
+            test_clamped_buckets_names_only_a_shipped_value_the_runtime_refused,
+            test_entropy_confidence_recomputes_core_exactly,
+            test_page40_drops_the_unconditional_calibration_claim,
+            test_page40_reads_the_scaling_and_the_reported_field):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-40/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("page-40/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-40/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
