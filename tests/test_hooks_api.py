@@ -957,7 +957,11 @@ for param in ("checkpoint_id", "embedder_id"):
 # Pin the optional TileLang entry points without importing the fast extra in CI.
 import ast  # noqa: E402
 
-with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "laya", "tl_kernels.py")) as f:
+# `encoding="utf-8"` because a bare `open()` takes the runner's locale codec, which is cp1252 on
+# `tests (windows)`; the gate that keeps every repo read in tests/ pinned is section 4 of
+# tests/test_portability.py.
+with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "laya", "tl_kernels.py"),
+          encoding="utf-8") as f:
     _tl_defs = {node.name: node for node in ast.parse(f.read()).body if isinstance(node, ast.FunctionDef)}
 for _name in ("gemm_kernel", "gemm_geglu_kernel", "add_ln_kernel", "rope_kernel", "attn_kernel"):
     _args = _tl_defs[_name].args

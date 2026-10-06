@@ -312,16 +312,9 @@ with mock.patch.object(torch.Tensor, "to", _to_that_ignores_mps):
 TEXT_SUFFIXES = (".md", ".py", ".nix", ".txt", ".yml", ".yaml", ".json", ".toml")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The one suite this gate does not police, and why leaving it is not leaving a live crash: its repo
-# read targets `laya/tl_kernels.py`, which cp1252 decodes today, and seven open pull requests append
-# to this file from hunks that start at lines 946-970 -- inside the context of the read at line 960,
-# so pinning it here would collide with all seven to fix a read that cannot raise. It leaves the set
-# when they land, and the check below fails the moment the exemption stops being earned.
-LOCALE_READ_EXEMPT = {"tests/test_hooks_api.py"}
-
 
 def _repo_reads(src):
-    """The reads of a repo file `src` carries, as `(lineno, path expression, encoding pinned)`.
+    """The reads of a repo file `src` carries, as `(lineno, call name, path expression, pinned)`.
 
     Writes are out of scope: this is about decoding, which only a read does. A read is in scope when
     its path expression names a file that exists in the repo, or builds from the module's own repo
@@ -355,33 +348,33 @@ def _repo_reads(src):
                               for l in literals)
         from_root = any(tok in arg for tok in ("ROOT", "parents[", "dirname(", "__file__"))
         if names_repo_file or from_root:
-            out.append((node.lineno, arg, any(k.arg == "encoding" for k in node.keywords)))
+            out.append((node.lineno, name, arg, any(k.arg == "encoding" for k in node.keywords)))
     return out
 
 
 reads_by_suite = {}
 for _path in sorted(glob.glob(os.path.join(REPO, "tests", "*.py"))):
-    _rel = "tests/" + os.path.basename(_path)
-    if _rel in LOCALE_READ_EXEMPT:
-        continue
     with open(_path, encoding="utf-8") as _fh:
-        reads_by_suite[_rel] = _repo_reads(_fh.read())
+        reads_by_suite["tests/" + os.path.basename(_path)] = _repo_reads(_fh.read())
 
 unpinned = ["%s:%d %s" % (_rel, _lineno, _arg)
             for _rel, _reads in sorted(reads_by_suite.items())
-            for _lineno, _arg, _pinned in _reads if not _pinned]
+            for _lineno, _name, _arg, _pinned in _reads if not _pinned]
 check("encoding/no repo read in tests/ leaves the codec to the locale", unpinned, [])
 
 # The rule must not pass by finding nothing: it has to see the reads that already pin the encoding.
-pinned_seen = sum(1 for _reads in reads_by_suite.values() for _, _, _p in _reads if _p)
+pinned_seen = sum(1 for _reads in reads_by_suite.values() for _, _, _, _p in _reads if _p)
 check_true("encoding/the scan sees the reads that already pin it", pinned_seen >= 10,
            "only %d pinned repo reads found, so the scan is not reaching the suites" % pinned_seen)
-for _rel in sorted(LOCALE_READ_EXEMPT):
-    with open(os.path.join(REPO, _rel), encoding="utf-8") as _fh:
-        _exempt = _repo_reads(_fh.read())
-    check_true("encoding/%s still earns its exemption" % _rel,
-               any(not _p for _, _, _p in _exempt),
-               "every repo read there pins its encoding now, so drop it from the exemption set")
+
+# And it has to see both call shapes. The first version of this scanner read `node.args`, which a
+# `Path.read_text()` does not use -- it carries its path on the object -- so it reported a clean repo
+# while tests/test_evals.py still decoded docs/evals.md with the locale codec. A scan that reaches one
+# shape only passes the half of the convention it can still see.
+shapes_seen = {_name for _reads in reads_by_suite.values() for _, _name, _, _ in _reads}
+check_true("encoding/the scan sees both open() and Path.read_text()",
+           shapes_seen >= {"open", "read_text"},
+           "the scan reached %s only" % sorted(shapes_seen))
 
 # And the premise has to hold: pages the suites read really are UTF-8 that cp1252 cannot decode.
 # Without one such page the rule is a style preference, not a crash guard.
