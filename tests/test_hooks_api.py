@@ -970,6 +970,139 @@ check("compile_cpu/varargs", _args.vararg.arg, "args")
 check("compile_cpu/kwargs", _args.kwarg.arg, "kwargs")
 
 
+# --------------------------------------- docs/hooks/lifecycle.md three-tier composition
+# laya/hooks.py::compose_hooks returns `defaults + installed + per-call`, so every lifecycle
+# diagram and the ordering rules must name all three tiers with defaults first. Pre-fix, the
+# Agent.predict_batch diagram said `installed hooks + per-call hooks (installed first)`, the
+# Router.predict diagram said the same without the parenthetical, the Router.predict_batch
+# diagram added `None and [] add nothing` on top of the same two-tier wording, rule 1 read
+# `Installed hooks run before per-call hooks, always.`, and the example block skipped the
+# defaults row entirely. docs/hooks/patterns.md:261 already documents `Defaults run before the
+# instance and per-call hooks`, so lifecycle.md contradicted both the code and the rest of the
+# docs page set.
+_lifecycle_md = os.path.join(REPO, "docs", "hooks", "lifecycle.md")
+with open(_lifecycle_md, encoding="utf-8") as _lf:
+    _lifecycle_text = _lf.read()
+
+# Three pre-fix diagram substrings and the pre-fix rule/example block, banned verbatim.
+check_true("docs/hooks/lifecycle.md drops the two-tier Agent.predict_batch diagram line",
+           "active  = installed hooks + per-call hooks         (installed first)"
+           not in _lifecycle_text)
+check_true("docs/hooks/lifecycle.md drops the two-tier Router.predict diagram line",
+           "\n  ├─ active = installed hooks + per-call hooks\n" not in _lifecycle_text)
+check_true("docs/hooks/lifecycle.md drops the two-tier Router.predict_batch diagram line",
+           "active = installed hooks + per-call hooks          (installed first; None and [] "
+           "add nothing)" not in _lifecycle_text)
+check_true("docs/hooks/lifecycle.md drops the pre-fix rule 1",
+           "1. Installed hooks run before per-call hooks, always." not in _lifecycle_text)
+check_true("docs/hooks/lifecycle.md drops the pre-fix example block",
+           "installed: [A, B]   per-call: [C]\non_predict_start: A, B, C\non_predict_end:   A, B, C"
+           not in _lifecycle_text)
+
+# Every `active =` composition line must name all three tiers in the order compose_hooks
+# concatenates them: defaults first, installed second, per-call third.
+_ACTIVE_LINES = [ln for ln in _lifecycle_text.splitlines() if "active = default hooks" in ln
+                 or "active  = default hooks" in ln]
+check_true("docs/hooks/lifecycle.md has at least 3 active-composition lines to gate",
+           len(_ACTIVE_LINES) >= 3, "found %d" % len(_ACTIVE_LINES))
+for _i, _line in enumerate(_ACTIVE_LINES):
+    _d = _line.find("default hooks")
+    _ins = _line.find("installed hooks")
+    _pc = _line.find("per-call hooks")
+    check_true("docs/hooks/lifecycle.md active line %d lists all three tiers" % _i,
+               _d != -1 and _ins != -1 and _pc != -1, _line)
+    check_true("docs/hooks/lifecycle.md active line %d orders defaults < installed < per-call"
+               % _i, _d < _ins < _pc, _line)
+
+check_true("docs/hooks/lifecycle.md rule 1 names defaults as the head tier",
+           "Process-wide default hooks run before installed hooks" in _lifecycle_text)
+check_true("docs/hooks/lifecycle.md example block includes a defaults row",
+           "defaults: [D]" in _lifecycle_text and
+           "on_predict_start: D, A, B, C" in _lifecycle_text and
+           "on_predict_end:   D, A, B, C" in _lifecycle_text)
+
+
+# AST-side truth: compose_hooks's return must be exactly `defaults + list(installed) +
+# normalise_hooks(...)`. If a future change reorders the concat, the doc gate above would still
+# pass on stale wording, so bind the doc to the code with this second check.
+from laya import hooks as _hooks_mod  # noqa: E402
+
+_compose_src = inspect.getsource(_hooks_mod.compose_hooks)
+_compose_tree = ast.parse(_compose_src.strip(), "<compose_hooks>")
+_ret = next(n for n in ast.walk(_compose_tree) if isinstance(n, ast.Return))
+_bin = _ret.value
+check_true("laya/hooks.compose_hooks returns a left-nested BinOp of three Add parts",
+           isinstance(_bin, ast.BinOp) and isinstance(_bin.op, ast.Add)
+           and isinstance(_bin.left, ast.BinOp) and isinstance(_bin.left.op, ast.Add),
+           ast.dump(_bin)[:200])
+# Flatten: ((A + B) + C) -> [A, B, C]
+_parts = []
+_node = _bin
+while isinstance(_node, ast.BinOp) and isinstance(_node.op, ast.Add):
+    _parts.append(_node.right)
+    _node = _node.left
+_parts.append(_node)
+_parts.reverse()
+_part_names = []
+for _p in _parts:
+    if isinstance(_p, ast.Name):
+        _part_names.append(_p.id)
+    elif isinstance(_p, ast.Call) and isinstance(_p.func, ast.Name):
+        _part_names.append(_p.func.id + "()")
+    elif isinstance(_p, ast.List):
+        _part_names.append("[]")
+    else:
+        _part_names.append(ast.dump(_p)[:40])
+check("laya/hooks.compose_hooks concat order is defaults, installed, per-call",
+      _part_names, ["defaults", "list()", "normalise_hooks()"])
+# The head part is a local `defaults` binding; prove it is the ternary that reads
+# default_hooks() behind _SKIP_DEFAULTS, so the doc's "defaults first" claim is anchored to
+# the process-wide registry and not to an arbitrary local list.
+_defaults_assign = None
+for _stmt in ast.walk(_compose_tree):
+    if isinstance(_stmt, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "defaults" for t in _stmt.targets):
+        _defaults_assign = _stmt.value
+        break
+check_true("compose_hooks binds `defaults` to a ternary on _SKIP_DEFAULTS",
+           isinstance(_defaults_assign, ast.IfExp),
+           ast.dump(_defaults_assign)[:200] if _defaults_assign else "no assign")
+_ifexp_src = ast.dump(_defaults_assign)
+check_true("compose_hooks's defaults ternary reads default_hooks()",
+           "default_hooks" in _ifexp_src)
+check_true("compose_hooks's defaults ternary respects _SKIP_DEFAULTS",
+           "_SKIP_DEFAULTS" in _ifexp_src)
+
+
+# Live-driver: call compose_hooks directly with a set default hook and observe the composition
+# order. This is the exact concatenation the doc's three-tier diagrams describe.
+_compose_probe_seen = []
+
+
+class _ComposeProbe(_hooks_mod.BaseHook):
+    def __init__(self, label):
+        self.label = label
+
+    def on_predict_start(self, ctx):
+        _compose_probe_seen.append(self.label)
+
+
+_installed_probe = _ComposeProbe("installed")
+_per_call_probe = _ComposeProbe("per-call")
+_default_probe = _ComposeProbe("defaults")
+try:
+    _hooks_mod.set_default_hooks(hooks=[_default_probe])
+    _composed = _hooks_mod.compose_hooks([_installed_probe], hooks=[_per_call_probe])
+    check("compose_hooks returns defaults, installed, per-call in that order",
+          [h.label for h in _composed], ["defaults", "installed", "per-call"])
+    _ctx_probe = PredictContext(states=["s"], questions={}, model="m")
+    _hooks_mod.dispatch(_composed, "on_predict_start", _ctx_probe, raise_errors=True)
+    check("dispatch of composed hooks fires defaults, installed, per-call in order",
+          _compose_probe_seen, ["defaults", "installed", "per-call"])
+finally:
+    _hooks_mod.clear_default_hooks()
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
