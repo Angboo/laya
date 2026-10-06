@@ -603,6 +603,104 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+# --------------------------------------- DecisionResult's docstring must split confidence by question type
+# `laya/structured.py`'s `DecisionResult` closed with "confidence keeps the **normalized-entropy
+# value** it has always had, because that is a different quantity on a scale that depends on the
+# label count". `Agent._decode_answers` (`laya/agent.py:1349-1402`) uses two different formulas:
+#   * `choice` and `score`  ->  `confidence_from_probs(p, k)` = `1 - H(p) / log(k)`
+#   * `noul`                ->  `max(p_true, 1 - p_true)`  (its own comment: "identical here:
+#                               over two options `max(p_true, 1 - p_true)` is `max(p)`")
+# The `noul` branch is deliberately not entropy: with k=2, entropy 1 - H/log(2) hits its floor
+# (0.0) exactly when the answer is a coin flip, which is inverted from what a boolean reporter
+# wants. `structured._details` (`:303`) copies `answer["confidence"]` verbatim, so
+# `DecisionResult.confidence` is per-type -- the docstring's blanket "normalized-entropy"
+# claim is false for every boolean field a caller projects. Same defect class as examples 18/40
+# (#972, #973) but in the public docstring rather than in an example banner.
+STRUCTURED = os.path.join(ROOT, "laya", "structured.py")
+OLD_DECISIONRESULT_DOC = """The detailed result of `decide(..., return_details=True)`.
+
+    `confidence` keeps the normalized-entropy value it has always had, because that is a
+    different quantity on a scale that depends on the label count. A field that reported no
+    usable `answer_confidence` maps to `None`, which is not the same as a reported `0.0`.
+"""
+_BAN_ENTROPY_UNIFORM = re.compile(r"`confidence` keeps the normalized-entropy value", re.I)
+_NAMED_MAX_PT = re.compile(r"max\(p_true,\s*1 - p_true\)")
+_NAMED_ENTROPY_FORMULA = re.compile(r"1 - H\(p\) / log\(k\)")
+_NAMED_CHOICE_SCORE = re.compile(r"`choice` and\s+`score`", re.I)
+_NAMED_NOUL = re.compile(r"for\s+`noul`", re.I)
+_NAMED_NOT_ENTROPY = re.compile(r"not an\s+entropy", re.I)
+
+
+def _decisionresult_doc():
+    """Return the `DecisionResult` class docstring via `ast`, so the gate reads what a caller
+    reads at `help(laya.structured.DecisionResult)` time."""
+    with open(STRUCTURED, encoding="utf-8") as fh:
+        src = fh.read()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.ClassDef) and node.name == "DecisionResult":
+            return ast.get_docstring(node) or ""
+    return ""
+
+
+def test_decisionresult_drops_the_uniform_entropy_claim():
+    assert _BAN_ENTROPY_UNIFORM.search(OLD_DECISIONRESULT_DOC), (
+        "the ban must fire on the pre-fix wording")
+    doc = _decisionresult_doc()
+    assert doc, "the DecisionResult class docstring was removed -- the gate has nothing to read"
+    assert not _BAN_ENTROPY_UNIFORM.search(doc), (
+        "`laya/structured.py`'s `DecisionResult` again claims `confidence` is uniformly the "
+        "normalized entropy. `noul` fields carry `max(p_true, 1 - p_true)`, a probability, "
+        "which is not an entropy and does not scale with the label count.")
+
+
+def test_decisionresult_names_both_confidence_formulas():
+    doc = _decisionresult_doc()
+    assert _NAMED_ENTROPY_FORMULA.search(doc), (
+        "the docstring must name the entropy formula `1 - H(p) / log(k)`")
+    assert _NAMED_MAX_PT.search(doc), (
+        "the docstring must name `max(p_true, 1 - p_true)` for the noul branch")
+    assert _NAMED_CHOICE_SCORE.search(doc), (
+        "the docstring must attribute the entropy formula specifically to `choice` and `score`")
+    assert _NAMED_NOUL.search(doc), (
+        "the docstring must attribute the probability formula specifically to `noul`")
+    assert _NAMED_NOT_ENTROPY.search(doc), (
+        "the docstring must state that the `noul` value is not an entropy, so a caller cannot "
+        "silently re-collapse the two again")
+
+
+def test_noul_and_entropy_confidence_are_different_quantities():
+    # The witness: on the same 2-class distribution `confidence_from_probs` and the shipped
+    # `noul` formula disagree sharply, so a docstring that says "confidence is normalized
+    # entropy" and cites label count is wrong by construction. If they ever converge (say,
+    # if `noul` switched to entropy), the docstring fix would need review and this test
+    # tells the reader.
+    uniform = np.array([0.5, 0.5])
+    entropy_val = confidence_from_probs(uniform, 2)
+    noul_val = max(float(uniform[1]), 1.0 - float(uniform[1]))
+    assert entropy_val == 0.0 and noul_val == 0.5, (
+        "the two formulas must disagree at the uniform 2-class: entropy=%r, noul=%r; if "
+        "they've converged, the docstring's per-type split is stale" % (entropy_val, noul_val))
+    # And on a peaked 2-class, entropy-confidence stays near 1 but is not the reported probability.
+    peak = np.array([0.01, 0.99])
+    entropy_peak = confidence_from_probs(peak, 2)
+    noul_peak = max(float(peak[1]), 1.0 - float(peak[1]))
+    assert abs(noul_peak - 0.99) < 1e-6 and abs(entropy_peak - 0.9192) < 1e-3, (
+        "at (0.01, 0.99): entropy=%r (expect ~0.919) noul=%r (expect 0.99) -- if the values "
+        "moved, the docstring's formula names need re-checking" % (entropy_peak, noul_peak))
+
+
+for _fn in (test_decisionresult_drops_the_uniform_entropy_claim,
+            test_decisionresult_names_both_confidence_formulas,
+            test_noul_and_entropy_confidence_are_different_quantities):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("structured-doc/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("structured-doc/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("structured-doc/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
