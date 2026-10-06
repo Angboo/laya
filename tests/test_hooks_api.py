@@ -794,15 +794,24 @@ check("patterns.md/enrich still guards the recursion", len(ctx.results), len(BAT
 
 
 class ChildCaller(Enricher):
-    """The nested-call page's stand-in enricher: it remembers the child calls it is asked to make."""
+    """The nested-call page's stand-in enricher.
+
+    Mirrors `Agent.predict` exactly: `state` and `questions` positional, `on_predict_start`
+    fired before the return with a fresh child `PredictContext`, and NO `run_id` in the
+    payload (that field lives on `PredictContext`, `laya/hooks.py:35`, and no predict path
+    writes it into the response dict).
+    """
 
     def __init__(self):
         self.calls = []
 
-    def predict(self, state, questions):
+    def predict(self, state, questions, on_predict_start=None):
         result = Enricher.predict(self, state, questions)
-        result["run_id"] = "child-%d" % (len(self.calls) + 1)
         self.calls.append(state)
+        child_ctx = taught_ctx(states=[state], confidence=[0.4])
+        child_ctx.run_id = "child-%d" % len(self.calls)
+        if on_predict_start is not None:
+            on_predict_start(child_ctx)
         return result
 
 
@@ -968,6 +977,35 @@ _args = _tl_defs["compile_cpu"].args
 check("compile_cpu/arguments", [arg.arg for arg in _args.args], ["kernel"])
 check("compile_cpu/varargs", _args.vararg.arg, "args")
 check("compile_cpu/kwargs", _args.kwarg.arg, "kwargs")
+
+
+# --------------------------------------------- docs/hooks/tracing.md nested-calls example
+# reads the child's `run_id`. `Agent.predict` returns `model`/`answers`/`usage` and `Router.predict`
+# adds `routing` -- no path returns a `run_id`, which is a `PredictContext` field
+# (laya/hooks.py:35). The pre-fix example's `child.get("run_id")` silently recorded `None`, so a
+# reader copying it linked every child span to no run at all.
+_tracing_md = os.path.join(REPO, "docs", "hooks", "tracing.md")
+with open(_tracing_md, encoding="utf-8") as _tf:
+    _tracing_text = _tf.read()
+
+check_true("docs/hooks/tracing.md drops the child.get('run_id') read",
+           'child.get("run_id")' not in _tracing_text and 'child["run_id"]' not in _tracing_text)
+check_true("docs/hooks/tracing.md nested-call example reads child_ctx.run_id",
+           "child_ctx.run_id" in _tracing_text)
+check_true("docs/hooks/tracing.md nested-call example passes a per-call on_predict_start",
+           "on_predict_start=link" in _tracing_text)
+
+# Code truth: no laya predict path ever writes `"run_id":` as a payload key, so the ban cannot be
+# re-falsified by adding the key at a later refactor.
+for _src_rel in ("laya/agent.py", "laya/router.py", "laya/onnx_agent.py", "laya/serve.py"):
+    with open(os.path.join(REPO, _src_rel), encoding="utf-8") as _sf:
+        _src_text = _sf.read()
+    check('%s never writes "run_id" as a payload key' % _src_rel,
+          '"run_id":' in _src_text, False)
+
+# PredictContext really exposes run_id, which is the field the corrected example reads.
+_pc_fields = {f.name for f in dataclasses.fields(PredictContext)}
+check("PredictContext/run_id is a dataclass field", "run_id" in _pc_fields, True)
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
