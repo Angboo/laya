@@ -603,6 +603,105 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+# ------------------------------------------- tl_kernels' docstring must name the caller's real padding policy
+# `laya/tl_kernels.py`'s module docstring said "M must be a multiple of 16 (the caller pads);
+# out-of-bounds rows are predicated by TileLang". The caller pads two dimensions, not one:
+# `laya/backends/base.py::bucket_rows` pads the batch dim to the next power of two (1, 2, 4, 8,
+# 16, 32, ...) and `bucket_tokens` pads the sequence dim to a 16-token bucket up to
+# `DYNAMIC_MAX_L` and a 64-token bucket beyond. M is the flattened `rows * tokens`, so the
+# multiple-of-16 came from the token dim, never from the row dim. A reader who took the
+# docstring as a row constraint would add `assert M % 16 == 0` at the call site and break
+# every batch of 1, 2, 4, or 8 questions -- and the shipped `pad_batch` tests already pin those
+# shapes: `tests/test_backends.py:86` "pad_batch/one row stays one row" is (1, 16), and
+# `:89` "pad_batch/five rows pad to eight" is (8, 16).
+TL_KERNELS = os.path.join(ROOT, "laya", "tl_kernels.py")
+OLD_TL_DOCSTRING = (
+    "GPU kernels take 16-bit activations (bf16 by default, fp16 with dtype=\"float16\"), accumulate in fp32.  Row count M is a runtime\n"
+    "symbol so one compiled kernel serves every batch/sequence bucket; M must be a\n"
+    "multiple of 16 (the caller pads); out-of-bounds rows are predicated by TileLang.\n"
+    "Use compile_cpu for an explicit fp32 CPU specialization; the GPU defaults are unchanged."
+)
+_BAN_ROW_MULT_16 = re.compile(r"M must be a\s*\n?\s*multiple of 16 \(the caller pads\)", re.I)
+_BAN_MULT_16_FROM_ROW = re.compile(r"multiple[- ]of[- ]16[^.\n]{0,80}from the row dim", re.I)
+_NAMED_POWER_OF_TWO = re.compile(r"power of two", re.I)
+_NAMED_16_TOKEN_BUCKET = re.compile(r"16[- ]token bucket", re.I)
+_NAMED_NOT_ROW_DIM = re.compile(r"not the row dim", re.I)
+_NAMED_BUCKET_ROWS = re.compile(r"\bbucket_rows\b")
+_NAMED_BUCKET_TOKENS = re.compile(r"\bbucket_tokens\b")
+
+
+def _tl_docstring():
+    """Return `laya/tl_kernels.py`'s module docstring via `ast`, so the gate reads what a
+    reader reads -- not whatever happens to appear in a comment."""
+    with open(TL_KERNELS, encoding="utf-8") as fh:
+        src = fh.read()
+    return ast.get_docstring(ast.parse(src)) or ""
+
+
+def test_tl_kernels_drops_the_wrong_row_claim():
+    # The ban fires on the pre-fix docstring...
+    assert _BAN_ROW_MULT_16.search(OLD_TL_DOCSTRING), "the ban must fire on the pre-fix wording"
+    # ...and does not fire on the shipped one.
+    doc = _tl_docstring()
+    assert doc, "the tl_kernels module docstring was removed -- the gate has nothing to read"
+    assert not _BAN_ROW_MULT_16.search(doc), (
+        "`laya/tl_kernels.py` again says M must be a multiple of 16 because the caller pads; "
+        "the caller pads rows to a power of two (1, 2, 4, 8, ...). A reader who trusts the "
+        "claim asserts `M % 16 == 0` at the call site and breaks every small batch.")
+    # The second ban catches the mis-attribution (claiming the 16-multiple comes from rows).
+    assert not _BAN_MULT_16_FROM_ROW.search(doc), (
+        "the docstring attributes the multiple-of-16 to the row dim; `bucket_rows` pads to a "
+        "power of two, so the 16-multiple is a token-dim artefact.")
+
+
+def test_tl_kernels_names_the_real_padding_policy():
+    doc = _tl_docstring()
+    assert _NAMED_POWER_OF_TWO.search(doc), (
+        "the docstring must name the row pad as a power of two, matching `bucket_rows`")
+    assert _NAMED_16_TOKEN_BUCKET.search(doc), (
+        "the docstring must name the token pad as a 16-token bucket, matching `bucket_tokens`")
+    assert _NAMED_BUCKET_ROWS.search(doc), (
+        "the docstring must attribute the row pad to `bucket_rows`, the function that does it")
+    assert _NAMED_BUCKET_TOKENS.search(doc), (
+        "the docstring must attribute the token pad to `bucket_tokens`, the function that does it")
+    assert _NAMED_NOT_ROW_DIM.search(doc), (
+        "the docstring must name the row dim as the wrong source of the 16-multiple, so a "
+        "reader cannot re-attribute it back")
+
+
+def test_bucket_rows_stays_a_power_of_two_below_16():
+    # The witness: rows below 16 really do stay at 1, 2, 4, 8, so the pre-fix claim
+    # ("M must be a multiple of 16 (the caller pads)") was false for them. If `bucket_rows`
+    # ever starts rounding to 16, the docstring fix needs review and this test says so.
+    from laya.backends.base import bucket_rows
+    for n, want in ((1, 1), (2, 2), (3, 4), (4, 4), (5, 8), (7, 8), (8, 8), (9, 16),
+                    (15, 16), (17, 32), (24, 32), (33, 64)):
+        got = bucket_rows(n)
+        assert got == want, (
+            "bucket_rows(%d) returned %d, expected %d -- the docstring's row contract needs "
+            "review" % (n, got, want))
+        assert got & (got - 1) == 0, (
+            "bucket_rows(%d) = %d is not a power of two; the docstring's `power of two` claim "
+            "is stale" % (n, got))
+    # Rows below 16 must stay below 16 -- that is the case the pre-fix docstring got wrong.
+    for n in (1, 2, 4, 8):
+        assert bucket_rows(n) == n, (
+            "bucket_rows(%d) = %d; a caller that trusts the old multiple-of-16 claim would "
+            "expect 16 here" % (n, bucket_rows(n)))
+
+
+for _fn in (test_tl_kernels_drops_the_wrong_row_claim,
+            test_tl_kernels_names_the_real_padding_policy,
+            test_bucket_rows_stays_a_power_of_two_below_16):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("tl-kernels/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("tl-kernels/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("tl-kernels/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
