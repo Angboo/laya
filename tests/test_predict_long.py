@@ -1968,7 +1968,7 @@ for _doc_name, _doc, _stop in _WINDOW_DOCSTRINGS:
         _stop_at = _para.find(_stop, _start)
         _para = _para[_start:_stop_at if _stop_at > -1 else None]
     check_true("floor/%s teaches the floored default" % _doc_name,
-               _DEFAULT_EXPR in _para, _para[:160])
+               bool(_DEFAULT_EXPR) and _DEFAULT_EXPR in _para, _para[:160])
     check_true("floor/%s states the budget nowhere without the floor" % _doc_name,
                "max_len - head_max_len - 8" not in _para.replace(_DEFAULT_EXPR or "", ""),
                _para[:160])
