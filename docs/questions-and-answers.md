@@ -136,9 +136,12 @@ if ans["answer_confidence"] >= THRESHOLD:
     ...
 ```
 
-`confidence` is normalized entropy: high when the distribution is peaked, low when it is spread
-out, regardless of whether the top answer is correct. It is a useful signal and it is **not** on
-the same scale, so the two must not be gated against one number:
+`confidence` is not one formula. On a `choice` or a `score` it is normalized entropy — high when the
+distribution is peaked, low when it is spread out, regardless of whether the top answer is correct,
+and its scale moves with the option count. On a `noul` it is `max(p_true, 1 - p_true)`, the
+probability of the side being reported, which is why `urgent` below reads 0.8727 rather than the 0.45
+entropy gives over two options. Either way it is **not** on `answer_confidence`'s scale, so the two
+must not be gated against one number:
 
 ```python
 # the same three answers, and the two numbers are not the same
