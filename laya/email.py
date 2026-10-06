@@ -280,7 +280,11 @@ def email_state(subject: str, body: str, sender: Optional[str] = None, clean: bo
     which passes the body through whole.
 
     Any other keyword becomes a field of the state, so it is read by the model; a typo here is an
-    input mutation, not an error.
+    input mutation, not an error. The exception is a keyword whose value is exactly ``None``: it is
+    dropped rather than added, so ``email_state(..., thread_id=None)`` leaves no ``thread_id`` field
+    at all -- an omitted field and a null one are the same state to the model. ``sender`` is dropped
+    on the same call but by a different rule, falsiness rather than ``None``, so ``sender=""``
+    leaves no ``from`` field either.
     """
     state = {
         "subject": (subject or "").strip(),

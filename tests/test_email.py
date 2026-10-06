@@ -773,6 +773,62 @@ check(
     clean_email_body(LONG_BODY),
 )
 
+# `email_state`'s `**extra` paragraph said "any other keyword becomes a field of the state", and
+# the body underneath it reads `if v is not None` -- a keyword carrying None never becomes a field.
+# The paragraph now names the filter, and these checks tie the two halves together: the live calls
+# pin what the code really does, and the docstring checks pin the prose to it. `sender` is the same
+# shape of silence on a different rule (falsy, not None), so it is checked separately rather than
+# folded into the same claim.
+extra_paragraph = [
+    p for p in (inspect.getdoc(email_state) or "").split("\n\n") if "becomes a field" in p
+]
+check_true(
+    "state doc/exactly one paragraph describes **extra",
+    len(extra_paragraph) == 1,
+    "found %d paragraph(s) mentioning 'becomes a field'" % len(extra_paragraph),
+)
+if len(extra_paragraph) == 1:
+    # Flatten so the prose wrapping mid-sentence cannot hide a token from the match.
+    flat = " ".join(extra_paragraph[0].split())
+    check_true(
+        "state doc/the keyword rule names the None filter",
+        "None" in flat and ("dropped" in flat or "omitted" in flat),
+        "the paragraph still claims every keyword becomes a field without naming the None case: %r"
+        % flat,
+    )
+    check_true(
+        "state/doc names sender's own drop rule",
+        "from" in flat or "sender" in flat,
+        "the paragraph says nothing about how `sender` is dropped: %r" % flat,
+    )
+    check_true(
+        "state/doc and code agree on the filter",
+        ("is not None" in inspect.getsource(email_state)) == ("None" in flat),
+        "doc names the None filter=%s, code filters on `is not None`=%s"
+        % ("None" in flat, "is not None" in inspect.getsource(email_state)),
+    )
+
+check(
+    "state/a None-valued keyword is dropped, not added",
+    "thread_id" in email_state("Billing", "Short body", thread_id=None),
+    False,
+)
+check(
+    "state/a keyword with a value becomes a field",
+    email_state("Billing", "Short body", thread_id="t-9").get("thread_id"),
+    "t-9",
+)
+check(
+    "state/a falsy sender is dropped while None extras are",
+    "from" in email_state("Billing", "Short body", sender=""),
+    False,
+)
+check(
+    "state/the dropped keys are absent, not null",
+    sorted(email_state("Billing", "Short body", sender=None, thread_id=None)),
+    ["body", "subject"],
+)
+
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
