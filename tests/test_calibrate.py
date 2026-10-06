@@ -709,8 +709,12 @@ check("contract/the summary line names all three installed fields",
 check_true("contract/the summary line calls it a copy of three, not two",
            _summary_line.startswith("Copy `temperature`, `temperature_by_options` and `binning_map`"),
            _summary_line)
+# The split has to be stated *as* the split: "clamp" and "refuse" both appear elsewhere in this
+# page whatever it says, so the check reads the window that follows the contrast it is claiming.
+_contrast = "opposite value policies"
+_policy_window = (_apply_doc.split(_contrast)[-1][:500] if _contrast in _apply_doc else "")
 check_true("contract/the docstring states the clamp-vs-refuse split, not one policy for both",
-           "clamp" in _apply_doc and "refuse" in _apply_doc, _apply_doc[:200])
+           "clamp" in _policy_window and "refus" in _policy_window, _apply_doc[:200])
 check_true("contract/the docstring says a keyless file clears the map, not leaves it",
            "installs `None`" in _apply_doc and "clears" in _apply_doc, _apply_doc[:300])
 # The pre-fix wording, banned so the count claim cannot come back.
