@@ -427,8 +427,9 @@ class ONNXAgent(HookRegistry):
             state: Text string, JSON dict, or conversation turn list.
             questions: Question definitions, exactly as accepted by `system_one`.
             window: State tokens per window. Defaults to the per-question state budget
-                    (`max_len - head_max_len - 8`). Smaller windows isolate a localized signal
-                    better at the cost of more windows, as in `Agent.predict_long`.
+                    (`max(64, max_len - head_max_len - 8)`; the 64 is a floor). Smaller windows
+                    isolate a localized signal better at the cost of more windows, as in
+                    `Agent.predict_long`.
             stride: Token step between windows. Defaults to `window // 2` (50% overlap).
             aggregate: "auto" (the per-type rules above) is the only mode for now.
             batch_size: Cap on windows per session run, to bound peak memory on very long states.

@@ -1643,9 +1643,11 @@ class Agent(HookRegistry):
             above describe this method's windows, not the text the model read
 
         Args:
-            window: state tokens per window. Defaults to the checkpoint's state budget
-                    (`max_len - head_max_len - 8`), and either way is capped at the room the
-                    questions leave for the state inside `max_len` -- the smallest room of them,
+            window: state tokens per window. Defaults to the checkpoint's state budget,
+                    `max(64, max_len - head_max_len - 8)` -- the 64 is a floor, so widening
+                    `head_max_len` stops shrinking the default once the budget reaches it -- and
+                    either way is capped at the room the questions leave for the state inside
+                    `max_len` -- the smallest room of them,
                     because one list of windows is scored for every question. A wider window is
                     re-truncated on the way to the model, so it is clamped instead, with a
                     `RuntimeWarning` when the caller is the one who asked for it. Options are what
