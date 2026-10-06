@@ -970,6 +970,89 @@ check("compile_cpu/varargs", _args.vararg.arg, "args")
 check("compile_cpu/kwargs", _args.kwarg.arg, "kwargs")
 
 
+# --------------------------------------- docs/hooks/errors.md hooks_raise and hooks_timeout
+# enumerations. Pre-fix the page named 4 surfaces for hooks_raise and 5 for hooks_timeout, so a
+# reader never knew predict_long / ONNXAgent.predict_batch / ONNXAgent.predict_long /
+# Router.route_batch / Router.predict_batch carried the controls. The code truth is: every
+# public class-body `def` on Agent / Router / ONNXAgent that takes a `hooks_raise` or
+# `hooks_timeout` kwarg, with the alias assignments (`predict = system_one`,
+# `system_one = predict`, `predict = system_one`) excluded so the page does not double-list.
+_errors_md = os.path.join(REPO, "docs", "hooks", "errors.md")
+with open(_errors_md, encoding="utf-8") as _ef:
+    _errors_text = _ef.read()
+
+check_true("docs/hooks/errors.md drops the pre-fix hooks_raise parenthetical",
+           "(`hooks_raise=` on `predict_batch`,\n`system_one`, `Router.route`, `Router.predict`)"
+           not in _errors_text)
+check_true("docs/hooks/errors.md drops the pre-fix hooks_timeout four-plus-one list",
+           "per call on `predict_batch`, `system_one`,\n`Router.route`, `Router.predict` "
+           "and `ONNXAgent.system_one`" not in _errors_text)
+
+
+def _paragraph(marker):
+    start = _errors_text.index(marker)
+    stop = _errors_text.find("\n\n", start)
+    return _errors_text[start:stop if stop != -1 else len(_errors_text)]
+
+
+_QUALIFIED = re.compile(r"`([A-Z][A-Za-z]+\.[a-z_]+)`")
+_raise_doc = set(_QUALIFIED.findall(_paragraph("It is set per instance and can be overridden")))
+_timeout_doc = set(_QUALIFIED.findall(_paragraph("It can be set per instance or overridden")))
+
+check_true("docs/hooks/errors.md hooks_raise paragraph names at least 11 surfaces",
+           len(_raise_doc) >= 11, "found %d" % len(_raise_doc))
+check_true("docs/hooks/errors.md hooks_timeout paragraph names at least 11 surfaces",
+           len(_timeout_doc) >= 11, "found %d" % len(_timeout_doc))
+
+
+def _canonical_surfaces(module_path, cls_name):
+    with open(module_path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    alias_names = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    alias_names.add(tgt.id)
+    for cls in tree.body:
+        if isinstance(cls, ast.ClassDef) and cls.name == cls_name:
+            for sub in cls.body:
+                if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Name):
+                    for tgt in sub.targets:
+                        if isinstance(tgt, ast.Name):
+                            alias_names.add(tgt.id)
+            out = {"hooks_raise": set(), "hooks_timeout": set()}
+            for sub in cls.body:
+                if not isinstance(sub, ast.FunctionDef):
+                    continue
+                if sub.name in alias_names or sub.name.startswith("_"):
+                    continue
+                kwnames = {a.arg for a in list(sub.args.args) + list(sub.args.kwonlyargs)}
+                for kw in ("hooks_raise", "hooks_timeout"):
+                    if kw in kwnames:
+                        out[kw].add("%s.%s" % (cls_name, sub.name))
+            return out
+    raise AssertionError("%s not a top-level class in %s" % (cls_name, module_path))
+
+
+_real_raise, _real_timeout = set(), set()
+for _mod_rel, _cls in [("laya/agent.py", "Agent"),
+                        ("laya/router.py", "Router"),
+                        ("laya/onnx_agent.py", "ONNXAgent")]:
+    _per = _canonical_surfaces(os.path.join(REPO, _mod_rel), _cls)
+    _real_raise |= _per["hooks_raise"]
+    _real_timeout |= _per["hooks_timeout"]
+
+check("docs/hooks/errors.md hooks_raise surfaces match laya's class bodies",
+      _raise_doc, _real_raise)
+check("docs/hooks/errors.md hooks_timeout surfaces match laya's class bodies",
+      _timeout_doc, _real_timeout)
+check_true("laya's AST scan finds at least 9 hooks_raise surfaces",
+           len(_real_raise) >= 9, "found %d" % len(_real_raise))
+check_true("laya's AST scan finds at least 11 hooks_timeout surfaces",
+           len(_real_timeout) >= 11, "found %d" % len(_real_timeout))
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
