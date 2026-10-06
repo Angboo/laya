@@ -736,6 +736,30 @@ def test_page_cites_the_numbers_the_repo_functions_produce():
             "the page's `noul` answer would no longer carry the same number in both fields")
 
 
+def _binning_targets(path):
+    """What the installed binning map is applied to inside `_decode_answers`.
+
+    The page closes its tour with "`binning_map` remaps `answer_confidence` and leaves `confidence`
+    alone", which is a claim about the builder, not about prose: the map's input is the raw
+    `answer_confidence`, and the two `confidence` expressions sit outside that branch.
+    """
+    src = _src03(path)
+    func = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.FunctionDef) and n.name == "_decode_answers")
+    return [ast.get_source_segment(src, node.args[0]) for node in ast.walk(func)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "apply_binning_map" and node.args)]
+
+
+def test_the_remap_reaches_only_answer_confidence():
+    for path in (AGENT_PY, ONNX_PY):
+        targets = _binning_targets(path)
+        assert targets, "%s no longer applies a binning map inside the answer builder" % path
+        assert all(t == "ans_raw" for t in targets), (
+            "the page says a calibration payload remaps `answer_confidence` and leaves "
+            "`confidence` alone, but %s remaps %s" % (path, sorted(set(targets))))
+
+
 def test_the_two_agents_answer_the_same_way():
     """Parity arm: the ONNX path builds the same two expressions, so one page can be true of both."""
     agent_exprs = _confidence_exprs(AGENT_PY)
@@ -752,6 +776,7 @@ def test_the_two_agents_answer_the_same_way():
 for _fn in (test_page_drops_the_single_entropy_formula,
             test_page_names_the_formulas_the_agents_build,
             test_page_cites_the_numbers_the_repo_functions_produce,
+            test_the_remap_reaches_only_answer_confidence,
             test_the_two_agents_answer_the_same_way):
     try:
         _fn()
