@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import laya  # noqa: E402
 from laya import email as email_module  # noqa: E402
 from laya import presets  # noqa: E402
+from laya.common import serialize_state  # noqa: E402
 from laya.email import clean_email_body, email_state  # noqa: E402
 
 PASS, FAIL = [], []
@@ -827,6 +828,24 @@ check(
     "state/the dropped keys are absent, not null",
     sorted(email_state("Billing", "Short body", sender=None, thread_id=None)),
     ["body", "subject"],
+)
+# The rewritten paragraph claims the drop matters because the state reaches the model as JSON, so
+# that mechanism is checked against `serialize_state` rather than left as prose: a dropped key must
+# leave no `null` in the serialized prompt, and a retained one must.
+check_true(
+    "state/the mechanism the doc names really renders JSON",
+    "json.dumps" in inspect.getsource(serialize_state),
+    "`serialize_state` no longer serializes with JSON, so the paragraph's prompt claim is stale",
+)
+check(
+    "state/a dropped key leaves no null in the serialized state",
+    "null" in serialize_state(email_state("Billing", "Short body", sender=None, thread_id=None)),
+    False,
+)
+check(
+    "state/a keyword with a value does reach the serialized state",
+    '"thread_id": "t-9"' in serialize_state(email_state("Billing", "Short body", thread_id="t-9")),
+    True,
 )
 
 
