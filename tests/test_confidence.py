@@ -603,6 +603,96 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+# --------------------------------------- `docs/questions-and-answers.md` must count what `laya` exports
+# The Presets section opens with "Three ready-made question sets" and its example imports three
+# names, but `laya/__init__.py` re-exports five `*_questions` helpers -- `triage_questions`,
+# `email_questions`, `guard_questions`, `moderation_questions`, `router_questions` -- and every one
+# is in `laya.__all__`. A caller who reads "three" and picks from the shipped list misses two of
+# the five; the doc drifts silently as presets get added because nothing ties the number to the
+# exports. This gate reads the actual `laya.__all__` inventory so any future preset -- e.g. the
+# Swedish sets on #729 -- fails the doc until the doc is updated alongside the export.
+DOC_QA = os.path.join(ROOT, "docs", "questions-and-answers.md")
+OLD_PRESET_INTRO = "Three ready-made question sets, so the common cases do not need hand-written criteria:"
+_NUMBER_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+                 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten"}
+
+
+def _preset_exports():
+    """The names `laya` publicly exports that end in `_questions`.
+
+    Read via `laya.__all__`, not `dir(laya)` -- a helper that exists but is not in the export
+    tuple is an internal name and does not need a doc mention.
+    """
+    import laya
+    return sorted(n for n in laya.__all__ if n.endswith("_questions"))
+
+
+def _doc_preset_section():
+    with open(DOC_QA, encoding="utf-8") as fh:
+        src = fh.read()
+    idx = src.find("## Presets")
+    if idx == -1:
+        return ""
+    nxt = src.find("\n## ", idx + len("## Presets"))
+    return src[idx:] if nxt == -1 else src[idx:nxt]
+
+
+def _doc_stated_count_word(section):
+    m = re.search(r"\b(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)\s+ready-made\s+question", section, re.I)
+    return m.group(1) if m else None
+
+
+def test_presets_page_drops_the_three_set_claim():
+    # The witness: the pre-fix wording is banned, so if the doc ever regresses to "Three"
+    # while the exports are still five, the gate fires.
+    assert "Three ready-made" in OLD_PRESET_INTRO, (
+        "the ban's literal must itself carry the wrong count, otherwise the ban is vacuous")
+    section = _doc_preset_section()
+    assert section, "the Presets section was removed -- the gate has nothing to read"
+    word = _doc_stated_count_word(section)
+    actual = len(_preset_exports())
+    expected_word = _NUMBER_WORDS.get(actual)
+    assert word == expected_word, (
+        "docs/questions-and-answers.md's Presets section says %r but `laya.__all__` exports "
+        "%d `*_questions` helpers (%s). Update the doc's number word to %r (or, if it has "
+        "grown past the mapped words, extend `_NUMBER_WORDS`)." %
+        (word, actual, ", ".join(_preset_exports()), expected_word))
+
+
+def test_presets_page_names_every_exported_preset():
+    section = _doc_preset_section()
+    exports = _preset_exports()
+    assert exports, "`laya.__all__` has no `*_questions` names -- either the exports moved or " \
+                    "this gate is checking the wrong thing"
+    missing = [n for n in exports if ("`" + n + "`") not in section]
+    assert not missing, (
+        "docs/questions-and-answers.md's Presets section does not name these exported helpers "
+        "in backticks: %s. A caller who reads only this page cannot discover them." % missing)
+
+
+def test_presets_page_no_three_claim_witness():
+    # Direct ban on the pre-fix wording, independent of the count-regex, so a future PR that
+    # quietly reverts to "Three" fails with an explicit "this phrase is banned" message rather
+    # than a numeric-mismatch one.
+    section = _doc_preset_section()
+    assert "Three ready-made question sets" not in section, (
+        "`docs/questions-and-answers.md` again says \"Three ready-made question sets\". As of "
+        "this PR `laya.__all__` exports five `*_questions` helpers; if the number has since "
+        "changed, update the doc's number word AND this ban's literal together.")
+
+
+for _fn in (test_presets_page_drops_the_three_set_claim,
+            test_presets_page_names_every_exported_preset,
+            test_presets_page_no_three_claim_witness):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("docs-presets/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("docs-presets/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("docs-presets/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
