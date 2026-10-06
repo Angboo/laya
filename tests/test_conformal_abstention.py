@@ -171,23 +171,36 @@ check("vocabulary/bucket_keys() is exactly what common.temp_bucket produces",
       {temp_bucket(QTYPES[qt], k) for qt in ("choice", "score", "noul") for k in range(2, 25)})
 
 # An accepted key that no answer resolves to is the same silent hole as a rejected one that some
-# answer does resolve to, so the reachability has to be driven, not asserted from the spelling.
-def _answer_for(key):
-    qt, size = key.split(":")
-    return ans(qt, {"2": 2, "3-5": 4, "6-10": 8, "11+": 12}[size], 0.5)
+# answer does resolve to, so the reachability has to be driven, not asserted from the spelling. And
+# it has to *report* an unknown band: a band in the vocabulary that no answer produces is exactly
+# the case under test, so this must not be a lookup that dies on it.
+BAND_K = {"2": 2, "3-5": 4, "6-10": 8, "11+": 12}
+
+unreachable = []
+for _key in sorted(confidence_module.bucket_keys()):
+    _qt, _, _size = _key.partition(":")
+    _a = ans(_qt, BAND_K[_size], 0.5) if _size in BAND_K else None
+    if _a is None or confidence_module._option_bucket(_a) != _key:
+        unreachable.append(_key)
+check("vocabulary/every accepted bucket is reachable by some answer", unreachable, [])
 
 
-check("vocabulary/every accepted bucket is reachable by some answer",
-      sorted(k for k in confidence_module.bucket_keys()
-             if confidence_module._option_bucket(_answer_for(k)) != k), [])
+def _accepts(m):
+    """The validated map, or the refusal's text -- so a widened or narrowed vocabulary reports which
+    key it stopped taking, rather than a `default` rejection ending the suite on a traceback."""
+    try:
+        return check_min_confidence_map(m)
+    except ValueError as _e:
+        return "raised: %s" % _e
+
 
 FULL = {k: 0.5 for k in sorted(confidence_module.bucket_keys())}
-check("validate/a complete bucket map is accepted unchanged", check_min_confidence_map(dict(FULL)), FULL)
+check("validate/a complete bucket map is accepted unchanged", _accepts(dict(FULL)), FULL)
 check("validate/'default' is still accepted beside the buckets",
-      check_min_confidence_map({**FULL, "default": 0.2}), {**FULL, "default": 0.2})
+      _accepts({**FULL, "default": 0.2}), {**FULL, "default": 0.2})
 # The producer and the validator have to agree, or the documented path
 # (`fit_abstention_thresholds` -> `min_confidence=`) raises on its own output.
-check("validate/the fitted map this suite ran on passes the validator", check_min_confidence_map(dict(thr)), dict(thr))
+check("validate/the fitted map this suite ran on passes the validator", _accepts(dict(thr)), dict(thr))
 
 BOGUS = {
     "choice:2-5": "an invented band",
@@ -230,9 +243,11 @@ _bucket_src = inspect.getsource(confidence_module._option_bucket)
 check_true("vocabulary/_option_bucket reads BUCKET_QTYPES",
            "BUCKET_QTYPES" in _bucket_src and '("choice", "score", "noul")' not in _bucket_src,
            _bucket_src)
-check_true("vocabulary/the module comment points at the suite that holds the copy",
-           "test_conformal_abstention" in inspect.getsource(confidence_module),
-           "the torch-free copy is ungated again")
+_lines = inspect.getsource(confidence_module).splitlines()
+_at = next((i for i, l in enumerate(_lines) if l.startswith("BUCKET_QTYPES")), None)
+check_true("vocabulary/the comment above BUCKET_QTYPES names the suite that holds the copy",
+           _at is not None and any("test_conformal_abstention" in l for l in _lines[max(0, _at - 5):_at]),
+           "no pointer within five lines above the vocabulary")
 
 
 
