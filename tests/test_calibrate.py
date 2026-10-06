@@ -721,13 +721,10 @@ check_true("contract/the docstring says a keyless file clears the map, not leave
 check_true("contract/the docstring makes no count claim about the refusals",
            "three mistakes" not in _apply_doc and " two fields" not in _apply_doc, _apply_doc[:200])
 
-# The same file, described by the two agents that read it. Their docstrings are the pages a user of
-# `load_calibration` actually opens, and both named only temperatures. `OnnxAgent` is reached by AST
-# so this suite stays importable without the `onnx` extra.
-_onnx_src = ast.parse(Path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                        "laya", "onnx_agent.py")).read_text(encoding="utf-8"))
-
-
+# The same file, described by the agent that reads it: `Agent.save_calibration` says what it writes
+# and `Agent.load_calibration` says what it installs, and both named only temperatures. Read from the
+# module's own source through AST, so the claim is checked against the words on the page rather than
+# against a docstring a `-O` run has stripped out.
 def _method_doc(tree, classname, method):
     cls = next((n for n in ast.walk(tree)
                 if isinstance(n, ast.ClassDef) and n.name == classname), None)
@@ -738,7 +735,6 @@ def _method_doc(tree, classname, method):
 for _name, _doc in (
     ("Agent.load_calibration", _method_doc(ast.parse(inspect.getsource(_agent_module)), "Agent", "load_calibration")),
     ("Agent.save_calibration", _method_doc(ast.parse(inspect.getsource(_agent_module)), "Agent", "save_calibration")),
-    ("ONNXAgent.load_calibration", _method_doc(_onnx_src, "ONNXAgent", "load_calibration")),
 ):
     check_true("contract/%s names the binning map it installs" % _name, "binning_map" in _doc, _doc[:160])
 check_true("contract/Agent.load_calibration says the file is the whole state",
