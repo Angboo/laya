@@ -21,7 +21,9 @@ matrix below, not by a single seed.
 | `evaluate.py` | Accuracy / ECE / Brier on the test split, under shipped and raw temperatures |
 | `metrics.py` | The notebook's metric definitions (shared by `evaluate.py` and the smoke test) |
 | `order_flip.py` | Inference-only 20-option flip rate on `massive_intent.en` |
+| `analyze_gate_d.py` | Summarise `step4_gate_d_results.json` into the 3-seed panel + verdict |
 | `smoke_test.py` | CPU, weight-free: metric plumbing + CLI wiring + tiny end-to-end |
+| `kaggle/` | Generators for the self-contained single-T4 Kaggle kernels (Gate R, Gate D) |
 
 ## Exact benchmark contract
 
