@@ -3288,3 +3288,108 @@ def test_idle_unload_retries_failure_and_stops_at_shutdown(monkeypatch):
     router.loaded = ["english"]
     router.unloaded.clear()
     assert not router.unloaded.wait(0.15)
+
+
+# -------------------------------- docs/typescript-sdk.md must list the keys the /health handler returns
+# The SDK page's contract sentence used to say "public `/health` returns `status`, `loaded`,
+# and `device`" while `laya/serve.py`'s authorized branch returns seven keys -- `status`,
+# `loaded`, `revisions`, `device`, `device_is_preference`, `checkpoint_devices`, and
+# `cpu_fallbacks` -- and the unauthenticated branch returns only `LIVENESS_ONLY = {"status":
+# "ok"}`. Two docs (#811 gated `docs/http-api.md`, and README:103 advertises the CPU-fallback
+# reporting) describe the full shape, so the SDK page contradicted them. The gate AST-parses the
+# handler's returns so the doc's key set has to match the code's -- any new /health field added
+# to the return dict must be named on this page too, or the test fails with the exact mismatch.
+TS_SDK_PAGE = os.path.join(ROOT, "docs", "typescript-sdk.md")
+TS_SDK_OLD_CLAIM = (
+    "Laya's public `/health` returns `status`, `loaded`, and `device`. "
+    "Prediction never probes health first."
+)
+
+
+def _serve_health_return_keys():
+    """Every literal dict key the `health` handler returns across all branches.
+
+    `LIVENESS_ONLY` is a module-level dict, so the `return LIVENESS_ONLY` branch resolves via
+    the module scope; the authorized `return {...}` branch contributes its own keys directly.
+    """
+    with open(os.path.join(ROOT, "laya", "serve.py"), encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename="laya/serve.py")
+    module_dicts = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    module_dicts[target.id] = {
+                        k.value for k in node.value.keys if isinstance(k, ast.Constant)
+                    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "health":
+            keys = set()
+            for ret in ast.walk(node):
+                if not isinstance(ret, ast.Return) or ret.value is None:
+                    continue
+                value = ret.value
+                if isinstance(value, ast.Dict):
+                    keys.update(k.value for k in value.keys if isinstance(k, ast.Constant))
+                elif isinstance(value, ast.Name) and value.id in module_dicts:
+                    keys.update(module_dicts[value.id])
+            return keys
+    raise AssertionError("no `health` handler found in laya/serve.py -- gate is checking a moved symbol")
+
+
+def _ts_sdk_health_claim_keys():
+    r"""The backticked key names in the sentence that opens 'public `/health` returns'.
+
+    The claim spans two lines on this page, so read from "public \`/health\` returns" up to the
+    sentence-ending "Prediction never probes health first" before collecting backticked names;
+    that stops the scan from picking up later backticked references.
+    """
+    with open(TS_SDK_PAGE, encoding="utf-8") as handle:
+        page = handle.read()
+    start = page.find("public `/health` returns")
+    assert start != -1, "the /health claim was removed from docs/typescript-sdk.md -- gate has nothing to read"
+    tail = page[start:]
+    end = tail.find("Prediction never probes health first")
+    assert end != -1, "the /health claim's tail sentence is gone -- the gate cannot bound its scan"
+    sentence = tail[:end]
+    return set(re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", sentence)) - {"health"}
+
+
+def test_ts_sdk_health_claim_matches_the_handler():
+    """The SDK page must name exactly the keys `laya/serve.py`'s `health` handler returns."""
+    assert "returns `status`, `loaded`, and `device`" in TS_SDK_OLD_CLAIM, (
+        "the pre-fix literal must itself carry the wrong key set, otherwise this ban is vacuous")
+    # Sanity-check the AST extraction: the shipped code returns seven keys on the authorized
+    # branch, so a future PR that reshapes /health without updating this page fails below.
+    handler_keys = _serve_health_return_keys()
+    assert "status" in handler_keys, "the LIVENESS_ONLY short-circuit disappeared; the AST reader missed it"
+    for key in ("loaded", "revisions", "device", "device_is_preference",
+                "checkpoint_devices", "cpu_fallbacks"):
+        assert key in handler_keys, "%s is not in the /health handler's return set -- did the " \
+                                    "shape change without this test being updated?" % key
+    documented = _ts_sdk_health_claim_keys()
+    assert documented == handler_keys, (
+        "docs/typescript-sdk.md's /health sentence names %s, but `laya/serve.py`'s `health` "
+        "handler returns %s. Any drift here misleads a caller who reads only the SDK page." % (
+            sorted(documented), sorted(handler_keys)))
+
+
+def test_ts_sdk_health_claim_drops_the_three_key_version():
+    """Ban the pre-fix wording directly so a plain revert fails with an explicit message.
+
+    Independent of the set-equality test above; a numeric or word change in the handler still
+    trips the AST path, but a straight "put the sentence back the way it was" fails here with
+    a pointer to the actual shape.
+    """
+    with open(TS_SDK_PAGE, encoding="utf-8") as handle:
+        page = handle.read()
+    banned = "returns `status`, `loaded`, and `device`"
+    assert banned not in page, (
+        "docs/typescript-sdk.md again says `/health` returns only `status`, `loaded`, and "
+        "`device`. `laya/serve.py`'s authorized branch has seven keys and the unauthenticated "
+        "branch has one; if either shape has since changed, update this ban's literal too.")
+
+
+# `re` is not imported at the top of this file; import here so the helper above can use it
+# without changing the module's existing import order.
+import re  # noqa: E402
