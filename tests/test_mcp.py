@@ -2587,7 +2587,10 @@ def test_shortlist_metadata_keys_are_documented():
     import re
 
     root = Path(__file__).resolve().parents[1]
-    with open(root / "laya" / "shortlist.py") as f:
+    # `encoding="utf-8"` on every read below, for the reason recorded at the README read in the
+    # batch-shape gate: `Path.read_text()` and `open()` default to the locale encoding, which is
+    # cp1252 on the Windows runner, and these pages and `laya/shortlist.py` carry UTF-8.
+    with open(root / "laya" / "shortlist.py", encoding="utf-8") as f:
         shortlist_src = f.read()
     # Scoped to predict_shortlist's own body: predict_tournament also builds a `meta[qid]` dict,
     # and a module-wide walk would depend on which one ast.walk happens to reach first.
@@ -2617,8 +2620,8 @@ def test_shortlist_metadata_keys_are_documented():
     by_name = {t.name: t for t in asyncio.run(mcp_server.list_tools())}
     surfaces = {
         "tool description": by_name["laya_shortlist"].description,
-        "README": (root / "README.md").read_text(),
-        "docs/cli-mcp.md": (root / "docs" / "cli-mcp.md").read_text(),
+        "README": (root / "README.md").read_text(encoding="utf-8"),
+        "docs/cli-mcp.md": (root / "docs" / "cli-mcp.md").read_text(encoding="utf-8"),
     }
     for where, text in surfaces.items():
         flat = " ".join(text.split())
