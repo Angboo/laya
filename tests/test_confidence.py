@@ -603,6 +603,100 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+# ------------------------------------------ example 26's banner must count the primitives triage_questions() returns
+# `examples/26_presets_triage.py` opened with "`triage_questions()` is a ready-made schema for
+# inbound support: five questions ... a multi-way choice, two yes/no probabilities, and an ordinal
+# score". `laya.triage_questions()` ships three `noul` fields -- `is_urgent`, `refund_requested`,
+# `churn_risk` -- plus the choice and the score, so the banner's own arithmetic read 1 + 2 + 1 = 4
+# against its stated "five questions", and the example's own print block already prints all three
+# `noul` values two paragraphs later. A reader counting primitives against the schema could not
+# reconcile them.
+EXAMPLE_26 = os.path.join(ROOT, "examples", "26_presets_triage.py")
+OLD_BANNER_26 = '''
+    `triage_questions()` is a ready-made schema for inbound support: five questions, one
+    forward pass. It mixes all three primitives -- a multi-way choice, two yes/no
+    probabilities, and an ordinal score -- so a single call fills a whole triage record.
+'''
+_BAN_TWO_YESNO = re.compile(r"\btwo\s+yes/no\s+probabilit", re.I)
+# The banner's own stated counts. `_WORDS` maps each spelling that could stand for one primitive.
+_STATED_TOTAL_26 = re.compile(r"\b(one|two|three|four|five|six)\s+questions", re.I)
+_STATED_YESNO_26 = re.compile(r"\b(one|two|three|four|five|six)\s+yes/no\s+probabilit", re.I)
+_STATED_CHOICE_26 = re.compile(r"\b(a|one)\s+multi-way\s+choice", re.I)
+_STATED_SCORE_26 = re.compile(r"\b(a|an)\s+ordinal\s+score", re.I)
+_WORDS = {"one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+
+
+def _src26():
+    with open(EXAMPLE_26, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _triage_type_counts():
+    from laya.presets import triage_questions
+    q = triage_questions()
+    by_type = {}
+    for spec in q.values():
+        by_type[spec["type"]] = by_type.get(spec["type"], 0) + 1
+    return len(q), by_type
+
+
+def test_triage_preset_is_one_choice_three_noul_one_score():
+    # The gate's positive anchor: this is the schema the banner must describe. If `triage_questions()`
+    # ever moves, the banner test fails here first, and the drift is loud rather than silent.
+    n_total, by_type = _triage_type_counts()
+    assert n_total == 5, "triage_questions() no longer returns five fields: %r" % (by_type,)
+    assert by_type == {"choice": 1, "noul": 3, "score": 1}, \
+        "triage_questions()'s type mix moved: %r" % (by_type,)
+
+
+def test_example_26_banner_counts_match_the_preset():
+    n_total, by_type = _triage_type_counts()
+    src = _src26()
+    m_total = _STATED_TOTAL_26.search(src)
+    m_yesno = _STATED_YESNO_26.search(src)
+    m_choice = _STATED_CHOICE_26.search(src)
+    m_score = _STATED_SCORE_26.search(src)
+    assert m_total and m_yesno and m_choice and m_score, (
+        "the banner no longer spells out its primitive counts; the gate needs them readable")
+    assert _WORDS[m_total.group(1).lower()] == n_total, \
+        "banner says %r questions, triage_questions() returns %d" % (m_total.group(1), n_total)
+    assert _WORDS[m_yesno.group(1).lower()] == by_type["noul"], \
+        "banner says %r yes/no probabilities, triage_questions() returns %d noul fields" % \
+        (m_yesno.group(1), by_type["noul"])
+    assert _WORDS[m_choice.group(1).lower()] == by_type["choice"]
+    assert _WORDS[m_score.group(1).lower()] == by_type["score"]
+    # Parts must add up to the whole the same paragraph asserts.
+    parts = (_WORDS[m_choice.group(1).lower()] + _WORDS[m_yesno.group(1).lower()]
+             + _WORDS[m_score.group(1).lower()])
+    assert parts == _WORDS[m_total.group(1).lower()], (
+        "banner arithmetic is wrong: %d + %d + %d = %d but it says %d questions" % (
+            _WORDS[m_choice.group(1).lower()], _WORDS[m_yesno.group(1).lower()],
+            _WORDS[m_score.group(1).lower()], parts, _WORDS[m_total.group(1).lower()]))
+
+
+def test_example_26_drops_the_wrong_yes_no_count():
+    # The ban has teeth: it fires on the pre-fix wording shipped on main.
+    assert _BAN_TWO_YESNO.search(OLD_BANNER_26), "the ban must fire on the pre-fix wording"
+    # ...and every count regex still reads the OLD banner as its pre-fix numbers, so the positive
+    # rule was genuinely falsifiable.
+    m = _STATED_YESNO_26.search(OLD_BANNER_26)
+    assert m is not None and _WORDS[m.group(1).lower()] == 2
+    # The current example satisfies the ban.
+    assert not _BAN_TWO_YESNO.search(_src26()), "the wrong yes/no count is back in the shipped example"
+
+
+for _fn in (test_triage_preset_is_one_choice_three_noul_one_score,
+            test_example_26_banner_counts_match_the_preset,
+            test_example_26_drops_the_wrong_yes_no_count):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-26/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("page-26/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-26/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
