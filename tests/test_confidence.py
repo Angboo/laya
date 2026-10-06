@@ -603,6 +603,141 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+# ------------------------------------------ example 30's score confidence recomputation
+# `examples/30_custom_schema_design.py` teaches the `score` answer type on the page. Main's
+# version asserted -- in prose, with nothing to check it against -- that "`confidence` on a
+# score is normalised entropy, so a wide-but-ordered distribution looks unconfident". That is
+# the inverse of the repo's own definition: `laya.common.confidence_from_probs` returns
+# `1 - H(p) / log(k)`, examples 18/28/40 all describe it as "1 minus normalised entropy", and
+# the sentence was self-contradictory in place -- if confidence were the entropy itself, a wide
+# distribution would read as HIGH confidence, not "unconfident".
+#
+# The fix rewrites the sentence to the correct definition AND recomputes the field on the spot:
+# `entropy_confidence(list(probabilities.values()))` is printed next to
+# `answer["severity"]["confidence"]` for both records, so the reader sees 1 - H/log(k) produce
+# the reported 0.2314 / 0.2019 to within rounding. No weights are loaded here; the gate execs
+# the helper from the example's own AST and drives it against `confidence_from_probs`.
+EXAMPLE_30 = os.path.join(ROOT, "examples", "30_custom_schema_design.py")
+HELPERS_30 = ("entropy_confidence",)
+
+# The page as it ships on main: the sentence this PR replaces, verbatim. The ban below must
+# fire on this text and not on the current example; the positive rules must fire on the
+# current example and not on this text.
+OLD_PAGE_30 = '''
+print("   them, and a choice when the labels are unordered. Read the score itself: `confidence`")
+print("   on a score is normalised entropy, so a wide-but-ordered distribution looks")
+print("   unconfident even when the expected level is informative.")
+'''
+
+# The definition stated as the entropy itself rather than 1 - H/log(k).
+INVERTED_SCORE_DEF = re.compile(
+    r"`confidence`[^.]{0,120}?\bon a score is (?:the )?normali[sz]ed entropy", re.I | re.S)
+# The correct shape, either symbolic or spelled out.
+SCORE_DEFINES_1_MINUS_H = re.compile(
+    r"1\s*-\s*H\s*/\s*log\(k\)|one\s+minus\s+the\s+normali[sz]ed\s+entropy", re.I)
+# The recomputation call must be in the source, not just asserted. Two parts: the page must
+# read the reported probabilities off the answer, and it must feed them into the helper.
+PROBS_READ = re.compile(
+    r"list\(\s*ans\[\"severity\"\]\[\"probabilities\"\]\s*\.\s*values\(\)\s*\)")
+HELPER_CALLED = re.compile(r"entropy_confidence\(")
+# Reported and recomputed values printed side by side (either literal digits or a %.Nf
+# conversion the page formats them with).
+PRINTS_REPORTED_AND_RECOMPUTED = re.compile(
+    r"reported\s+(?:%?\.\d+f|[\d.]+)\s*,\s*recomputed", re.I)
+
+
+def _src30():
+    with open(EXAMPLE_30, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _helpers30():
+    """Exec the example's pure top-level helpers. `entropy_confidence` reads `math`."""
+    tree = ast.parse(_src30())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS_30]
+    ns = {"math": math}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), EXAMPLE_30, "exec"), ns)  # noqa: S102
+    return ns, {n.name for n in nodes}
+
+
+def _called30():
+    """Names the example's top-level *statements* use, so a helper cannot pass by being dead."""
+    tree = ast.parse(_src30())
+    top = [n for n in tree.body if not isinstance(
+        n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))]
+    return {node.id for stmt in top for node in ast.walk(stmt)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+
+
+def test_page30_helpers_are_live_and_pure():
+    """`entropy_confidence` is defined, called at top level, and returns rather than prints."""
+    _, defined = _helpers30()
+    assert defined == set(HELPERS_30), "example 30 lost a helper: %s" % sorted(defined)
+    unused = set(HELPERS_30) - _called30()
+    assert not unused, "defined but never called at module level: %s" % sorted(unused)
+    tree = ast.parse(_src30())
+    for name in HELPERS_30:
+        node = next(n for n in tree.body
+                    if isinstance(n, ast.FunctionDef) and n.name == name)
+        prints = [c for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                  and c.func.id == "print"]
+        assert not prints, "%s prints instead of returning" % name
+
+
+def test_entropy_confidence_matches_core():
+    """Recomputing 1 - H/log(k) by hand must equal `confidence_from_probs` on the same list."""
+    ns = _helpers30()[0]
+    for probs in ([0.5, 0.5], [0.1, 0.9], [0.25, 0.25, 0.25, 0.25],
+                  [0.7, 0.2, 0.05, 0.05], [1e-9, 0.999999999, 0.0],
+                  [0.4, 0.3, 0.2, 0.1], [0.05, 0.15, 0.3, 0.35, 0.1, 0.05]):
+        got = ns["entropy_confidence"](list(probs))
+        want = confidence_from_probs(np.array(probs, dtype=float), len(probs))
+        assert abs(got - want) < 1e-9, (probs, got, want)
+    assert ns["entropy_confidence"]([1.0]) == 1.0, "k=1 is certain"
+    assert ns["entropy_confidence"]([]) == 1.0, "k=0 does not crash"
+
+
+def test_page30_drops_the_inverted_definition():
+    """The ban fires on main's sentence and not on this one; the positive rule inverts."""
+    src = _src30()
+    assert INVERTED_SCORE_DEF.search(OLD_PAGE_30), \
+        "the ban does not fire on main's wording"
+    assert not INVERTED_SCORE_DEF.search(src), \
+        "the inverted definition is still in example 30"
+    assert SCORE_DEFINES_1_MINUS_H.search(src), \
+        "the correct 1 - H/log(k) definition is missing"
+    assert not SCORE_DEFINES_1_MINUS_H.search(OLD_PAGE_30), \
+        "the positive rule passes on main's page too"
+
+
+def test_page30_recomputes_in_place():
+    """The reader sees the field cross-checked against the probabilities that produced it."""
+    src = _src30()
+    assert PROBS_READ.search(src), \
+        "the score section no longer reads the reported `probabilities` list"
+    assert HELPER_CALLED.search(src), \
+        "the score section no longer calls `entropy_confidence`"
+    assert PRINTS_REPORTED_AND_RECOMPUTED.search(src), \
+        "reported and recomputed values are not printed side by side"
+    assert not PROBS_READ.search(OLD_PAGE_30)
+    assert not HELPER_CALLED.search(OLD_PAGE_30)
+    assert not PRINTS_REPORTED_AND_RECOMPUTED.search(OLD_PAGE_30)
+
+
+for _fn in (test_page30_helpers_are_live_and_pure,
+            test_entropy_confidence_matches_core,
+            test_page30_drops_the_inverted_definition,
+            test_page30_recomputes_in_place):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-30/%s: %s" % (_fn.__name__, e))
+    except Exception as e:
+        FAIL.append("page-30/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-30/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
