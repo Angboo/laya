@@ -603,6 +603,225 @@ for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_
     else:
         PASS.append("page-28/%s" % _fn.__name__)
 
+
+# -------------------------------- evals' --min-confidence wording must match the gate's effect
+#
+# `laya/evals_cli.py`, `laya/evals.py`, `docs/evals.md`, `tests/test_evals.py` and
+# `tests/test_evals_api.py` each describe the abstention gate's role in a scored run. Their
+# previous wording claimed the threshold changes what scores: "answers below it come back
+# abstained", "an abstention overwrites a low-confidence choice", "the run scores the policy
+# at that threshold, not the raw argmax", "a `precision@coverage` figure for a policy that
+# never ran". But `apply_confidence_gate` in this module writes `low_confidence` and
+# `abstention` state fields and leaves `answer["choice"]/["noul"]/["score"]` untouched, and
+# every `Evaluator.score` and `_correct` in `laya/evals.py` reads only those value keys. So the
+# metrics -- accuracy, ece, brier, aurc, selective_accuracy@NN -- are identical at every
+# threshold; what changes is `report.config["timing"]["min_confidence"]` and `min_confidence_sent`,
+# which the wording below must describe as claims about the run, not claims about the answers.
+
+_EVALS_CLI_PATH = os.path.join(ROOT, "laya", "evals_cli.py")
+_EVALS_PY_PATH = os.path.join(ROOT, "laya", "evals.py")
+_EVALS_MD_PATH = os.path.join(ROOT, "docs", "evals.md")
+_TEST_EVALS_PATH = os.path.join(ROOT, "tests", "test_evals.py")
+_TEST_EVALS_API_PATH = os.path.join(ROOT, "tests", "test_evals_api.py")
+
+
+def _read_text(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _docstring_of(path, func_name):
+    """A function's docstring pulled out of the file, so a ban can point at one site not the file."""
+    tree = ast.parse(_read_text(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            return ast.get_docstring(node) or ""
+    return ""
+
+
+def _cli_help_of(path, flag):
+    """The concatenated `help=` literal on a `parser.add_argument(flag, ...)` call."""
+    tree = ast.parse(_read_text(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and node.args \
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == flag:
+            for kw in node.keywords:
+                if kw.arg == "help":
+                    try:
+                        return ast.literal_eval(kw.value) or ""
+                    except (ValueError, SyntaxError):
+                        return ""
+    return ""
+
+
+# The wrong-language patterns: each is a claim that the threshold changes the scored numbers.
+_BAN_COME_BACK_ABSTAINED = re.compile(r"come back\s+abstained", re.I)
+_BAN_OVERWRITES_A_LOW = re.compile(r"abstention\s+overwrites\s+a\s+low", re.I)
+_BAN_SCORES_POLICY = re.compile(r"scores the policy at (?:the|that) threshold", re.I)
+_BAN_VS_RAW_ARGMAX = re.compile(r"(?:rather than|not)\s+the\s+raw\s+argmax", re.I)
+_BAN_MINCONFIDENCE_CHANGES_ANSWER = re.compile(
+    r"`min_confidence`[^.\n]{0,80}?changes the answ", re.I)
+_BAN_UNLIKE_GROUPING_CHANGES = re.compile(
+    r"[Uu]nlike\s+`?grouping`?[^.]{0,40}?changes the answ", re.I)
+_BAN_PRECISION_NUMBER_FOR_POLICY = re.compile(
+    r"precision@coverage`?\s+(?:number|figure)\s+for a policy that never ran", re.I)
+_BAN_WOULD_REPORT_PRECISION = re.compile(
+    r"would report `?precision@coverage`?", re.I)
+_BAN_OTHERWISE_SCORE_POLICY = re.compile(
+    r"otherwise score a policy that never ran", re.I)
+_BAN_NO_WAY_TO_MEASURE_PATCOV = re.compile(
+    r"no way to measure `?precision@coverage", re.I)
+_BAN_A_SCORING_CONTROL = re.compile(r"(?:it is|that is|dropping) a\b[^.\n]{0,10}scoring control", re.I)
+_BAN_ANSWER_NOT_SAME_DECISION = re.compile(
+    r"an answer below the threshold is not the same decision", re.I)
+_BAN_T0_T07_DIFFERENT_EXPERIMENT = re.compile(
+    r"same run at `T=0` and `T=0\.7` is a different experiment", re.I)
+_BAN_SWEEP_IS_SERIES = re.compile(
+    r"`precision@coverage`\s+sweep is a series of these", re.I)
+_BAN_CHANGES_WHICH_ANSWERS_SCORE = re.compile(
+    r"(?:abstention threshold|min_confidence).{0,30}?changes which answers score", re.I | re.S)
+
+_EVALS_BANS = (
+    _BAN_COME_BACK_ABSTAINED, _BAN_OVERWRITES_A_LOW, _BAN_SCORES_POLICY,
+    _BAN_VS_RAW_ARGMAX, _BAN_MINCONFIDENCE_CHANGES_ANSWER,
+    _BAN_UNLIKE_GROUPING_CHANGES, _BAN_PRECISION_NUMBER_FOR_POLICY,
+    _BAN_WOULD_REPORT_PRECISION, _BAN_OTHERWISE_SCORE_POLICY,
+    _BAN_NO_WAY_TO_MEASURE_PATCOV, _BAN_A_SCORING_CONTROL,
+    _BAN_ANSWER_NOT_SAME_DECISION, _BAN_T0_T07_DIFFERENT_EXPERIMENT,
+    _BAN_SWEEP_IS_SERIES, _BAN_CHANGES_WHICH_ANSWERS_SCORE,
+)
+
+# Positive claims the wording must make: name the two state fields `apply_confidence_gate`
+# writes. A wording that only says what the gate does NOT do is a diff, not a fix.
+_SAYS_LOW_CONFIDENCE = re.compile(r"low_confidence")
+_SAYS_ABSTENTION_FIELD = re.compile(
+    r"abstention[^a-zA-Z]{0,3}[:=]?[^a-zA-Z]{0,3}[\"']abstained[^a-zA-Z]{0,3}[\"']")
+
+# The pre-fix wording at each of the ten sites we touched, so every ban above has a witness
+# it fires on. A ban that never fires is a rule the code cannot check.
+_OLD_E1 = ("abstention threshold on `answer_confidence` (#361): answers below it come back "
+           "abstained, so the run scores the policy at that threshold rather than the raw "
+           "argmax.")
+_OLD_E2 = ("`min_confidence` changes the answer (an abstention overwrites a low-confidence "
+           "choice), so it is a scoring control, not an optimisation. silently dropping the "
+           "threshold and reporting the same run would give a `precision@coverage` number for "
+           "a policy that never ran")
+_OLD_E3 = ("answers below it come back abstained, so the run scores the policy at that "
+           "threshold, not the raw argmax. Unlike `sort_by_length` this changes the answers")
+_OLD_E4 = ("because an abstention threshold changes which answers score as correct. Silently "
+           "dropping it would publish a `precision@coverage` number for a policy that never ran")
+_OLD_E5 = ("or drop the threshold -- the report would otherwise score a policy that never ran")
+_OLD_MD1 = ("Unlike grouping, this changes the answers that score: the same run at `T=0` and "
+            "`T=0.7` is a different experiment, and a `precision@coverage` sweep is a series "
+            "of these, not a single baseline drifting.")
+_OLD_MD2 = ("Silently dropping a scoring control is the class of lie this harness exists to "
+            "prevent: the report would publish a `precision@coverage` figure for a policy "
+            "that never ran.")
+_OLD_T1 = ("That is a scoring control: an answer below the threshold is not the same decision "
+           "as one above. A `laya-evals run` that could not pass it through had no way to "
+           "measure `precision@coverage` at any threshold")
+_OLD_T2 = ("Silently dropping a scoring control would report `precision@coverage` for a "
+           "policy that never ran.")
+_OLD_T3 = ("a `--min-confidence` run that silently dropped the argument would publish a "
+           "`precision@coverage` figure for a policy that never ran")
+
+_OLD_EVALS_SITES = (_OLD_E1, _OLD_E2, _OLD_E3, _OLD_E4, _OLD_E5,
+                    _OLD_MD1, _OLD_MD2, _OLD_T1, _OLD_T2, _OLD_T3)
+
+
+def test_abstention_wording_bans_have_teeth():
+    """Every ban fires on a pre-fix site, and every pre-fix site is caught by at least one ban."""
+    matched = [[bool(rule.search(old)) for rule in _EVALS_BANS] for old in _OLD_EVALS_SITES]
+    for i, old in enumerate(_OLD_EVALS_SITES):
+        assert any(matched[i]), "site %d's pre-fix wording is not caught by any ban:\n%s" % (i, old)
+    for j, rule in enumerate(_EVALS_BANS):
+        assert any(matched[i][j] for i in range(len(_OLD_EVALS_SITES))), \
+            "ban /%s/ never fires on any pre-fix wording: a rule without a witness" % rule.pattern
+
+
+def test_abstention_wording_is_gone_from_every_site():
+    """None of the scoring-change claims may appear in the sources they were removed from."""
+    for path in (_EVALS_CLI_PATH, _EVALS_PY_PATH, _EVALS_MD_PATH,
+                 _TEST_EVALS_PATH, _TEST_EVALS_API_PATH):
+        src = _read_text(path)
+        for rule in _EVALS_BANS:
+            assert not rule.search(src), \
+                "%s still carries the scoring-change claim: /%s/" % (path, rule.pattern)
+
+
+def test_abstention_wording_names_the_state_fields():
+    """Each site individually must name what the gate writes, not just somewhere in the file.
+
+    Per-docstring rather than per-file, so a mutation that drops `low_confidence` from the
+    `evaluate()` docstring alone is caught even though the sibling `_takes_min_confidence`
+    docstring above it still names the field.
+    """
+    help_text = _cli_help_of(_EVALS_CLI_PATH, "--min-confidence")
+    assert help_text, "no `help=` string on the --min-confidence argument in laya/evals_cli.py"
+    assert _SAYS_LOW_CONFIDENCE.search(help_text), \
+        "evals_cli's --min-confidence help does not name the `low_confidence` field"
+    assert _SAYS_ABSTENTION_FIELD.search(help_text), \
+        "evals_cli's --min-confidence help does not name `abstention: \"abstained\"`"
+
+    for func_name in ("_takes_min_confidence", "evaluate"):
+        doc = _docstring_of(_EVALS_PY_PATH, func_name)
+        assert doc, "no docstring on laya/evals.py::%s" % func_name
+        assert _SAYS_LOW_CONFIDENCE.search(doc), \
+            "laya/evals.py::%s docstring does not name the `low_confidence` field" % func_name
+        assert _SAYS_ABSTENTION_FIELD.search(doc), \
+            "laya/evals.py::%s docstring does not name `abstention: \"abstained\"`" % func_name
+
+    md = _read_text(_EVALS_MD_PATH)
+    assert _SAYS_LOW_CONFIDENCE.search(md), \
+        "docs/evals.md does not name the `low_confidence` field"
+    assert _SAYS_ABSTENTION_FIELD.search(md), \
+        "docs/evals.md does not name `abstention: \"abstained\"`"
+
+
+def test_gate_writes_the_fields_the_docs_name():
+    """The witness that ties the wording above to `apply_confidence_gate`'s actual effect.
+
+    Drive the gate at 0.7 over one high-confidence and one low-confidence `choice` answer, both
+    carrying `choice: "keep"`. The low one must come back flagged; both must keep their raw
+    argmax in `answer["choice"]`. If the gate ever starts overwriting the value, this assertion
+    breaks and the wording claim breaks with it.
+    """
+    results = [{"answers": {
+        "q_high": {"type": "choice", "choice": "keep",
+                    "answer_confidence": 0.90,
+                    "probabilities": {"keep": 0.90, "drop": 0.10}},
+        "q_low": {"type": "choice", "choice": "keep",
+                   "answer_confidence": 0.40,
+                   "probabilities": {"keep": 0.40, "drop": 0.60}},
+    }}]
+    apply_confidence_gate(results, 0.7)
+    high = results[0]["answers"]["q_high"]
+    low = results[0]["answers"]["q_low"]
+    check("evals-wording/high clears the gate", high["abstention"], GATE_PASSED)
+    check("evals-wording/low falls below", low["abstention"], GATE_ABSTAINED)
+    check_true("evals-wording/low is flagged", low.get("low_confidence") is True)
+    check_true("evals-wording/high is not flagged", "low_confidence" not in high)
+    # The claim the wording makes about the gate: the value key stays at the raw argmax.
+    check("evals-wording/high's choice is unchanged", high["choice"], "keep")
+    check("evals-wording/low's choice is unchanged even when abstained", low["choice"], "keep")
+    # Both thresholds echoed onto the answer, so `abstention_threshold` matches the wording.
+    check("evals-wording/high echoes the threshold", high["abstention_threshold"], 0.7)
+    check("evals-wording/low echoes the threshold", low["abstention_threshold"], 0.7)
+
+
+for _fn in (test_abstention_wording_bans_have_teeth,
+            test_abstention_wording_is_gone_from_every_site,
+            test_abstention_wording_names_the_state_fields,
+            test_gate_writes_the_fields_the_docs_name):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("evals-abstention/%s: %s" % (_fn.__name__, e))
+    except Exception as e:
+        FAIL.append("evals-abstention/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("evals-abstention/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
