@@ -2569,6 +2569,79 @@ def test_server_shortlist_k_default():
        "schema=%r library=%r" % (advertised, DEFAULT_SHORTLIST_K))
 
 
+def test_shortlist_metadata_keys_are_documented():
+    """Every key `predict_shortlist` publishes must be named by all three surfaces that list it.
+
+    `laya/shortlist.py` writes a five-key block per question: ``labels``, ``scores``, ``k``,
+    ``n`` and ``passthrough``. The tool description, the README and `docs/cli-mcp.md` each
+    paraphrase that block, and all three stopped at four -- they dropped ``passthrough``, the
+    one key that tells a caller whether the shortlist actually narrowed anything. A question
+    whose option count is at or below ``k`` is answered whole with ``scores`` set to ``None``,
+    so a client that assumes a real ranking was produced reads ``None`` as "no scores" rather
+    than "nothing to rank".
+
+    The key set is read out of `laya/shortlist.py`'s AST rather than typed here, so a sixth key
+    added to the metadata fails this gate on all three pages at once.
+    """
+    import ast
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    with open(root / "laya" / "shortlist.py") as f:
+        shortlist_src = f.read()
+    # Scoped to predict_shortlist's own body: predict_tournament also builds a `meta[qid]` dict,
+    # and a module-wide walk would depend on which one ast.walk happens to reach first.
+    body = [node for node in ast.walk(ast.parse(shortlist_src))
+            if isinstance(node, ast.FunctionDef) and node.name == "predict_shortlist"]
+    meta_keys = None
+    for node in ast.walk(body[0] if body else ast.parse("")):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                and isinstance(node.targets[0], ast.Subscript)
+                and isinstance(node.targets[0].value, ast.Name)
+                and node.targets[0].value.id == "meta"):
+            meta_keys = [ast.literal_eval(k) for k in node.value.keys]
+            break
+    ok("shortlist/meta_keys read from the AST",
+       meta_keys == ["labels", "scores", "k", "n", "passthrough"],
+       "AST read %r from laya/shortlist.py" % (meta_keys,))
+
+    # Each key needs a concept word on the page; the paraphrase never uses the raw key names.
+    REQUIRED = {
+        "labels": r"label",
+        "scores": r"score",
+        "k": r"\bk\b",
+        "n": r"option count",
+        "passthrough": r"passed through|unshortlisted",
+    }
+
+    by_name = {t.name: t for t in asyncio.run(mcp_server.list_tools())}
+    surfaces = {
+        "tool description": by_name["laya_shortlist"].description,
+        "README": (root / "README.md").read_text(),
+        "docs/cli-mcp.md": (root / "docs" / "cli-mcp.md").read_text(),
+    }
+    for where, text in surfaces.items():
+        flat = " ".join(text.split())
+        for key, pattern in REQUIRED.items():
+            ok("shortlist/%s names %s" % (where, key),
+               re.search(pattern, flat) is not None,
+               "the %s never spells the %r metadata key (looked for /%s/)" % (where, key, pattern))
+
+    # The pre-fix wording stopped the list at the option count; a surface that closes the list
+    # there again has dropped a key, whatever else it says.
+    for where, text in surfaces.items():
+        flat = " ".join(text.split())
+        ok("shortlist/%s does not end the list at option count" % where,
+           re.search(r"option count[),. ]*(?:The|the|for each| `k`|$)", flat) is None
+           or re.search(r"option count, and whether", flat) is not None,
+           "the list still closes on the option count: %s" % where)
+
+
+# Called here rather than from the tail list, because that block is where three open PRs each
+# append a line; one insertion point keeps this gate's diff to the lines it actually owns.
+test_shortlist_metadata_keys_are_documented()
+
+
 test_device()
 test_real_device()
 test_private_contract()

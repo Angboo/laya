@@ -1440,7 +1440,8 @@ knows the answer shape never parses an answer map by hand. `laya_shortlist` is t
 it shortlists a many-option choice question to its `k` most likely labels by embedding
 similarity (mean-pooled from the answering checkpoint's own encoder, so no extra model is
 downloaded), answers in one forward pass, and returns per-question shortlist metadata
-(kept labels, cosine scores, `k`, option count). The guardrails shown on every decision
+(kept labels, cosine scores, `k`, option count, and whether the question passed through
+unshortlisted). The guardrails shown on every decision
 tool point clients to `laya_shortlist` for >20-option choices. As with the SDK, use it for structured
 decisions only; not for open Q&A or
 text generation. Tests: `tests/test_mcp.py` (CI, no weights) and
