@@ -1,4 +1,4 @@
-"""Summarise `step4_gate_d_results.json` into the canonical 3-seed x 2-loss panel and a verdict.
+"""Summarise `step4_gate_d_results.json` into the 3-seed x 2-loss panel, descriptively.
 
 Reads the Gate D results file (as emitted by the Kaggle Gate D kernel) and prints/writes:
 
@@ -6,11 +6,13 @@ Reads the Gate D results file (as emitted by the Kaggle Gate D kernel) and print
 - `soft-ce - rlcd` paired accuracy deltas at seeds 0/1/2, plus mean/min/max and sign consistency;
 - mean and sample std of accuracy per loss, and mean/sample std of the paired deltas;
 - the same summaries for ECE and Brier, explicitly labelled as calibration-scope numbers;
-- one evidence verdict from the fixed rule below.
+- a descriptive reading of the panel, and nothing more.
 
-The verdict thresholds are stated in the output, not hidden. No p-values: n=3 training seeds is
-not enough for significance, and the Coordinator's rule asks for direction, magnitude and sign
-consistency instead.
+This script applies **no materiality threshold**. It does not know what advantage would justify
+changing a shipped default, and inventing a bar would put a number on a judgement that belongs to
+the maintainer and to #887. It reports direction, sign consistency and spread, and says
+`INSUFFICIENT` when the seeds disagree about direction. No p-values either: three training seeds do
+not support significance.
 
     python research/scripts/step4_benchmark/analyze_gate_d.py --results step4_gate_d_results.json
 """
@@ -24,11 +26,6 @@ from typing import Any, Dict, List, Optional
 
 SEEDS = (0, 1, 2)
 LOSSES = ("rlcd", "soft-ce")
-# A soft-CE edge only counts as "useful" if it clears this in the mean and on every seed. Stated
-# here so the verdict is reproducible rather than eyeballed.
-MATERIAL_ACCURACY_DELTA = 0.005
-# A per-type or calibration regression this large or larger counts as "material" for the verdict.
-MATERIAL_REGRESSION = 0.010
 
 
 def cell(results: Dict[str, Any], loss: str, seed: int) -> Optional[Dict[str, Any]]:
@@ -115,53 +112,48 @@ def main() -> int:
         print("  %-8s rlcd %s  soft-ce %s"
               % (k, summarise(by_loss.get("rlcd", [])), summarise(by_loss.get("soft-ce", []))))
 
-    verdict = "INSUFFICIENT"
-    reason = "panel incomplete (missing a loss/seed cell)"
+    verdict = "INCOMPLETE"
+    reading = "panel incomplete (a loss/seed cell is missing)"
+    sign = "incomplete"
     if complete:
-        consistent_up = all(d > 0 for d in present)
+        all_pos = all(d > 0 for d in present)
+        all_neg = all(d < 0 for d in present)
         mean_delta = statistics.fmean(present)
-        worst_type_regress = 0.0
-        for k, by_loss in per_type.items():
-            if by_loss.get("rlcd") and by_loss.get("soft-ce"):
-                worst_type_regress = min(worst_type_regress,
-                                         statistics.fmean(by_loss["soft-ce"]) - statistics.fmean(by_loss["rlcd"]))
-        if consistent_up and mean_delta >= MATERIAL_ACCURACY_DELTA and worst_type_regress > -MATERIAL_REGRESSION:
-            verdict = "CHANGE_DEFAULT_SUPPORTED"
-            reason = ("soft-ce ahead on all 3 seeds, mean delta %.4f >= %.3f, no per-type regression beyond %.3f"
-                      % (mean_delta, MATERIAL_ACCURACY_DELTA, MATERIAL_REGRESSION))
-        elif consistent_up and mean_delta >= MATERIAL_ACCURACY_DELTA:
-            verdict = "INSUFFICIENT"
-            reason = ("accuracy favours soft-ce but a per-type regression of %.4f exceeds %.3f"
-                      % (worst_type_regress, MATERIAL_REGRESSION))
-        elif all(d < 0 for d in present):
-            verdict = "KEEP_RLCD_SUPPORTED"
-            reason = "soft-ce behind on all 3 seeds"
+        if all_pos or all_neg:
+            sign = "consistent_positive" if all_pos else "consistent_negative"
+            verdict = "CONSISTENT_DIRECTION"
+            reading = ("every seed favours %s; delta mean %.4f, min %.4f, max %.4f"
+                       % ("soft-ce" if all_pos else "rlcd", mean_delta, min(present), max(present)))
         else:
+            sign = "mixed"
             verdict = "INSUFFICIENT"
-            reason = "sign not consistent or mean delta %.4f below the %.3f material bar" % (mean_delta, MATERIAL_ACCURACY_DELTA)
+            reading = ("the paired accuracy delta changes sign across seeds "
+                       "(mean %.4f, min %.4f, max %.4f), so the seeds disagree about direction"
+                       % (mean_delta, min(present), max(present)))
 
     summary = {
         "accuracy_delta_by_seed": acc_deltas,
         "accuracy_delta_summary": summarise(present),
-        "sign_all_positive": complete and all(d > 0 for d in present),
+        "sign_consistency": sign,
         "rlcd_accuracy": summarise(acc_values["rlcd"]),
         "soft_ce_accuracy": summarise(acc_values["soft-ce"]),
         "ece_delta_by_seed": ece_deltas,
         "brier_delta_by_seed": brier_deltas,
         "per_type_mean": {k: {l: summarise(v) for l, v in by.items()} for k, by in per_type.items()},
         "verdict": verdict,
-        "reason": reason,
-        "thresholds": {"material_accuracy_delta": MATERIAL_ACCURACY_DELTA,
-                       "material_regression": MATERIAL_REGRESSION},
+        "reading": reading,
+        "reading_note": ("Descriptive only. No materiality threshold is applied and no default-loss "
+                         "policy is asserted; whether a shipped default changes is a maintainer and "
+                         "#887 decision."),
         "caveats": [
             "n=3 training seeds: direction/magnitude, not significance.",
             "ECE/Brier reflect the current evaluator's calibration path (notebook-aligned scope), "
             "not a universal all-question metric.",
         ],
     }
-    print("\n== verdict ==")
-    print(verdict, "--", reason)
-    print("thresholds:", summary["thresholds"])
+    print("\n== reading ==")
+    print(verdict, "--", reading)
+    print("no materiality threshold applied; default-loss policy is not asserted here")
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
