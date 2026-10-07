@@ -392,3 +392,26 @@ opt in. With `--onnx`, only a bare `--revision <SHA>` applies, to the config and
 Drop a JSONL in `research/evals/` and a reviewed baseline beside it, then point a workflow (or
 `research/evals/check_regression.py`) at both. The format is the same as the fixture; nothing in
 the harness knows about MASSIVE.
+
+## Evidence inspection
+
+`evidence` reads — never writes — the artifacts a fine-tune/eval run already persists and says
+what evidence exists, what is missing, and what is insufficient. It loads no model weights and
+does not require torch.
+
+```bash
+laya-evals evidence --checkpoint ./my-checkpoint [--report report.json]
+```
+
+A checkpoint directory must contain `rl_agent_config.json`. Calibration evidence is derived from
+the persisted `training.laya_train_calibration` block: a legacy checkpoint with no training
+metadata is `UNKNOWN`; a question type with zero items is `MISSING`; a type whose entry records
+any upstream `issues` text (not fitted, below `MIN_TYPE_N`/`CALIB_WARN_N`, clamped, unchanged
+fit) is `INSUFFICIENT`; a clean fit is `PRESENT`. The helper trusts the persisted `issues`
+written by #933 instead of keeping a second numeric threshold source.
+
+The eval report's identity fields (`schema`, `dataset_sha256`, `questions_sha256`, `laya_version`)
+are reported with the same semantics as `run`. The checkpoint↔report relationship is claimed only
+as a deterministic conflict: if both artifacts expose the same `dataset_sha256`/`questions_sha256`
+with different values, it is `INCOMPARABLE`. Everything else is `UNKNOWN` — matching `laya_version`
+alone never proves a match, and differing `laya_version` alone never proves a conflict.
