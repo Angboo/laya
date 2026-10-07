@@ -1044,10 +1044,14 @@ def test_a_pass_through_wrapper_is_given_the_knob():
 # ------------------------------------------------------- abstention gate (#361 knob)
 #
 # `Router.predict` / `Router.predict_batch` and `ONNXAgent.predict` gate on `answer_confidence`
-# and mark answers below `min_confidence` with `low_confidence: True` (#361). That is a scoring
-# control: an answer below the threshold is not the same decision as one above. A `laya-evals run`
-# that could not pass it through had no way to measure `precision@coverage` at any threshold
-# except by wrapping a Router by hand -- the exact class of thing this harness exists to be.
+# and mark answers below `min_confidence` with `low_confidence: True` and `abstention:
+# "abstained"` (#361). The gate is a *reporting* control: `apply_confidence_gate` leaves
+# `answer["choice"] / ["noul"] / ["score"]` as the raw argmax, so every metric in `_aggregate`
+# reads the same numbers at every threshold. What the harness forwards is the *claim* the
+# report makes: `report.config["timing"]["min_confidence"]` names the threshold and
+# `["min_confidence_sent"]` asserts the call carried it. A `laya-evals run` that could not pass
+# the kwarg through had no way to publish that claim on a real Router -- the exact class of
+# thing this harness exists to be.
 
 UNSET = object()   # no caller sends it, so `mc is UNSET` distinguishes "absent" from 0.0 or None
 
@@ -1130,8 +1134,9 @@ def test_min_confidence_zero_is_still_a_threshold():
 
 
 def test_a_runner_without_the_gate_is_refused_not_silently_scored():
-    """Silently dropping a scoring control would report `precision@coverage` for a policy that
-    never ran. `RequestsRunner`'s `predict_batch(requests, batch_size=None)` is exactly what a
+    """Silently dropping the kwarg would let `report.config["timing"]["min_confidence"]` name a
+    threshold the harness never applied -- a lying report even though the metric numbers stay
+    identical. `RequestsRunner`'s `predict_batch(requests, batch_size=None)` is exactly what a
     pre-#361 runner looks like, so a run that asks for a threshold on it must fail loudly."""
     with pytest.raises(EvalError) as exc:
         evaluate(RequestsRunner(ANSWERS3), _three(), evaluators=[ChoiceAccuracy()],
@@ -2210,7 +2215,7 @@ def test_docs_and_the_cli_name_the_same_flags():
         taught - registered)
     # The other half of parity: a registered flag nobody documents is unreachable in practice. The
     # page that teaches `--batch-size` has to teach the grouping that makes a bounded pass cheaper,
-    # and the abstention threshold that changes which answers score at all.
+    # and the abstention threshold the report names even though the gate flags rather than rescores.
     assert {"--batch-size", "--sort-by-length", "--min-confidence"} <= taught, \
         "the evals page teaches the batch size but not the grouping or abstention knobs"
     assert "--score-within" in quickstart, "the tolerance metric has to be reachable from the quickstart"

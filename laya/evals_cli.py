@@ -192,12 +192,16 @@ def _build_parser() -> argparse.ArgumentParser:
                           "examples into the same forward pass so each pads to a shorter maximum; "
                           "scores the same answers, in the same order")
     run.add_argument("--min-confidence", dest="min_confidence", type=float, metavar="THRESHOLD",
-                     help="abstention threshold on `answer_confidence` (#361): answers below it "
-                          "come back abstained, so the run scores the policy at that threshold "
-                          "rather than the raw argmax. Accepted range is core's -- "
-                          "`laya.confidence.check_min_confidence` -- not a copy of it here, and a "
-                          "runner that predates the gate is refused with a named error rather "
-                          "than silently scored without it")
+                     help="abstention threshold on `answer_confidence` (#361): every answer below "
+                          "it is returned flagged with `low_confidence: True` and "
+                          "`abstention: \"abstained\"`. The gate writes those state fields and "
+                          "leaves `answer[\"choice\"] / [\"noul\"] / [\"score\"]` as the raw argmax, "
+                          "so the metrics are identical at every threshold -- what changes is the "
+                          "report's config, which names the threshold and asserts it was sent. "
+                          "Accepted range is core's -- `laya.confidence.check_min_confidence` -- "
+                          "not a copy of it here, and a runner that predates the gate is refused "
+                          "with a named error rather than publishing a `min_confidence` it never "
+                          "applied")
     run.add_argument("--on-error", choices=("fail", "skip"), default="fail",
                      help="'fail' (the default) stops the run when a runner call raises; 'skip' "
                           "lists every row it could not score under the report's config.errored "

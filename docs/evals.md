@@ -254,21 +254,26 @@ raising `TypeError` halfway through a long run.
 
 `--min-confidence T` forwards core's opt-in abstention threshold (#361) to every call the run
 makes, so `Router` and `ONNXAgent` mark answers whose `answer_confidence` falls below `T` with
-`low_confidence: True` before the harness sees them. Unlike grouping, this changes the answers
-that score: the same run at `T=0` and `T=0.7` is a different experiment, and a `precision@coverage`
-sweep is a series of these, not a single baseline drifting.
+`low_confidence: True` and `abstention: "abstained"` before the harness sees them. The gate is a
+*reporting* control, not a scoring one: `apply_confidence_gate` leaves
+`answer["choice"] / ["noul"] / ["score"]` as the raw argmax and `_aggregate` reads only those
+keys, so every accuracy, calibration and coverage number -- `ece`, `brier`, `aurc`,
+`selective_accuracy@NN` -- is the same at `T=0` and `T=0.7`. What changes is the report's
+`config.timing.min_confidence` and `config.timing.min_confidence_sent`, and any caller who acts
+on the flag downstream of the harness.
 
 The accepted range is core's `laya.confidence.check_min_confidence` -- `[0.0, 1.0]`, finite, not
 a bool -- rather than a copy here, so a value the gate itself would reject fails as a usage error
-(exit 2) before any checkpoint loads. `0.0` is a legal ask: it is the control arm for a
-`precision@coverage` sweep, and a check that dropped it would hide the sweep's own floor.
+(exit 2) before any checkpoint loads. `0.0` is a legal ask: it is the control arm for an
+abstention sweep and the value `flag_low_confidence` treats as a no-op, so a check that dropped
+it would hide which arm actually ran.
 
 A runner whose `predict` or (for a batched run) whose `predict_batch` predates the gate is
-**refused with a named `EvalError`**, not scored without the threshold. Silently dropping a
-scoring control is the class of lie this harness exists to prevent: the report would publish a
-`precision@coverage` figure for a policy that never ran. `config.timing` records both the ask and
-the fact: `min_confidence` is the threshold that was requested, `min_confidence_sent` says whether
-any call this run made actually carried it.
+**refused with a named `EvalError`**, not run without the threshold. Silently dropping it would
+let `report.config["timing"]["min_confidence"]` name a threshold the harness never applied -- the
+class of lie this harness exists to prevent, even though the metric numbers stay identical.
+`config.timing` records both the ask and the fact: `min_confidence` is the threshold that was
+requested, `min_confidence_sent` says whether any call this run made actually carried it.
 
 ## Slices
 
