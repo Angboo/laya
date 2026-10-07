@@ -1416,6 +1416,102 @@ check("README route_batch clause names exactly its hooks kwargs",
       {"hooks", "hooks_raise", "hooks_timeout"})
 
 
+# --------------------------------------------------------------- patterns.md composition order
+# `docs/hooks/patterns.md`'s Composition paragraph told the reader "installed hooks run first,
+# in order". Two things are wrong with that: `laya/hooks.py::compose_hooks` returns
+# `defaults + installed + per-call`, so process-wide defaults -- not installed hooks -- are at
+# the head; and the same page's "Process-wide instrumentation" section (line 261) already says
+# "Defaults run before the instance and per-call hooks", so the sentence contradicts a section
+# further down its own file. `lifecycle.md`'s rule 1 (fixed in #991) says the same thing. The
+# gate bans the pre-fix wording, requires the tier vocabulary, and drives `compose_hooks` live
+# to prove the emitted order matches the prose.
+from laya import hooks as _hooks_mod  # noqa: E402
+
+check_true("hooks module exports compose_hooks", callable(_hooks_mod.compose_hooks))
+
+_patterns_md = os.path.join(REPO, "docs", "hooks", "patterns.md")
+with open(_patterns_md, encoding="utf-8", newline="") as _pmf:
+    _patterns_text = _pmf.read().replace("\r\n", "\n")
+
+check_true("docs/hooks/patterns.md drops the pre-fix installed-hooks-run-first composition claim",
+           "installed hooks run first, in order" not in _patterns_text)
+
+def _section(marker):
+    """Return the paragraph block that follows `marker` up to the next blank-line heading."""
+    idx = _patterns_text.find(marker)
+    if idx < 0:
+        return ""
+    start = _patterns_text.find("\n", idx) + 1
+    # Read to the next blank-line-then-heading boundary so we only see the Composition prose.
+    end = len(_patterns_text)
+    for probe in re.finditer(r"\n###?\s", _patterns_text[start:] + "\n"):
+        end = start + probe.start()
+        break
+    return _patterns_text[start:end]
+
+_comp = _section("### Composition")
+check_true("docs/hooks/patterns.md has a Composition paragraph", bool(_comp.strip()),
+           "no prose after '### Composition'")
+# The prose wraps in the 5th column; fold whitespace so the tier phrases below need no
+# knowledge of the file's wrap points.
+_comp_flat = " ".join(_comp.split())
+
+# The corrected prose must name every tier and the within-scope sequence.
+for _token in ("hooks=[...]", "on_predict_start=", "on_predict_end=",
+               "Within one scope", "Across scopes",
+               "process-wide default", "instance's hooks", "per-call hooks"):
+    check("docs/hooks/patterns.md Composition names %r" % _token, _token in _comp_flat, True)
+
+# Tier vocabulary must appear in the order compose_hooks actually joins them:
+# defaults -> instance -> per-call.
+def _tier_pos(needles):
+    for n in needles:
+        i = _comp_flat.find(n)
+        if i >= 0:
+            return i
+    return -1
+
+_defaults_i = _tier_pos(("process-wide default",))
+_instance_i = _tier_pos(("instance's hooks,", "instance's hooks",))
+_percall_i = _tier_pos(("before per-call hooks", "per-call hooks"))
+check_true("docs/hooks/patterns.md Composition order: defaults < instance < per-call",
+           0 <= _defaults_i < _instance_i < _percall_i,
+           "defaults=%d instance=%d per-call=%d" % (_defaults_i, _instance_i, _percall_i))
+
+# Live driver: the emitted on_predict_start order must be defaults, installed list in order,
+# per-call hooks=[...] in order, per-call on_predict_start.
+_emitted = []
+
+class _OrderProbe(BaseHook):
+    def __init__(self, label):
+        self.label = label
+
+    def on_predict_start(self, ctx):
+        _emitted.append(self.label)
+
+try:
+    _hooks_mod.clear_default_hooks()
+    _hooks_mod.set_default_hooks(hooks=[_OrderProbe("D")])
+    _installed = [_OrderProbe("A"), _OrderProbe("B")]
+    _composed = _hooks_mod.compose_hooks(
+        _installed,
+        hooks=[_OrderProbe("X")],
+        on_predict_start=lambda ctx: _emitted.append("C"),
+    )
+    _ctx = PredictContext(states=[{"text": "x"}], questions={})
+    for _h in _composed:
+        _fn = getattr(_h, "on_predict_start", None)
+        if callable(_fn):
+            _fn(_ctx)
+    check("compose_hooks emits defaults -> installed -> per-call hooks -> per-call start",
+          _emitted, ["D", "A", "B", "X", "C"])
+    # And the composition length reflects all five tiers entries (D, A, B, X, adapter(C)).
+    check("compose_hooks returns one entry per tier member",
+          len(_composed), 5)
+finally:
+    _hooks_mod.clear_default_hooks()
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
