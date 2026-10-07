@@ -3443,3 +3443,61 @@ def test_ts_sdk_health_claim_drops_the_three_key_version():
 # `re` is not imported at the top of this file; import here so the helper above can use it
 # without changing the module's existing import order.
 import re  # noqa: E402
+def test_jev_strict_projection_page_names_the_projected_keys():
+    """docs/http-api.md's four strict bullets must be the key sets `_project_jev_strict` returns.
+
+    The page is the second copy of the contract, after the handler's docstring. Both used to
+    claim ``noul = `noul` only``, but the projection emits ``{"type": "noul", "noul": ...}``,
+    and the pre-existing ``test_jev_strict_projects_the_full_payload`` asserts that two-key
+    shape verbatim -- so the prose and the pinned test disagreed, and a client that validated
+    the "no fields other than `noul`" sentence rejected every strict noul answer the flag
+    exists to sanitize.
+
+    The gate calls the real projection on a fixture that carries all three answer types plus
+    the additions a strict client must not see, then reads the four bullet lines from
+    `docs/http-api.md` and asserts each bullet's backticked key set equals the corresponding
+    projected key set. The pre-fix wording is banned as a direct substring so the gate fails
+    if the page reverts.
+    """
+    import re
+    from pathlib import Path
+
+    from laya.serve import _project_jev_strict
+
+    fixture = {
+        "model": "laya-rl-agent",
+        "answers": {
+            "queue": {"type": "choice", "choice": "billing",
+                      "probabilities": {"billing": 0.95, "tech": 0.05},
+                      "confidence": 0.80, "action": "answer",
+                      "answer_confidence": 0.75},
+            "urgency": {"type": "score", "score": 1.70, "confidence": 0.19,
+                        "probabilities": {"0": 0.02, "1": 0.65, "2": 0.33},
+                        "legend": {"0": "calm", "1": "firm", "2": "angry"},
+                        "action": "answer"},
+            "threat": {"type": "noul", "noul": 0.9148, "confidence": 0.85,
+                       "answer_confidence": 0.70, "action": "answer"},
+        },
+        "usage": {"input_tokens": 83, "output_tokens": 0,
+                  "windows": 1, "collapsed_options": 0},
+        "routing": {"model": "typed-decisions", "reason": "typed workflow"},
+    }
+    projected = _project_jev_strict(fixture)
+
+    page = (Path(__file__).resolve().parents[1] / "docs" / "http-api.md").read_text(encoding="utf-8")
+
+    def bullet_keys(label):
+        for line in page.splitlines():
+            if line.startswith("- a `%s` answer keeps" % label):
+                back = line.split("keeps", 1)[1]
+                return set(re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", back))
+        raise AssertionError("bullet for %r not found" % label)
+
+    assert set(projected["answers"]["queue"]) == bullet_keys("choice"), \
+        "doc says %r, handler emits %r" % (sorted(bullet_keys("choice")),
+                                            sorted(projected["answers"]["queue"]))
+    assert set(projected["answers"]["urgency"]) == bullet_keys("score")
+    assert set(projected["answers"]["threat"]) == bullet_keys("noul")
+
+    # The noul bullet must not shrink the discriminator away.
+    assert "noul only" not in page, "pre-fix 'noul only' wording is still on the page"
