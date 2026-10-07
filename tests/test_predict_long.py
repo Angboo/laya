@@ -1939,6 +1939,80 @@ check("scan/routing detected German", _detected["routing"]["model"], "multilingu
 check("scan/the detected language reaches the agent", _lang_detected.calls[0]["lang"], "de")
 
 
+# --- the default window's floor ---------------------------------------------------------------
+
+# `window_budget` has guarded the default with `max(64, ...)` since the feature landed (9acde82),
+# and all three `predict_long` docstrings taught the budget on its own. The floor is the whole
+# answer on a widened head: at `max_len=256, head_max_len=200` -- the shape docs/hooks/patterns.md
+# tells you to build for a 60-option question -- the taught formula is 48 and the scan runs 64-token
+# windows, so the prose sized every scan it touched 25% short. The number and the expression are
+# read out of the code rather than typed here, so a docstring that drifts to a different constant
+# fails as loudly as one that drops the guard. Scoped to these four docstrings on purpose: the bare
+# formula is a true statement about the STATE room elsewhere (`state_room` measures the head that
+# was built), and this gate is not in a position to renegotiate that.
+import ast as _ast  # noqa: E402
+
+_WB_SRC = inspect.getsource(window_budget)
+_WB_TREE = _ast.parse(_WB_SRC)
+_REQUESTED = [n for n in _WB_TREE.body[0].body
+              if isinstance(n, _ast.Assign)
+              and any(getattr(t, "id", "") == "requested" for t in n.targets)]
+_MAX_CALL = None
+for _node in _ast.walk(_REQUESTED[0] if _REQUESTED else _ast.Constant(None)):
+    if (isinstance(_node, _ast.Call) and getattr(_node.func, "id", "") == "max"
+            and len(_node.args) == 2 and isinstance(_node.args[0], _ast.Constant)
+            and isinstance(_node.args[0].value, int)):
+        _MAX_CALL = _node
+        break
+_FLOOR = _MAX_CALL.args[0].value if _MAX_CALL is not None else None
+_DEFAULT_EXPR = (_ast.get_source_segment(_WB_SRC, _MAX_CALL)
+                 if _MAX_CALL is not None else None)
+
+check_true("floor/window_budget guards the default with max(<constant>, the budget)",
+           _MAX_CALL is not None, "no such call in " + repr(_DEFAULT_EXPR))
+check_true("floor/and the guarded expression is the docstrings' text verbatim",
+           bool(_DEFAULT_EXPR) and _DEFAULT_EXPR.startswith("max("), _DEFAULT_EXPR)
+
+# The behaviour the prose has to match: a config whose budget falls under the floor, with room to
+# spare, so it is the floor that decides the window and not the room clamp.
+_FLOOR_MAX_LEN, _FLOOR_HEAD_MAX_LEN = 256, 200
+_FLOOR_Q = [Agent._to_internal(q_many(2))]
+_FLOOR_EFF, _FLOOR_STEP, _FLOOR_ROOM = window_budget(
+    TOK, _FLOOR_Q, _FLOOR_MAX_LEN, _FLOOR_HEAD_MAX_LEN)
+check_true("floor/the taught budget is under the floor on this config",
+           _FLOOR is not None and _FLOOR_MAX_LEN - _FLOOR_HEAD_MAX_LEN - 8 < _FLOOR,
+           (_FLOOR_MAX_LEN - _FLOOR_HEAD_MAX_LEN - 8, _FLOOR))
+check_true("floor/and the question leaves room for the floor, so the clamp is not what decides",
+           _FLOOR is not None and _FLOOR_ROOM > _FLOOR, (_FLOOR_ROOM, _FLOOR))
+check_true("floor/the default window is the floor, not the budget",
+           _FLOOR is not None and _FLOOR_EFF == _FLOOR, (_FLOOR_EFF, _FLOOR))
+check_true("floor/the stride still halves the window the floor produced",
+           _FLOOR is not None and _FLOOR_STEP == _FLOOR // 2, (_FLOOR_STEP, _FLOOR))
+
+_WINDOW_DOCSTRINGS = [
+    ("laya/common.py window_budget", window_budget.__doc__, None),
+    ("laya/agent.py Agent.predict_long", Agent.predict_long.__doc__, "stride:"),
+    ("laya/router.py Router.predict_long", Router.predict_long.__doc__, "stride:"),
+    ("laya/onnx_agent.py ONNXAgent.predict_long", ONNXAgent.predict_long.__doc__, "stride:"),
+]
+for _doc_name, _doc, _stop in _WINDOW_DOCSTRINGS:
+    _para = (_doc or "")
+    if _stop:
+        _start = _para.find("window:")
+        _stop_at = _para.find(_stop, _start)
+        _para = _para[_start:_stop_at if _stop_at > -1 else None]
+    check_true("floor/%s teaches the floored default" % _doc_name,
+               bool(_DEFAULT_EXPR) and _DEFAULT_EXPR in _para, _para[:160])
+    check_true("floor/%s states the budget nowhere without the floor" % _doc_name,
+               "max_len - head_max_len - 8" not in _para.replace(_DEFAULT_EXPR or "", ""),
+               _para[:160])
+    # Taught as the DEFAULT, not merely mentioned: the expression has to sit inside the sentence
+    # that names it, or a docstring could carry it as a footnote and still teach the bare budget.
+    _at = _para.find(_DEFAULT_EXPR or "")
+    check_true("floor/%s teaches it as the default, not beside it" % _doc_name,
+               _at > -1 and "default" in _para[max(0, _at - 220):_at].lower(), _para[:160])
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)
