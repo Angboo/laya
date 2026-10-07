@@ -970,6 +970,63 @@ check("compile_cpu/varargs", _args.vararg.arg, "args")
 check("compile_cpu/kwargs", _args.kwarg.arg, "kwargs")
 
 
+# --------------------------------- docs/hooks/api.md signature blocks: hooks_timeout is
+# named next to every hooks_raise the page shows. Router.__init__, Router.route and
+# ONNXAgent.__init__ used to omit it while Agent, load, predict, predict_long, predict_batch
+# and system_one all carried it, so a reader copying one of those three blocks got the
+# instance default instead of the per-call override.
+_api_md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "docs", "hooks", "api.md")
+with open(_api_md_path, encoding="utf-8") as _api_f:
+    _api_text = _api_f.read()
+
+_python_blocks = re.findall(r"```python\n(.*?)\n```", _api_text, re.DOTALL)
+_raise_signatures = []
+for _block in _python_blocks:
+    for _chunk in _block.split("\n\n"):
+        _chunk = _chunk.strip()
+        if "hooks_raise" in _chunk and "(" in _chunk:
+            _raise_signatures.append(_chunk)
+
+check_true("docs/hooks/api.md has hooks_raise signature blocks to gate",
+           len(_raise_signatures) >= 6,
+           "found %d" % len(_raise_signatures))
+_missing_timeout = [s.splitlines()[0].split("(")[0].strip()
+                    for s in _raise_signatures if "hooks_timeout" not in s]
+check("docs/hooks/api.md every block that names hooks_raise also names hooks_timeout",
+      _missing_timeout, [])
+
+# Ban the pre-fix wordings so a future edit cannot just rename the parameter and go green.
+check_true("docs/hooks/api.md Router constructor no longer ends at hooks_concurrent",
+           "hooks_raise=True, hooks_concurrent=True,\n)\n\nrouter.route" not in _api_text)
+check_true("docs/hooks/api.md route() no longer ends at hooks_raise=None",
+           "hooks=None, hooks_raise=None)\n\nrouter.predict(" not in _api_text)
+check_true("docs/hooks/api.md ONNXAgent constructor no longer ends at hooks_concurrent",
+           "hooks_raise=True, hooks_concurrent=True)\n\nonnx_agent.system_one" not in _api_text)
+
+# Code truth: every documented surface really accepts hooks_timeout, so the ban cannot be
+# re-falsified by removing the parameter from the code.
+from laya.router import Router as _ApiRouter  # noqa: E402
+from laya.onnx_agent import ONNXAgent as _ApiONNXAgent  # noqa: E402
+from laya.agent import Agent as _ApiAgent  # noqa: E402
+from laya import load as _api_load  # noqa: E402
+
+for _label, _obj in [
+    ("Agent.__init__", _ApiAgent.__init__),
+    ("load", _api_load),
+    ("Agent.system_one", _ApiAgent.system_one),
+    ("Agent.predict_batch", _ApiAgent.predict_batch),
+    ("Router.__init__", _ApiRouter.__init__),
+    ("Router.route", _ApiRouter.route),
+    ("Router.predict", _ApiRouter.predict),
+    ("Router.predict_batch", _ApiRouter.predict_batch),
+    ("ONNXAgent.__init__", _ApiONNXAgent.__init__),
+    ("ONNXAgent.system_one", _ApiONNXAgent.system_one),
+]:
+    check("hooks_timeout is a real parameter of %s" % _label,
+          "hooks_timeout" in inspect.signature(_obj).parameters, True)
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
