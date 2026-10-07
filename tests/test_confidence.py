@@ -589,6 +589,205 @@ def test_page_qualifies_the_banner_and_derives_its_numbers():
     assert not DERIVED_FLAGS.search(OLD_PAGE) and not DERIVED_CEILING.search(OLD_PAGE)
 
 
+# ------------------------------- example 03 must give `confidence` separately per question type
+# `examples/03_reading_the_result.py` is the page a reader comes back to "when writing your own
+# glue code", and its field tour closed with "`confidence` is 1 minus normalised entropy -- a scale
+# that moves with the option count on the same answer". `Agent._decode_answers` runs two formulas
+# and picks by question type (`laya/agent.py:1366-1402`):
+#   * `choice` and `score`  ->  `round(confidence_from_probs(p, k), 4)` = `1 - H(p) / log(k)`
+#   * `noul`                ->  `round(max(float(p[1]), 1.0 - float(p[1])), 4)`
+# The page calls all three types in one `predict()`, so no single sentence covers `confidence` --
+# and the proof is in the run the page itself prints: a `noul` answer reports the same number in
+# `confidence` and `answer_confidence`, which a normalized entropy of a two-option distribution
+# never equals (0.9/0.1 reads 0.531 as entropy, 0.900 as max(p)). Same defect class as examples
+# 40/18/30 and as `DecisionResult`'s docstring, on the page a beginner reads first. The two pages
+# that still carry the blanket sentence (`docs/structured.md`, `docs/questions-and-answers.md`) are
+# left for a follow-up.
+EXAMPLE_03 = os.path.join(ROOT, "examples", "03_reading_the_result.py")
+AGENT_PY = os.path.join(ROOT, "laya", "agent.py")
+ONNX_PY = os.path.join(ROOT, "laya", "onnx_agent.py")
+
+# The wording this section bans, as it ships on main. Every ban below is witnessed against it, and
+# every positive rule below is witnessed by showing that it does not satisfy the rule.
+OLD_PAGE_03 = """
+   `confidence` is 1 minus normalised entropy -- a scale that moves with the option
+   count on the same answer. `answer_confidence` is max(p), the probability mass on
+   the answer being reported, and it is the field to gate on (example 18 routes at a
+   threshold on it).
+"""
+
+BAN_UNIFORM_ENTROPY = re.compile(r"`confidence` is 1 minus normalised entropy -- a scale", re.I)
+NAMES_ENTROPY_TYPES = re.compile(r"normalised entropy on a `choice` or `score` answer", re.I)
+NAMES_NOUL_FORMULA = re.compile(r"max\(p\[1\],\s*1\s*-\s*p\[1\]\)")
+ATTRIBUTES_NOUL = re.compile(r"-- on a `noul`\.")
+CALLS_SCALES_INCOMPARABLE = re.compile(r"scales are not comparable", re.I)
+NAMES_ANSWER_MAXP = re.compile(r"`answer_confidence` is max\(p\),")
+GATES_ON_ANSWER = re.compile(r"field to gate on \(example 18", re.I)
+NAMES_BINNING_SCOPE = re.compile(
+    r"`binning_map` remaps `answer_confidence` and leaves `confidence` alone", re.I)
+
+
+def _src03(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _printed_text(path):
+    """The page's output as one flattened string.
+
+    Every string literal handed to `print()` anywhere in the file, joined and whitespace-collapsed,
+    so a sentence the page wraps across four `print()` calls is still one sentence to the rules
+    below -- and a claim that survives only because it is split across lines cannot hide from them.
+    """
+    parts = []
+    for node in ast.walk(ast.parse(_src03(path))):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "print"):
+            parts.extend(a.value for a in ast.walk(node)
+                         if isinstance(a, ast.Constant) and isinstance(a.value, str))
+    return " ".join(" ".join(parts).split())
+
+
+def _confidence_exprs(path):
+    """{answer type: source of the expression that becomes its `confidence`}.
+
+    Read off `_decode_answers` through AST, one entry per answer dict the builder constructs, so
+    the page is held to the code that produces the field rather than to a comment about it. A value
+    that is a local name (the ONNX path pre-computes `conf_score`) is resolved to what it is bound
+    to inside the same function.
+    """
+    src = _src03(path)
+    func = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.FunctionDef) and n.name == "_decode_answers")
+    bound = {}
+    for node in ast.walk(func):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            bound[node.targets[0].id] = ast.get_source_segment(src, node.value)
+    found = {}
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Dict):
+            continue
+        literal = {k.value: v for k, v in zip(node.keys, node.values)
+                   if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        if "type" not in literal or "confidence" not in literal:
+            continue
+        if not isinstance(literal["type"], ast.Constant):
+            continue
+        expr = ast.get_source_segment(src, literal["confidence"])
+        found[literal["type"].value] = bound.get(expr, expr)
+    return found
+
+
+def test_page_drops_the_single_entropy_formula():
+    text = _printed_text(EXAMPLE_03)
+    assert BAN_UNIFORM_ENTROPY.search(OLD_PAGE_03), "the ban does not fire on the wording it bans"
+    assert not BAN_UNIFORM_ENTROPY.search(
+        text), "example 03 again gives `confidence` one formula for all three question types"
+    for name, rule in (("the entropy formula is attributed to `choice` and `score`",
+                        NAMES_ENTROPY_TYPES),
+                       ("the `noul` formula is written out", NAMES_NOUL_FORMULA),
+                       ("that formula is attributed to `noul`", ATTRIBUTES_NOUL),
+                       ("the two scales are called incomparable", CALLS_SCALES_INCOMPARABLE),
+                       ("`answer_confidence` is max(p)", NAMES_ANSWER_MAXP),
+                       ("the gate field is named with its page", GATES_ON_ANSWER),
+                       ("the binning map remaps only `answer_confidence`", NAMES_BINNING_SCOPE)):
+        assert rule.search(text), "example 03 no longer states that %s" % name
+    # and main's page satisfies none of the new rules, so they could not have passed before.
+    old = " ".join(OLD_PAGE_03.split())
+    assert not NAMES_ENTROPY_TYPES.search(old) and not NAMES_NOUL_FORMULA.search(old)
+    assert not CALLS_SCALES_INCOMPARABLE.search(old) and not NAMES_BINNING_SCOPE.search(old)
+
+
+def test_page_names_the_formulas_the_agents_build():
+    exprs = _confidence_exprs(AGENT_PY)
+    assert set(exprs) == {"choice", "score", "noul"}, (
+        "the scan reached %s, not all three answer dicts" % sorted(exprs))
+    assert all(exprs.values()), "a `confidence` value could not be read: %s" % exprs
+    assert "confidence_from_probs" in exprs["choice"], exprs["choice"]
+    assert "confidence_from_probs" in exprs["score"], exprs["score"]
+    assert "1.0 - float(p[1])" in exprs["noul"], exprs["noul"]
+    assert "confidence_from_probs" not in exprs["noul"], (
+        "`noul` has switched to entropy -- the page's per-type split is now the stale claim: %s"
+        % exprs["noul"])
+    text = _printed_text(EXAMPLE_03)
+    assert NAMES_ENTROPY_TYPES.search(text) and NAMES_NOUL_FORMULA.search(text), (
+        "the page must name both expressions the builder uses")
+
+
+def test_page_cites_the_numbers_the_repo_functions_produce():
+    """The earned-numbers arm: the pairs the page prints must be what `laya.common` returns."""
+    text = _printed_text(EXAMPLE_03)
+    for p_true in (0.60, 0.90):
+        p = np.array([1.0 - p_true, p_true])
+        noul = "%.3f" % max(float(p[1]), 1.0 - float(p[1]))
+        entropy = "%.3f" % round(float(confidence_from_probs(p, 2)), 3)
+        rule = re.compile(r"%s reads %s[^.]*%s" % (re.escape(noul), re.escape(noul),
+                                                   re.escape(entropy)))
+        assert rule.search(text), (
+            "the page must cite p(true)=%s as %s on a `noul` and %s as entropy; both come from "
+            "confidence_from_probs above, so a number that drifts fails here" % (noul, noul,
+                                                                                entropy))
+    # the reason one sentence could not work: on a `noul` the shipped `confidence` *is* max(p), the
+    # same quantity `answer_confidence` reports, which an entropy cannot be.
+    for p_true in (0.60, 0.90):
+        p = np.array([1.0 - p_true, p_true])
+        assert close(max(float(p[1]), 1.0 - float(p[1])), answer_confidence(p, 2)), (
+            "the page's `noul` answer would no longer carry the same number in both fields")
+
+
+def _binning_targets(path):
+    """What the installed binning map is applied to inside `_decode_answers`.
+
+    The page closes its tour with "`binning_map` remaps `answer_confidence` and leaves `confidence`
+    alone", which is a claim about the builder, not about prose: the map's input is the raw
+    `answer_confidence`, and the two `confidence` expressions sit outside that branch.
+    """
+    src = _src03(path)
+    func = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.FunctionDef) and n.name == "_decode_answers")
+    return [ast.get_source_segment(src, node.args[0]) for node in ast.walk(func)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "apply_binning_map" and node.args)]
+
+
+def test_the_remap_reaches_only_answer_confidence():
+    for path in (AGENT_PY, ONNX_PY):
+        targets = _binning_targets(path)
+        assert targets, "%s no longer applies a binning map inside the answer builder" % path
+        assert all(t == "ans_raw" for t in targets), (
+            "the page says a calibration payload remaps `answer_confidence` and leaves "
+            "`confidence` alone, but %s remaps %s" % (path, sorted(set(targets))))
+
+
+def test_the_two_agents_answer_the_same_way():
+    """Parity arm: the ONNX path builds the same two expressions, so one page can be true of both."""
+    agent_exprs = _confidence_exprs(AGENT_PY)
+    onnx_exprs = _confidence_exprs(ONNX_PY)
+    assert set(onnx_exprs) == {"choice", "score", "noul"}, (
+        "the ONNX answer builder no longer yields all three types: %s" % sorted(onnx_exprs))
+    assert "confidence_from_probs" in onnx_exprs["choice"], onnx_exprs["choice"]
+    assert "confidence_from_probs" in onnx_exprs["score"], onnx_exprs["score"]
+    assert onnx_exprs["noul"] == agent_exprs["noul"], (
+        "the two agents now disagree on what a `noul` confidence is (%r vs %r), and the page "
+        "describes only one of them" % (onnx_exprs["noul"], agent_exprs["noul"]))
+
+
+for _fn in (test_page_drops_the_single_entropy_formula,
+            test_page_names_the_formulas_the_agents_build,
+            test_page_cites_the_numbers_the_repo_functions_produce,
+            test_the_remap_reaches_only_answer_confidence,
+            test_the_two_agents_answer_the_same_way):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-03/%s: %s" % (_fn.__name__, e))
+    except Exception as e:                      # a crash is a failure, never a silent pass
+        FAIL.append("page-03/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-03/%s" % _fn.__name__)
+
+
 for _fn in (test_preset_is_four_flags_and_one_rubric, test_helpers_are_live_and_pure,
             test_flag_line_prints_every_flag, test_past_half_uses_describes_cut,
             test_gaps_names_the_widest_separators, test_rank_cannot_assert_its_own_order,
