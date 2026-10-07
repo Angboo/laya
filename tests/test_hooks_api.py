@@ -954,6 +954,90 @@ for param in ("checkpoint_id", "embedder_id"):
     check_param("evaluate_shortlist", evaluate_shortlist, param, inspect.Parameter.empty)
 
 
+# docs/hooks/examples.md ## Composition teaches one scope ordering contract; the pre-fix wording
+# ("Installed hooks first, then convenience callables") named only two tiers and put installed at
+# the head, which compose_hooks contradicts.
+from laya import hooks as _examples_hooks_mod  # noqa: E402
+
+_examples_md = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "docs", "hooks", "examples.md")
+with open(_examples_md) as _examples_f:
+    _examples_text = _examples_f.read()
+
+check_true("examples.md drops the two-tier Composition claim",
+           "Installed hooks first, then convenience callables" not in _examples_text,
+           "pre-fix wording is still on the page")
+
+_examples_head = _examples_text.split("## Composition", 1)[1].split("\n```python", 1)[0]
+_examples_flat = " ".join(_examples_head.split())
+for _token in ("hooks=[...]", "on_predict_start=", "on_predict_end=",
+               "Within one scope", "Across scopes",
+               "process-wide default", "instance's hooks", "per-call hooks"):
+    check("examples.md Composition names %r" % _token, _token in _examples_flat, True)
+
+_pos_within = _examples_flat.find("Within one scope")
+_pos_across = _examples_flat.find("Across scopes")
+_pos_defaults = _examples_flat.find("process-wide default")
+_pos_instance = _examples_flat.find("instance's hooks")
+_pos_percall = _examples_flat.find("per-call hooks")
+check("examples.md Composition: within precedes across", -1 < _pos_within < _pos_across, True)
+check("examples.md Composition: tiers in order",
+      -1 < _pos_defaults < _pos_instance < _pos_percall, True)
+
+# Live driver: compose_hooks must emit defaults, then installed, then hooks=[...], then
+# on_predict_start, then on_predict_end -- matching the paragraph's claimed order.
+_examples_emitted = []
+
+class _ExamplesOrderProbe(BaseHook):
+    def __init__(self, tag):
+        self.tag = tag
+
+    def on_predict_start(self, ctx):
+        _examples_emitted.append(self.tag)
+
+    def on_predict_end(self, ctx):
+        _examples_emitted.append(self.tag + "-end")
+
+_examples_hooks_mod = _examples_hooks_mod
+try:
+    _examples_hooks_mod.set_default_hooks(hooks=[_ExamplesOrderProbe("D")])
+    _examples_composed = _examples_hooks_mod.compose_hooks(
+        [_ExamplesOrderProbe("A"), _ExamplesOrderProbe("B")],
+        hooks=[_ExamplesOrderProbe("X")],
+        on_predict_start=lambda ctx: _examples_emitted.append("S"),
+        on_predict_end=lambda ctx: _examples_emitted.append("E"),
+    )
+    for _h in _examples_composed:
+        _sm = getattr(_h, "on_predict_start", None)
+        if _sm is not None:
+            _sm(None)
+    for _h in reversed(_examples_composed):
+        _em = getattr(_h, "on_predict_end", None)
+        if _em is not None:
+            _em(None)
+    # start tier must be D, A, B, X, S (default → installed → hooks=[...] → start convenience)
+    check("examples.md Composition: start tier order D, A, B, X, S",
+          _examples_emitted[:5], ["D", "A", "B", "X", "S"])
+    # Structural check on the normalised list tail: the _StartAdapter for the on_predict_start
+    # convenience callable must come before the _EndAdapter for the on_predict_end one. The
+    # probes are BaseHook subclasses (both methods), so their positions cannot be told from
+    # adapter tags alone -- we key on which method is defined.
+    def _kind(h):
+        has_start = getattr(h, "on_predict_start", None) is not None
+        has_end = getattr(h, "on_predict_end", None) is not None
+        if has_start and not has_end:
+            return "start_only"
+        if has_end and not has_start:
+            return "end_only"
+        return "both"
+    check("examples.md Composition: _StartAdapter sits before _EndAdapter",
+          [_kind(_h) for _h in _examples_composed],
+          ["both", "both", "both", "both", "start_only", "end_only"])
+finally:
+    _examples_hooks_mod.set_default_hooks(hooks=[])
+    _examples_emitted.clear()
+
+
 # Pin the optional TileLang entry points without importing the fast extra in CI.
 import ast  # noqa: E402
 
