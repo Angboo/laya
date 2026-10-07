@@ -131,13 +131,38 @@ Each metric is computed per answer where it applies and aggregated over the data
 | `noul_accuracy` | `noul` | fraction whose boolean (probability >= 0.5) matches |
 | `score_mae` | `score` | mean absolute error |
 | `score_within_<tol>` | `score` | fraction within an absolute tolerance |
-| `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on `answer["answer_confidence"]`, the calibrated probability Laya reports on every answer type |
+| `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on the column `laya.evals._answer_confidence` reads -- `answer["answer_confidence"]` where the answer carries it, and a fallback where it does not; see [which confidence a metric reads](#which-confidence-a-metric-reads) |
 | `brier` | any answer with a confidence and a known label | Brier score of confidence as P(correct), `mean((confidence - correct)**2)`; lower is better |
 | `aurc` | any answer with a confidence and a known label | area under the risk--coverage curve: one risk value per distinct confidence level, each weighted by the answers that level spans; lower is better, and rewards a confidence that *ranks* right from wrong rather than just being calibrated |
 | `selective_accuracy@50`, `selective_accuracy@80` | any answer with a confidence and a known label | accuracy over the answers a confidence threshold at the 50% / 80% coverage point accepts -- what abstaining on the least-confident tail buys. A threshold cannot split a group of equal confidences, so this can cover more than the named fraction; see [coverage cuts](#coverage-cuts-and-ties) |
-| `mean_confidence` | any answer with a confidence | mean reported `answer["answer_confidence"]` |
+| `mean_confidence` | any answer with a confidence | mean of the same column -- `answer["answer_confidence"]` where the answer carries it |
 | `latency_p50_ms`, `latency_p95_ms` | per request | wall time each request waited, informational -- see [batching](#batching-and-timing) |
 | `cost_per_decision_p50_ms`, `cost_per_decision_p95_ms` | per decision | a call's wall time divided by the rows it carried, informational |
+
+### Which confidence a metric reads
+
+Every row above that takes a confidence (`ece`, `brier`, `aurc`, both `selective_accuracy@*`,
+`mean_confidence`) gets its column from `laya.evals._answer_confidence`, which prefers
+`answer["answer_confidence"]` -- the probability of the answer being reported, the quantity temperature
+scaling fits. It is not a claim that the number is right as shipped: both base checkpoints are
+over-confident and `laya-multilingual` ships no fitted temperatures at all -- see the README's
+[Calibration](https://github.com/NandhaKishorM/laya#calibration) -- which is what `ece` measures
+rather than assumes.
+
+An answer that carries no `answer_confidence` falls through, in order, to `confidence`, then
+`max(p, 1 - p)` for a `noul`, then `max(probabilities)`. Those are different quantities. On `choice`
+and `score` the `confidence` field is normalized entropy, which moves with the option count (#394)
+rather than with how right the answer is; `max(probabilities)` is the mass on the top option, equal to
+the reported answer's probability only when the reported answer is the argmax.
+
+The shape that actually arrives without the field is the strict Jev wire contract: `LAYA_JEV_STRICT`
+drops `answer_confidence` from every answer (`laya/serve.py::_project_jev_strict`, and the flag's row
+in [the HTTP API page](http-api.md)), so a report run over recorded strict responses calibrates the
+entropy number. Measured on three labelled rows -- `choice` carrying `answer_confidence` 0.95 against
+an entropy `confidence` of 0.7887, `score` 0.90 against 0.6410, `noul` 0.87 -- the same dataset scores
+`mean_confidence` 0.9067 and `ece` 0.0900 over the full payloads and 0.7666 and 0.1707 over the strict
+projection. Two reports are comparable only when their answers carry the same field;
+`tests/test_evals.py` pins both paths so a change to that fallback order has to be made deliberately.
 
 ### Coverage cuts and ties
 
