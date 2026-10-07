@@ -2002,7 +2002,8 @@ class Agent(HookRegistry):
         return self.binning_map
 
     def save_calibration(self, path: str) -> None:
-        """Write temperatures and the checkpoint they were fitted for. Does not write weights."""
+        """Write `temperature`, `temperature_by_options`, `binning_map` when the agent has one, and
+        the checkpoint they were fitted for. Does not write weights."""
         payload = calibration_payload(
             self.temperature,
             self.temperature_by_options,
@@ -2036,10 +2037,17 @@ class Agent(HookRegistry):
     def load_calibration(self, path: str) -> None:
         """Read a JSON map written by `save_calibration` onto this agent.
 
+        The file carries three fields and all three are installed: `temperature`,
+        `temperature_by_options` and `binning_map`. A file with no `binning_map` key installs
+        `None`, so loading one clears a map this agent's `fit_binning` fitted -- the file is the
+        whole calibration state, not a patch onto the current one.
+
         A file with no `version` is treated as version 1 and still loads. A newer file
         whose recorded checkpoint does not match this agent warns and still loads.
-        Values that are not numbers, or that sit outside `[TEMP_MIN, TEMP_MAX]`, are clamped
-        with `clamp_temperature` the same way checkpoint load is.
+        Temperatures that are not numbers, or that sit outside `[TEMP_MIN, TEMP_MAX]`, are
+        clamped with `clamp_temperature` the same way checkpoint load is; binning values are
+        not clamped, they are refused with a `ValueError` naming the field, because an
+        out-of-range binning value would move a confidence with nothing to fall back to.
         """
         with open(path) as f:
             payload = json.load(f)
