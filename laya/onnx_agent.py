@@ -421,7 +421,8 @@ class ONNXAgent(HookRegistry):
         `answer["window"]` -- the deciding window's `index`, `token_start`/`token_end` into the
         tokenized state, and the window `count`.
 
-        A state that already fits one window is passed straight to `system_one` (identical output).
+        A state the questions leave room for is passed straight to `system_one` (identical output),
+        since `system_one` reads it whole; with an explicit `window`, a state that fits that window.
 
         Args:
             state: Text string, JSON dict, or conversation turn list.
@@ -480,8 +481,8 @@ class ONNXAgent(HookRegistry):
         for qid in ids:
             _Agent._check_question(qid, questions[qid])
         internal = {qid: self._to_internal(questions[qid]) for qid in ids}
-        budget, step_default, _ = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
-                                                head_max_len, window=window, stride=stride)
+        budget, step_default, room = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
+                                                   head_max_len, window=window, stride=stride)
         # Snapshot the questions the scan was just sized against, BEFORE any start hook can
         # rewrite them, as the torch `predict_long` does (5f29170). `==` over the caller's mapping
         # cannot see an in-place rewrite: a hook that adds options to `ctx.questions[q]["criteria"]`
@@ -498,7 +499,8 @@ class ONNXAgent(HookRegistry):
         )["input_ids"]
         # Fits in one window: identical to a plain call, no windowing overhead. `windows` is still
         # written, as on the torch Agent: 1 for a window the model read, 0 for a hook's answer.
-        if len(state_ids) <= budget:
+        # "Fits" is the room the questions leave, not the default window, as on the torch Agent.
+        if len(state_ids) <= (budget if window and window > 0 else room):
             probe, evidence = _start_evidence()
             single = dict(self.system_one(state, questions, lang=lang,
                                           **_with_start_probe(hook_kwargs, probe)))
@@ -506,7 +508,8 @@ class ONNXAgent(HookRegistry):
             # fit one window was silently truncated by a re-budgeting hook and still reported
             # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
             # never reached the model, while a longer document on the identical input hard-failed.
-            _check_scan_budget(self, evidence, budget, max_len, head_max_len, asked)
+            _check_scan_budget(self, evidence, max(budget, len(state_ids)), max_len, head_max_len,
+                               asked)
             single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
             return single
 

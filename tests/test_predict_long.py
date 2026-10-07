@@ -862,6 +862,40 @@ check("docs/README says the window is capped at the room the questions leave",
 check("docs/predict_long's docstring documents the cap",
       "capped at the room the" in (Agent.predict_long.__doc__ or ""), True)
 
+# 12h. "fits in one window" is the room the questions leave, not the default window. A plain call
+# reads a state up to that room whole, so windowing one between the two only re-read it in pieces,
+# and the max over windows moved answers `predict` had already given, at twice the forward passes.
+ROOM_Q = min(room_for(q) for q in Q.values())
+check("fits/these questions leave more room than the default window", ROOM_Q > CONFIG_BUDGET, True)
+_pad = len(serialize_state({"body": ""}))
+AT_ROOM, PAST_ROOM = {"body": "x" * (ROOM_Q - _pad)}, {"body": "x" * (ROOM_Q - _pad + 1)}
+check("fits/the state under test is exactly the room",
+      len(TOK(serialize_state(AT_ROOM))["input_ids"]), ROOM_Q)
+a = make_agent(canned)
+fits = a.predict_long(AT_ROOM, Q)
+check("fits/a state at the room goes to system_one", fits["answers"], {"_via": "system_one"})
+check("fits/and is not windowed", a._calls["batch_states"], None)
+check("fits/one window is reported", fits["usage"].get("windows", "<absent>"), 1)
+a = make_agent(canned)
+a.predict_long(PAST_ROOM, Q)
+check_true("fits/one token past the room is still scanned",
+           len(a._calls["batch_states"] or []) > 1, a._calls["batch_states"])
+a = make_agent(canned)
+a.predict_long(AT_ROOM, Q, window=CONFIG_BUDGET)
+check_true("fits/an explicit window still scans a state wider than it",
+           len(a._calls["batch_states"] or []) > 1, a._calls["batch_states"])
+# The one-pass branch still refuses a start hook that narrows the room under the state: sized at the
+# default window, the check would pass and the tail of the state would be cut without a word.
+a = make_real_agent()
+_, narrowed = _attempt(lambda: a.predict_long(
+    AT_ROOM, Q, on_predict_start=lambda ctx: setattr(ctx, "max_len", MAX_LEN - 1)))
+check("fits/a hook that narrows the room under the state is refused", _kind(narrowed), "ValueError")
+a = make_real_agent()
+whole, exc = _attempt(lambda: a.predict_long(AT_ROOM, Q))
+check("fits/unhooked, the real path reads it in one pass",
+      (_kind(exc), a._forward_calls, ((whole or {}).get("usage") or {}).get("windows")),
+      (None, [2], 1))
+
 
 # --- findings from an adversarial review -----------------------------------------------------
 
