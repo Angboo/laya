@@ -64,12 +64,18 @@ def _runnable_source(rel):
 
 
 def _temperature_fitters():
-    """Every notebook or training script whose fit clamps `exp()` of a log-temperature.
+    """Every notebook or training script that still owns a fit clamping `exp()` of a
+    log-temperature.
 
-    Walks the tree rather than listing the known entry points, so a fourth script that
-    copies the pattern is held by the same check. Matches on the clamp of an `.exp()`
-    because that is the one shape all three of these share; a fit that stops clamping is
-    reported by the count assertion in the test rather than passing unnoticed.
+    Walks the tree rather than listing the known entry points, so a new script that copies
+    the pattern is held by the same check. Matches on the clamp of an `.exp()` because that
+    is the one shape these share; a fit that stops clamping is reported by the non-empty
+    assertion in the test rather than passing unnoticed.
+
+    Entry points that call `laya.train.finetune` are absent by design: their fit is
+    `laya.calibrate.fit_one_temperature`, which ends in `clamp_temperature(fitted, TEMP_MIN,
+    TEMP_MAX)` -- the same bounds, held by tests/test_calibrate.py. Their delegation is held
+    by tests/test_finetune_entrypoints.py.
     """
     found = []
     for base in ("notebooks", "research/scripts"):
@@ -215,15 +221,25 @@ class CalibrationPersistenceTests(unittest.TestCase):
         self.assertEqual(target.tolist(), [0.0, 1.0])
 
     def test_every_fine_tuning_fit_clamps_to_common_bounds(self):
-        # #642 fixed this for the Kaggle notebook. The Apple Silicon script and
-        # research/scripts/finetune_single_device.py kept `torch.clamp(..., 0.1, 10.0)`, so a
-        # fit either of them persisted could land outside `[TEMP_MIN, TEMP_MAX]` and be
-        # re-clamped when the checkpoint is loaded -- the calibration measured during training
-        # is then not the one that gets served. Derived from the tree rather than listed, so a
-        # script that copies the pattern is held too.
+        # #642 fixed this for the Kaggle notebook, which still owns a fit of its own. The
+        # Apple Silicon script and research/scripts/finetune_single_device.py used to keep
+        # `torch.clamp(..., 0.1, 10.0)` beside it, so a fit either of them persisted could
+        # land outside `[TEMP_MIN, TEMP_MAX]` and be re-clamped when the checkpoint is loaded
+        # -- the calibration measured during training is then not the one that gets served.
+        # Both now call `laya.train.finetune` and take those bounds from
+        # `laya.calibrate.fit_one_temperature`, so what is left to sweep is the fitter that
+        # is still hand-rolled. Derived from the tree rather than listed, so a script that
+        # copies the pattern is held too.
         fitters = _temperature_fitters()
-        # Non-vacuity: a sweep that matched nothing would pass every assertion below for free.
-        self.assertGreaterEqual(len(fitters), 3, [rel for rel, _, _ in fitters])
+        # Non-vacuity: the loop below asserts nothing when the sweep matches nothing, and the
+        # sweep matching nothing is exactly the state a converging tree walks into. Name the
+        # one entry point that still owns a fit, so losing its clamp -- or superseding this
+        # guard outright -- is a failure to read, not a silent pass.
+        self.assertIn(
+            "notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb",
+            [rel for rel, _, _ in fitters],
+            "no hand-rolled clamped fit left to sweep; if every entry point now goes through "
+            "laya.calibrate, retire or redirect this sweep rather than leaving it matching nothing")
 
         # These two drive the LBFGS solution past TEMP_MAX and below TEMP_MIN respectively,
         # so a range wider than the runtime's is caught in both directions.
