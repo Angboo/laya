@@ -7,12 +7,15 @@ here: it belongs to `massive_intent.en`, not typed-decisions (see README).
 Calibration is not byte-comparable across contracts. `laya.train` fits temperatures with
 `fit_temperature_map` (per type, and per option-count bucket above a floor) under the runtime
 clamp `[0.5, 5.0]`; the old notebook fitted one LBFGS temperature per type under `[0.1, 10]`.
-So ECE and Brier are reported under **both** paths:
+So ECE and Brier support either path, one per invocation:
 
 - ``--temperatures shipped`` (default) — the checkpoint's own fitted `temperature` and
   `temperature_by_options`, which is what the notebook's number also used;
 - ``--temperatures raw`` — temperature 1.0 everywhere, isolating the training from the
   calibration contract.
+
+Each run evaluates exactly one of the two and records which in the output; the committed Gate D
+table is the shipped path.
 
 Accuracy is unaffected by temperature (it only rescales the logits), so it is the clean
 reproduction signal.

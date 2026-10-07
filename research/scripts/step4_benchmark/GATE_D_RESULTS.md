@@ -18,6 +18,9 @@ default loss? It does not.
 
 ## Result
 
+All cells use the shipped-temperature path (`--temperatures shipped`); no raw-temperature cells
+were measured.
+
 | loss | seed | accuracy | ECE | Brier | wall (s) |
 |---|---|---|---|---|---|
 | `rlcd` | 0 | 0.7750 | 0.1504 | 0.0519 | 2691.3 |
@@ -64,11 +67,12 @@ The small choice/noul gain and the score loss swap rank between seeds; neither i
 
 ## Verdict
 
-`INSUFFICIENT`. The paired accuracy delta changes sign across seeds and its mean (+0.0002) is far
-below the 0.005 bar the analyser treats as material, while the soft-CE seed spread (std 0.0155) is
-an order of magnitude larger than RLCD's (0.0016). Three training seeds cannot support changing a
-shipped default in either direction, so `rlcd` remains the conservative default. This PR does not
-change the default.
+`INSUFFICIENT`. The paired accuracy delta changes sign across seeds (mean +0.0002, range −0.0145 to
++0.0135), so the seeds disagree about direction; the soft-CE seed spread (std 0.0155) is also an
+order of magnitude larger than RLCD's (0.0016). The analyser applies no materiality threshold — what
+advantage would justify changing a shipped default is a maintainer judgement, not something this
+panel can encode — but a sign that flips between seeds is not a basis for moving one. `rlcd` remains
+the default; this PR does not change it.
 
 ## Reproduction
 

@@ -73,10 +73,11 @@ path that produced them (next section).
 
 `laya.train` fits with `laya.calibrate.fit_temperature_map` — per type, plus per option-count
 bucket above a floor — under the runtime clamp `[TEMP_MIN, TEMP_MAX] = [0.5, 5.0]`. The old
-notebook fitted one LBFGS temperature per type under `[0.1, 10]`. So `evaluate.py` reports ECE and
-Brier under **both** paths (`--temperatures shipped` uses the checkpoint's own fit; `--temperatures
-raw` uses 1.0 everywhere). An ECE difference explained by the calibration-contract change is not a
-training non-reproduction; say which path produced each number.
+notebook fitted one LBFGS temperature per type under `[0.1, 10]`. So `evaluate.py` supports either
+path, one per invocation: `--temperatures shipped` uses the checkpoint's own fit and
+`--temperatures raw` uses 1.0 everywhere. **The Gate D table in `GATE_D_RESULTS.md` is the shipped
+path only**; no raw-temperature cells were measured. An ECE difference explained by the
+calibration-contract change is not a training non-reproduction; say which path produced each number.
 
 ## Gates
 
@@ -138,11 +139,12 @@ python research/scripts/step4_benchmark/smoke_test.py
 - **Reference (notebook, 2×T4):** ~4–6 minutes for the demo's 6,000 decisions.
 - **Guilherme measured (one T4):** ~48–54 minutes per run — but that is the **MASSIVE 20-option**
   experiment, not typed-decisions. Do not carry it over.
-- **Our measured:** fill in from `manifest_*.json` (`runs[].elapsed_seconds`) after a real run.
+- **Our measured (one T4):** 2691.3–2708.5 s (≈44.9–45.1 min) per cell, over the six Gate D cells
+  (`rlcd` seed 0 is the reused Gate R run).
 
 Single-device `laya-train` uses micro-batch 8 × grad-accum 8 = effective 64; the notebook used
-8 × 2 GPUs × 4 = effective 64. Same effective batch, different step count (single device does
-~4% more optimizer steps on the same data).
+8 × 2 GPUs × 4 = effective 64. Same effective batch, run on one GPU instead of two; the different
+epoch-order RNG formula and environment are noted under Limitations above.
 
 ## Constraints
 
