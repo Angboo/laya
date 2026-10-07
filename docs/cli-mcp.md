@@ -165,8 +165,10 @@ does not require dropping to Python. For the schema-driven form in more depth, s
 The shared guardrail says not to send choice questions with more than 20 options without
 shortlisting. `laya_shortlist` keeps the `k` most likely labels before the forward pass; its
 default is `k=20`. It uses mean-pooled embeddings from the answering checkpoint's own encoder,
-so it does not download a second model, and returns the kept labels, cosine scores, `k`, and
-option count for each shortlisted question.
+so it does not download a second model, and returns the kept labels, cosine scores, `k`,
+option count, and whether the question passed through unshortlisted for each shortlisted
+question. A question with `k` at or past its option count is passed through unchanged, so
+its cosine scores come back `null` rather than empty.
 
 `state` must be a non-empty JSON object. `questions` must be a non-empty object whose values use
 Laya's typed question schema. `laya_preset` accepts the same five presets the CLI does: `email`,
