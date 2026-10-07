@@ -86,6 +86,127 @@ def test_calibration_uses_answer_confidence():
     assert report.overall["mean_confidence"] == pytest.approx(0.9)
 
 
+# ---------------------------------------------------------------- which confidence a metric reads
+# `_answer_confidence` prefers `answer_confidence`, and an answer that carries none gets the entropy
+# `confidence` -- a different quantity on a different scale (#394), which the docstring used to call
+# "the calibrated confidence Laya reports ... on every answer type" while docs/evals.md told the
+# operator the same. The shape that really arrives without the field is the strict Jev wire contract:
+# `LAYA_JEV_STRICT` drops it (`laya/serve.py::_project_jev_strict`, documented in docs/http-api.md).
+# So the stripped answers below are made by the server's own projector rather than hand-written -- a
+# hand copy could drift from what the server serves and this gate would still pass. `laya.serve`
+# imports with neither fastapi nor torch at module scope, which is why it is affordable here.
+
+_CONTRACT_PROBS = {"choice": [0.95, 0.03, 0.02], "score": [0.05, 0.90, 0.05], "noul": [0.13, 0.87]}
+_CONTRACT_KEYS = {"choice": ["billing", "sales", "other"], "score": ["low", "mid", "high"],
+                  "noul": ["no", "yes"]}
+_CONTRACT_LABEL = {"choice": "billing", "score": "mid", "noul": True}
+
+
+def _agent_answer(kind):
+    """The answer dict `laya/agent.py` publishes, built the way the decoder builds it: entropy
+    `confidence` for `choice` and `score`, `max(p_true, 1 - p_true)` for `noul`, and
+    `answer_confidence` = max(p) -- see laya/agent.py:1373, :1392, :1400."""
+    p = _CONTRACT_PROBS[kind]
+    argmax = max(range(len(p)), key=lambda i: p[i])
+    from laya.common import confidence_from_probs
+    conf = (round(max(p[1], 1.0 - p[1]), 4) if kind == "noul"
+            else round(confidence_from_probs(np.asarray(p), len(p)), 4))
+    answer = {"confidence": conf, "answer_confidence": round(float(p[argmax]), 4),
+              "type": kind}
+    if kind == "choice":
+        return dict(answer, choice=_CONTRACT_KEYS[kind][argmax],
+                    probabilities=dict(zip(_CONTRACT_KEYS[kind], p)))
+    if kind == "score":
+        return dict(answer, score=round(sum(i * v for i, v in enumerate(p)), 4),
+                    legend={str(i): k for i, k in enumerate(_CONTRACT_KEYS[kind])},
+                    probabilities={str(i): v for i, v in enumerate(p)})
+    return dict(answer, noul=p[1])
+
+
+def _contract_shapes():
+    """`(full, strict)` -- the payload the agents publish, and the same payload put through the
+    projector that serves the strict Jev contract."""
+    from laya.serve import _project_jev_strict
+    full = {kind: _agent_answer(kind) for kind in _CONTRACT_PROBS}
+    strict = _project_jev_strict({"model": "stub", "answers": dict(full),
+                                  "usage": {"prompt_tokens": 1, "completion_tokens": 1}})["answers"]
+    return full, strict
+
+
+def _contract_report(shapes):
+    questions = {"q": {"type": "choice", "instructions": "?",
+                       "criteria": dict(zip(_CONTRACT_KEYS["choice"], ["c"] * 3))}}
+    by_state = {"state-%s" % kind: {"q": shapes[kind]} for kind in shapes}
+    dataset = Dataset([Example("state-%s" % kind, questions, {"q": _CONTRACT_LABEL[kind]})
+                       for kind in shapes])
+    return evaluate(StubRunner(by_state), dataset)
+
+
+def test_serve_contract_projection_is_the_shape_without_the_field():
+    full, strict = _contract_shapes()
+    for kind in ("choice", "score", "noul"):
+        assert "answer_confidence" in full[kind]
+        assert "answer_confidence" not in strict[kind], (
+            "the projector is what makes the fallback reachable; if it stopped dropping the field, "
+            "the prose this test guards would need re-reading, not these numbers")
+    assert "confidence" in strict["choice"] and "confidence" in strict["score"]
+    assert "confidence" not in strict["noul"], "docs/http-api.md: noul keeps only `noul`"
+
+
+def test_a_strict_answer_is_calibrated_against_the_entropy_number():
+    full, strict = _contract_shapes()
+    for kind in ("choice", "score"):
+        assert evals._answer_confidence(full[kind]) == pytest.approx(full[kind]["answer_confidence"])
+        assert evals._answer_confidence(strict[kind]) == pytest.approx(full[kind]["confidence"]), \
+            "with the field gone the column silently becomes the entropy number"
+    # A strict `noul` carries neither field, so it is the only fallback that lands on the right
+    # quantity: max(p_true, 1 - p_true) is what the decoder reports as its answer_confidence.
+    assert evals._answer_confidence(strict["noul"]) == pytest.approx(
+        full["noul"]["answer_confidence"])
+
+
+def test_the_two_shapes_do_not_score_the_same_report():
+    full, strict = _contract_shapes()
+    over_full, over_strict = _contract_report(full), _contract_report(strict)
+    assert over_full.overall["mean_confidence"] == pytest.approx(0.9066666666666666)
+    assert over_strict.overall["mean_confidence"] == pytest.approx(0.7665666666666667)
+    # ece sees the two rows whose answer type yields a known label (choice, noul); the score row has
+    # no correctness rule, so only mean_confidence moves for it.
+    assert over_full.overall["ece"] == pytest.approx(0.09)
+    assert over_strict.overall["ece"] == pytest.approx(0.17065)
+    assert over_strict.overall["ece"] - over_full.overall["ece"] == pytest.approx(0.08065), \
+        "the same answers, the same labels, a different field: 0.09 -> 0.17065"
+
+
+def test_the_docs_name_the_fallback_and_refuse_to_call_the_shipped_number_calibrated():
+    import inspect
+    import pathlib
+
+    doc = inspect.getsource(evals._answer_confidence)
+    flat = " ".join(doc.split())
+    assert "falls through" in flat and "normalized entropy" in flat
+    assert "LAYA_JEV_STRICT" in flat, "the shape that lacks the field has to be named"
+    assert "over-confident" in flat, "the shipped level must not be called calibrated"
+    assert "is not *calibrated* as shipped" in flat
+    assert "The calibrated confidence" not in doc, "main's opening claim, verbatim"
+
+    page = (pathlib.Path(__file__).resolve().parent.parent
+            / "docs" / "evals.md").read_text(encoding="utf-8")
+    prose = " ".join(page.split())
+    assert "the calibrated probability Laya reports on every answer type" not in prose
+    assert "`laya.evals._answer_confidence`" in prose, "the page names the function it describes"
+    assert "then\n`max(p, 1 - p)`" in page or "then `max(p, 1 - p)`" in prose
+    assert "LAYA_JEV_STRICT" in prose and "over-confident" in prose
+    assert "## Which confidence a metric reads" in page, "the fallback needs a home, not a footnote"
+
+    # And the claim the evals page leans on has to still be the one the HTTP page makes.
+    api = (pathlib.Path(__file__).resolve().parent.parent
+           / "docs" / "http-api.md").read_text(encoding="utf-8")
+    row = [line for line in api.splitlines() if "`LAYA_JEV_STRICT`" in line]
+    assert row and "no per-answer `action` / `answer_confidence`" in row[0]
+
+
+
 def test_compare_ignores_latency_by_default():
     report = EvalReport(overall={"choice_accuracy": 0.8, "latency_p50_ms": 12.0})
     baseline = {"overall": {"choice_accuracy": 0.8, "latency_p50_ms": 5.0}}
