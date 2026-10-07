@@ -179,12 +179,22 @@ def test_the_two_shapes_do_not_score_the_same_report():
 
 
 def test_the_docs_name_the_fallback_and_refuse_to_call_the_shipped_number_calibrated():
+    import ast
     import inspect
     import pathlib
 
     doc = inspect.getsource(evals._answer_confidence)
     flat = " ".join(doc.split())
     assert "falls through" in flat and "normalized entropy" in flat
+    # The number of fallbacks the docstring teaches is read off the code's own Returns, so a fourth
+    # fallback cannot be added without re-teaching the sentence that enumerates them.
+    reads = [node for node in ast.walk(ast.parse(doc).body[0])
+             if isinstance(node, ast.Return) and not isinstance(node.value, ast.Constant)]
+    words = ("zero", "one", "two", "three", "four", "five", "six", "seven")
+    taught = words[len(reads) - 1]
+    assert "falls through %s more reads, in order" % taught in flat, (
+        "the docstring must enumerate the fallbacks in order, and the count it teaches must be the "
+        "code's: %d returning reads, one of them the preferred `answer_confidence`" % len(reads))
     assert "LAYA_JEV_STRICT" in flat, "the shape that lacks the field has to be named"
     assert "over-confident" in flat, "the shipped level must not be called calibrated"
     assert "is not *calibrated* as shipped" in flat
@@ -198,6 +208,14 @@ def test_the_docs_name_the_fallback_and_refuse_to_call_the_shipped_number_calibr
     assert "then\n`max(p, 1 - p)`" in page or "then `max(p, 1 - p)`" in prose
     assert "LAYA_JEV_STRICT" in prose and "over-confident" in prose
     assert "## Which confidence a metric reads" in page, "the fallback needs a home, not a footnote"
+
+    # Every metrics-table row that names the column has to carry the same hedge the prose does.
+    rows = [line for line in page.splitlines()
+            if line.startswith("| `") and 'answer["answer_confidence"]' in line]
+    assert rows, "the page must tell the operator which field the metrics read"
+    for row in rows:
+        assert "where the answer carries it" in row or "#which-confidence-a-metric-reads" in row, (
+            "a row that names only `answer_confidence` claims the fallback away: %s" % row[:100])
 
     # And the claim the evals page leans on has to still be the one the HTTP page makes.
     api = (pathlib.Path(__file__).resolve().parent.parent
