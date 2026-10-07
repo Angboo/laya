@@ -1305,7 +1305,8 @@ def test_docs_and_the_harness_name_the_same_timing_metrics(monkeypatch):
     import pathlib
     import re
 
-    page = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "evals.md").read_text()
+    page = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "evals.md").read_text(
+        encoding="utf-8")
     batched, _ = _timed_pair(monkeypatch, 8)
     published = {metric for metric in batched.overall if metric.endswith("_ms")}
 
