@@ -36,6 +36,15 @@ laya eval --help
 
 See the [Evaluation harness](evals.md) guide for datasets, metrics, and baseline gates.
 
+### Training CLI
+
+`laya-train`, also reachable as `laya train`, fine-tunes a checkpoint from a CSV or JSONL of labelled
+decisions. See [Fine-tune with `laya-train`](finetune.md#fine-tune-with-laya-train).
+
+```bash
+laya-train --help
+```
+
 ### Route without loading a checkpoint
 
 With text and no prediction flag, the CLI calls `Router.route`:
