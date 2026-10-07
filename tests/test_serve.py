@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -2840,6 +2841,55 @@ def test_http_api_page_documents_exactly_the_health_fields():
         assert sorted(sample["cpu_fallbacks"][name]) == sorted(counters), (
             "cpu_fallbacks entries say %s, the handler builds %s" % (
                 sorted(sample["cpu_fallbacks"][name]), sorted(counters)))
+
+
+def test_security_page_health_sample_matches_handler_shape():
+    """docs/security.md's `/health` snippet has to be what the handler really answers.
+
+    #811 pinned docs/http-api.md to `health()`'s own `return` dict. The same payload was
+    quoted on docs/security.md as a four-key line ending in `"device":"auto"`; the handler
+    returns seven keys, and `"auto"` is what `LAYA_DEVICE` defaults to, not a value the
+    handler emits (see the docstring on `test_http_api_page_documents_exactly_the_health_fields`).
+    A reader following that snippet's shape -- to check an SDK, a shell probe, or the shape
+    their own healthcheck parses -- would find their code silently ignores three fields.
+
+    The page's purpose here is to show the checkpoint revision, not the whole payload, so the
+    fix is a `jq` filter rather than a longer literal. The gate accepts either: a filtered
+    curl line, or a raw sample that carries exactly the seven keys the handler returns.
+    """
+    health, returned = _health_return_keys()
+    assert returned, "health() returns no literal keys; retarget this"
+
+    page = open(os.path.join(ROOT, "docs", "security.md"), encoding="utf-8").read()
+
+    # The pre-fix wording, banned verbatim.
+    assert '"status":"ok","loaded":["english"],"revisions":{"english":"55cf4c4e…"},' \
+           '"device":"auto"' not in page, (
+        "docs/security.md restored the pre-fix 4-key /health sample; either filter the "
+        "curl line as the fix does, or list every key health() returns")
+
+    # Find the ```bash code block that runs curl against /health.
+    blocks = re.findall(r"```bash\n(.*?)\n```", page, re.DOTALL)
+    health_blocks = [b for b in blocks if "curl -s localhost:8000/health" in b]
+    assert len(health_blocks) == 1, (
+        "expected exactly one /health curl snippet on docs/security.md, found %d"
+        % len(health_blocks))
+    block = health_blocks[0]
+
+    # Either the curl is filtered (the current fix), or the raw sample enumerates the
+    # handler's keys. A comment-only line without either is a stale quote.
+    filtered = "| jq" in block or "| python" in block or "| grep" in block
+    if filtered:
+        assert re.search(r"#\s*\{", block), (
+            "docs/security.md filters /health with a pipe but shows no example of the "
+            "filtered shape; the block is not useful to a reader")
+    else:
+        # No filter: the raw sample must contain every key health() returns.
+        sample_line = next((ln for ln in block.splitlines() if ln.strip().startswith("#")), "")
+        payload = json.loads(sample_line.lstrip("# ").strip())
+        assert sorted(payload) == sorted(returned), (
+            "docs/security.md's unfiltered /health sample says %s, health() returns %s"
+            % (sorted(payload), sorted(returned)))
 
 
 def _decision_response_site(rel):
