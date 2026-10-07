@@ -105,7 +105,9 @@ python research/scripts/step4_benchmark/run_benchmark.py --gate D \
     --data data/typed_decisions/train.jsonl --out-dir runs/step4 --device cuda
 ```
 
-Summarise paired per-decision outcomes across seeds, not just the two means.
+Summarise paired per-decision outcomes across seeds, not just the two means. The measured
+three-seed panel and its verdict are in [`GATE_D_RESULTS.md`](GATE_D_RESULTS.md), with the raw cells
+under [`results/`](results/).
 
 ### 20-option order stability
 
