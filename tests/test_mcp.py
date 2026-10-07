@@ -2318,6 +2318,54 @@ def test_batch_item_shape_as_documented():
            named == {"state", "questions"} | set(BATCH_ITEM_OVERRIDES), repr(sorted(named)))
 
 
+def test_cli_mcp_page_batch_rows():
+    """Each batch row on the MCP docs page names its own key set, not the sibling's.
+
+    `docs/cli-mcp.md` is the page a client reads before opening the tools/list response, so the
+    `requests` cell is a fourth copy of the shape. Until now the three-copy gate above covered
+    the tool descriptions and the README but not this table, and the `laya_route_batch` row read
+    "same shape as `laya_predict_batch`" -- which is wrong, because `server.py:310` registers the
+    route tool with `batch_item_key_doc(omit=("max_len", "head_max_len"))`. Routing runs no
+    forward pass, so the token budgets are dropped; the row has to say the six keys the tool
+    actually accepts.
+
+    Both rows are read from the rendered markdown (the third `|`-delimited cell of the table),
+    the brace-list is parsed out, and the resulting key set is compared to `batch_item_key_doc`
+    with the same `omit` the server registers. The pre-fix wording is banned by direct substring
+    so the check fails if the row reverts to pointing at the sibling instead of naming itself.
+    """
+    import re
+
+    page = (Path(__file__).resolve().parents[1] / "docs" / "cli-mcp.md").read_text(encoding="utf-8")
+
+    def row_cell(tool):
+        for line in page.splitlines():
+            if line.startswith("| `%s` |" % tool):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) >= 3:
+                    return cells[2]
+        return None
+
+    for tool, omit in (("laya_predict_batch", ()),
+                       ("laya_route_batch", ("max_len", "head_max_len"))):
+        cell = row_cell(tool)
+        ok("docs-mcp/%s_row_present" % tool, cell is not None, "row not found")
+        if cell is None:
+            continue
+        match = re.search(r"`\{([^`]*)\}`", cell)
+        ok("docs-mcp/%s_row_has_brace_list" % tool, match is not None,
+           "cell=%r" % cell)
+        if match is None:
+            continue
+        named = {part.strip().rstrip("?") for part in match.group(1).split(",")}
+        want = {"state", "questions"} | (set(BATCH_ITEM_OVERRIDES) - set(omit))
+        ok("docs-mcp/%s_row_keys" % tool, named == want,
+           "row=%r want=%r" % (sorted(named), sorted(want)))
+
+    ok("docs-mcp/route_batch_row_drops_sibling_reference",
+       "same shape as `laya_predict_batch`" not in page)
+
+
 def test_models_from_env():
     old = os.environ.get("LAYA_MODELS")
     try:
@@ -2599,6 +2647,7 @@ test_a_bad_question_is_a_caller_error_not_a_server_fault()
 test_timeout_removed()
 test_models_from_env()
 test_batch_item_shape_as_documented()
+test_cli_mcp_page_batch_rows()
 test_auto_task_env()
 test_default_model_env()
 test_server_registration()
