@@ -6,6 +6,7 @@ in a temp directory, so nothing is downloaded.
 Run: python tests/test_train.py
 """
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -1013,6 +1014,81 @@ class CalibrationReportTests(unittest.TestCase):
         self.assertTrue(any(re.match(r"laya\.train: \w+ calibration: not fitted", m) for m in messages), messages)
         self.assertEqual(saved["training"]["laya_train_calibration"], report["calibration"])
         self.assertEqual(sum(e["items"] for e in report["calibration"].values()), report["calibration_items"])
+
+
+class PriorCollapseTests(unittest.TestCase):
+    """#963: a collapsed head is chance-level and silent unless finetune warns."""
+
+    @staticmethod
+    def rows_of(logits, target, n=8, qtype=None, k=None):
+        qtype = QTYPES["choice"] if qtype is None else qtype
+        k = len(logits) if k is None else k
+        return [(qtype, list(logits), list(target), k) for _ in range(n)]
+
+    def test_constant_logits_match_the_prior_and_warn(self):
+        from laya.train import COLLAPSE_LOGIT_RANGE, collapse_stats, prior_collapse_message
+
+        # Tiny 4-way set: every row is the same logit, so the predicted distribution is the
+        # uniform prior. This is the measured failure in #963 (range 0.01, CE at ln 4).
+        records = self.rows_of([0.002, 0.0, -0.001, 0.001], [1.0, 0.0, 0.0, 0.0])
+        stats = collapse_stats(records)
+        self.assertIsNotNone(stats)
+        self.assertLess(stats["mean_logit_range"], COLLAPSE_LOGIT_RANGE)
+        self.assertAlmostEqual(stats["mean_ce"], math.log(4), places=2)
+        msg = prior_collapse_message(records)
+        self.assertIsNotNone(msg)
+        self.assertIn("collapsed to the class prior", msg)
+        self.assertIn("more epochs", msg)
+        self.assertIn("more data", msg)
+        self.assertIn("another seed", msg)
+
+    def test_peaked_logits_on_a_learnable_set_do_not_warn(self):
+        from laya.train import prior_collapse_message
+
+        records = self.rows_of([5.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
+        self.assertIsNone(prior_collapse_message(records))
+        self.assertIsNone(prior_collapse_message([]))
+        self.assertIsNone(prior_collapse_message(self.rows_of([0.0], [1.0], k=1)))
+
+    def test_ce_stuck_at_ln_k_warns_even_when_logit_range_is_not_tiny(self):
+        from laya.train import COLLAPSE_LOGIT_RANGE, collapse_stats, prior_collapse_message
+
+        # Softmax is still near-uniform, so CE sits on ln K, but the within-row range is
+        # above the constant-logit cutoff -- the other #963 trigger.
+        records = self.rows_of([0.2, 0.05, -0.05, -0.2], [0.25, 0.25, 0.25, 0.25])
+        stats = collapse_stats(records)
+        self.assertGreaterEqual(stats["mean_logit_range"], COLLAPSE_LOGIT_RANGE)
+        self.assertAlmostEqual(stats["mean_ce"], stats["mean_ln_k"], delta=0.03)
+        msg = prior_collapse_message(records)
+        self.assertIsNotNone(msg)
+        self.assertIn("cross-entropy", msg)
+
+    def test_finetune_emits_the_collapse_warning_only_when_logits_collapse(self):
+        from laya.train import prior_collapse_message
+
+        collapsed = self.rows_of([0.01, 0.0, -0.01], [1.0, 0.0, 0.0], n=12)
+        peaked = self.rows_of([4.0, 0.0, 0.0], [1.0, 0.0, 0.0], n=12)
+        self.assertIsNotNone(prior_collapse_message(collapsed))
+        self.assertIsNone(prior_collapse_message(peaked))
+
+        def run(records):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                make_checkpoint(root / "base", make_tokenizer())
+                config = TrainConfig(epochs=1, micro_batch=8, grad_accum=1, calib_frac=0.2, log_every=0)
+                with patch("huggingface_hub.snapshot_download",
+                           side_effect=AssertionError("unexpected download")), \
+                        patch("laya.train.read_jsonl", return_value=rows(2)), \
+                        patch("laya.train.calibration_records", return_value=records), \
+                        warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    finetune("rows.jsonl", str(root / "base"), str(root / "out"), config, device="cpu")
+            return [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+
+        collapsed_msgs = run(collapsed)
+        self.assertTrue(any("collapsed to the class prior" in m for m in collapsed_msgs), collapsed_msgs)
+        peaked_msgs = run(peaked)
+        self.assertFalse(any("collapsed to the class prior" in m for m in peaked_msgs), peaked_msgs)
 
 
 if __name__ == "__main__":

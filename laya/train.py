@@ -19,7 +19,10 @@ Calibration goes through `laya.calibrate.fit_temperature_map`, so a fine-tuned c
 fitted with the same clamp and buckets the runtime applies instead of a local copy of the
 fitter. `calibration_report` says per question type what that fit rests on, and `finetune` warns
 when it rests on too little: a short run can otherwise save a checkpoint whose temperatures never
-moved from 1.0, and nothing but the numbers would show it.
+moved from 1.0, and nothing but the numbers would show it. It also warns when predictions have
+collapsed to the class prior -- a near-constant logit (or calibration CE stuck at ln K) that
+looks like a finished run on an unlearnable task, but is often just too few updates on a small
+dataset (#963).
 
 Items keep the question and the tokenized state rather than a finished sequence, because a
 shuffled epoch needs to rebuild the head. States are tokenized once per row and shared by
@@ -61,6 +64,13 @@ LOSSES = ("soft-ce", "rlcd")
 # Below this many calibration items of a type, a fitted temperature is reported as resting on
 # little evidence. MIN_TYPE_N (laya.calibrate) is the floor below which it is not fitted at all.
 CALIB_WARN_N = 50
+# Mean within-row logit range below this is the silent collapse to a constant (usually
+# the class prior) measured in #963: 0.01 on a collapsed head vs 0.62 untuned.
+COLLAPSE_LOGIT_RANGE = 0.05
+# Calibration mean cross-entropy within this relative distance of ln K is the other
+# collapse signal from #963 (training CE stuck at ln 4). The reported training loss is
+# not used: the default `rlcd` objective is not cross-entropy.
+COLLAPSE_CE_REL = 0.02
 _MASKED = -1e4
 
 
@@ -883,6 +893,69 @@ def evaluate_records(records: Sequence[Tuple[int, Any, Any, int]],
     }
 
 
+def collapse_stats(records: Sequence[Tuple[int, Any, Any, int]]) -> Optional[Dict[str, float]]:
+    """Mean within-row logit range, mean soft-CE and mean ln K on records with k >= 2.
+
+    A 1-option row cannot collapse to a prior, so it is skipped. Empty input, or only
+    1-option rows, returns None.
+    """
+    import numpy as np
+
+    ranges, ces, lnks = [], [], []
+    for _qt, logits, target, k in records:
+        k = int(k)
+        if k < 2:
+            continue
+        z = np.asarray(logits, dtype=float).ravel()[:k]
+        t = np.asarray(target, dtype=float).ravel()[:k]
+        mass = float(t.sum())
+        if mass <= 0.0:
+            continue
+        t = t / mass
+        ranges.append(float(z.max() - z.min()))
+        logp = z - np.logaddexp.reduce(z)
+        ces.append(float(-(t * logp).sum()))
+        lnks.append(math.log(k))
+    if not ranges:
+        return None
+    n = len(ranges)
+    return {
+        "n": float(n),
+        "mean_logit_range": sum(ranges) / n,
+        "mean_ce": sum(ces) / n,
+        "mean_ln_k": sum(lnks) / n,
+    }
+
+
+def prior_collapse_message(records: Sequence[Tuple[int, Any, Any, int]]) -> Optional[str]:
+    """Warning text if calibration logits have collapsed to the class prior, else None.
+
+    The default 4-epoch budget is sized for a few thousand typed decisions. On a few
+    hundred or a thousand labelled rows the head can finish with every option at the
+    same logit -- chance-level, and silent. #963 measured a mean within-row range of
+    0.01 against 0.62 for the untuned checkpoint, and training CE stuck at ln K.
+
+    Fired when the mean within-row logit range is below `COLLAPSE_LOGIT_RANGE`, or when
+    mean soft-CE on the same records is within `COLLAPSE_CE_REL` of mean ln K.
+    """
+    stats = collapse_stats(records)
+    if stats is None:
+        return None
+    reasons = []
+    if stats["mean_logit_range"] < COLLAPSE_LOGIT_RANGE:
+        reasons.append("mean within-row logit range %.3g" % stats["mean_logit_range"])
+    mean_ce, mean_lnk = stats["mean_ce"], stats["mean_ln_k"]
+    if mean_lnk > 0.0 and abs(mean_ce - mean_lnk) <= COLLAPSE_CE_REL * mean_lnk:
+        reasons.append("calibration cross-entropy %.3f is within %.0f%% of ln K ~ %.3f"
+                       % (mean_ce, COLLAPSE_CE_REL * 100.0, mean_lnk))
+    if not reasons:
+        return None
+    return ("laya.train: predictions collapsed to the class prior (%s). "
+            "The default epoch budget is often too small on a few hundred or a thousand "
+            "labelled rows. Try more epochs, more data, or another seed."
+            % "; ".join(reasons))
+
+
 def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainConfig] = None,
              device: Optional[str] = "auto") -> Dict[str, Any]:
     """Preprocess, train, calibrate and save; returns a summary of the run.
@@ -1023,6 +1096,11 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
                           on_epoch_end=checkpoint_latest, parallel=parallel)
 
     records = calibration_records(model, tok, calib_items, dev, max_len, head_max_len, parallel=parallel)
+    collapse_msg = prior_collapse_message(records)
+    if collapse_msg:
+        # Same channel as the weak-calibration notes: a checkpoint that predicts the
+        # class prior for every input otherwise looks like a finished, unlearnable task.
+        warnings.warn(collapse_msg, RuntimeWarning, stacklevel=2)
     fitted = fit_temperature_map(records)
     calibration = calibration_report(records, fitted["temperature"])
     for name, entry in calibration.items():
