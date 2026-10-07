@@ -100,8 +100,9 @@ def serialize_state(state: Union[str, dict, list]) -> str:
 def render_criterion(value) -> str:
     """Render one criterion value as text.
 
-    Strings pass through; anything structured (dict, list, number) becomes compact JSON, so a
-    rubric reads as JSON rather than a Python repr. Without this a dict-valued criterion
+    Strings pass through; anything structured (dict, list, number) becomes a single-line JSON
+    document with the default separators -- ``", "`` between members, ``": "`` before a value --
+    so a rubric reads as JSON rather than a Python repr. Without this a dict-valued criterion
     crashed `noul` outright and leaked `{'desc': ...}` into `choice` and `score` prompts.
     """
     if isinstance(value, str):
