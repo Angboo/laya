@@ -1364,6 +1364,148 @@ apply_confidence_gate([_witness], None)
 check("gate/live None writes nothing", _witness, _witness_before)
 check("gate/live None adds no abstention key", "abstention" in _witness["answers"]["q"], False)
 
+
+# --------------------------------------------- example 18 must not call the threshold a measurement
+# `examples/18_confidence_gating.py` is the intro-level gating pattern: it picks a 0.85 cutoff on
+# `answer_confidence` and acts on it. On main it calls the field "the calibrated probability Laya
+# puts on the answer it reports" and its module docstring says it "branches on Laya's calibrated
+# confidence". The README's Calibration section (line 1586) says the opposite about the shipped
+# state: mean ECE on `laya` is 0.466 as shipped, dropping to 0.081 only after refitting one
+# temperature per (question type, option-count) bucket on held-out data, and both shipped
+# checkpoints are over-confident. `answer_confidence` is the field temperature scaling fits and
+# the abstention gate reads -- but "calibrated" is a property a fit earns, not a property of the
+# field, and the loader emits `RuntimeWarning: ... Treat confidence from the affected entries as
+# uncalibrated.` on this very checkpoint. The page now reads back the temperature it actually
+# applies to each of its two questions and states the calibration claim as conditional.
+from laya.common import QTYPES as _QTYPES18, temp_bucket as _temp_bucket18  # noqa: E402
+
+EXAMPLE_18 = os.path.join(ROOT, "examples", "18_confidence_gating.py")
+HELPERS_18 = ("option_count", "scale_for")
+CORE_GLOBALS_18 = {"temp_bucket", "QTYPES", "math"}
+
+OLD_PAGE_18 = '''
+Answers a batch of support emails and branches on Laya\'s calibrated confidence: act
+    The production pattern from the README. Gate on `answer_confidence`: the calibrated
+    probability Laya puts on the answer it reports, defined the same way on every question
+'''
+
+UNQUALIFIED_CALIBRATION_18 = re.compile(
+    r"the\s+calibrated\s+probability|Laya['’]s\s+calibrated\s+confidence", re.I)
+DERIVES_SCALING_18 = re.compile(r"temp_bucket\(")
+NAMES_CONDITION_18 = re.compile(r"over-confident", re.I)
+HARDCODED_BUCKET_18 = re.compile(r"[\"'](choice|score|noul):[0-9]")
+
+
+def _src18():
+    with open(EXAMPLE_18, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _helpers18():
+    tree = ast.parse(_src18())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS_18]
+    ns = {"temp_bucket": _temp_bucket18, "QTYPES": _QTYPES18, "math": math}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), EXAMPLE_18, "exec"), ns)  # noqa: S102
+    return ns
+
+
+class _FakeAgent18(object):
+    """Only the two temperature attributes `scale_for` reads."""
+
+    def __init__(self, by_options, per_type):
+        self.temperature_by_options = by_options
+        self.temperature = per_type
+
+
+def _top_literal18(name):
+    for n in ast.parse(_src18()).body:
+        if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in n.targets):
+            return ast.literal_eval(n.value)
+    raise KeyError(name)
+
+
+def _fn18(name):
+    for n in ast.parse(_src18()).body:
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    raise KeyError(name)
+
+
+def test_page18_helpers_are_live_and_defer_to_core():
+    defined = sorted(n.name for n in ast.parse(_src18()).body
+                     if isinstance(n, ast.FunctionDef) and n.name in HELPERS_18)
+    assert defined == sorted(HELPERS_18), "example 18 lost a helper: %s" % defined
+    tree = ast.parse(_src18())
+    top_loads = {node.id for stmt in tree.body if not isinstance(
+        stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+    unused = set(HELPERS_18) - top_loads
+    assert not unused, "defined but never called at module level: %s" % sorted(unused)
+    for name in HELPERS_18:
+        node = _fn18(name)
+        outside = sorted(n for n in _free_names(node)
+                         if not hasattr(builtins, n) and n not in CORE_GLOBALS_18)
+        assert not outside, "%s reads %s from the page" % (name, outside)
+        prints = [c for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "print"]
+        assert not prints, "%s prints instead of returning" % name
+    assert not HARDCODED_BUCKET_18.search(ast.dump(_fn18("scale_for"))), (
+        "scale_for hardcodes a bucket name instead of calling temp_bucket")
+
+
+def test_page18_questions_reach_core_bucket_names():
+    """Replay the page's own QUESTIONS through core's temp_bucket and through the example's helper."""
+    ns = _helpers18()
+    questions = _top_literal18("QUESTIONS")
+    per_type = [7.0, 8.0, 9.0]
+    by_options = {"choice:3-5": 1.7601518630981445, "noul:2": 1.983399510383606}
+    fake = _FakeAgent18(by_options, per_type)
+    shapes = {}
+    for qid, q in questions.items():
+        k = ns["option_count"](q)
+        name, applied, in_map = ns["scale_for"](fake, q["type"], k)
+        assert name == _temp_bucket18(_QTYPES18[q["type"]], k), (qid, name)
+        assert abs(applied - by_options[name]) < 1e-9, (qid, applied)
+        assert in_map is True, "%s: %s missing from map" % (qid, name)
+        shapes[qid] = (q["type"], k, name, applied)
+    assert shapes == {
+        "department": ("choice", 4, "choice:3-5", 1.7601518630981445),
+        "refund_requested": ("noul", 2, "noul:2", 1.983399510383606),
+    }, shapes
+
+
+def test_page18_drops_the_unconditional_calibration_claim():
+    """The two phrases main uses fire on the ban and are gone here; main has no temp_bucket call."""
+    src = _src18()
+    assert UNQUALIFIED_CALIBRATION_18.search(OLD_PAGE_18), "the ban must fire on main's wording"
+    assert not UNQUALIFIED_CALIBRATION_18.search(src), (
+        "the page still calls `answer_confidence` calibrated without condition")
+    assert not DERIVES_SCALING_18.search(OLD_PAGE_18), "main's page has no scaling lookup"
+    assert not NAMES_CONDITION_18.search(OLD_PAGE_18), "main's page states no calibration condition"
+    assert DERIVES_SCALING_18.search(src), "the page must resolve the bucket via core's temp_bucket"
+    assert NAMES_CONDITION_18.search(src), (
+        "the page must carry the README's Calibration condition (mean ECE 0.466 -> 0.081, "
+        "both shipped checkpoints over-confident)")
+    # The README's exact language lives at line 1586; the page must not misquote it.
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    assert "Both checkpoints are over-confident as shipped" in readme
+    assert "0.466 -> 0.081" in readme
+
+
+for _fn in (test_page18_helpers_are_live_and_defer_to_core,
+            test_page18_questions_reach_core_bucket_names,
+            test_page18_drops_the_unconditional_calibration_claim):
+    try:
+        _fn()
+    except AssertionError as e:
+        FAIL.append("page-18/%s: %s" % (_fn.__name__, e))
+    except Exception as e:
+        FAIL.append("page-18/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
+    else:
+        PASS.append("page-18/%s" % _fn.__name__)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
