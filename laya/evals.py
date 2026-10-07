@@ -323,11 +323,27 @@ def default_evaluators() -> List[Evaluator]:
 
 
 def _answer_confidence(answer: Dict[str, Any]) -> Optional[float]:
-    """The calibrated confidence Laya reports: `answer_confidence`, not the entropy score.
+    """The column the calibration metrics read: `answer_confidence` when the answer carries one.
 
-    `answer["confidence"]` is entropy-based for choice and score, so calibration metrics must use
-    `answer_confidence`, which Laya reports on every answer type. The other keys are fallbacks for
-    a stripped-down result.
+    `answer_confidence` is the probability of the answer being reported -- the quantity temperature
+    scaling fits and the quantity this repository's calibration figures are computed on. It is not
+    *calibrated* as shipped: both base checkpoints are over-confident and `laya-multilingual` ships no
+    fitted temperatures at all (README, Calibration), which is why `ece` measures this column instead
+    of assuming it.
+
+    An answer carrying no `answer_confidence` falls through three more reads, in order: the
+    `confidence` field, then `max(p, 1 - p)` for a `noul`, then `max(probabilities)`. Those are not
+    the same quantity, and the first is the one this function otherwise exists to avoid: `confidence`
+    is normalized entropy on `choice` and `score`, which moves with the option count (#394) rather
+    than with how right the answer is, and `laya.confidence.answer_confidence_value` refuses to fall
+    back to it for the abstention gate on exactly that reasoning. `max(probabilities)` is the mass on
+    the top option, which is the reported answer's probability only when the answer *is* the argmax.
+
+    The stripped-down shape is not hypothetical. `LAYA_JEV_STRICT` projects the served response onto
+    the Jev wire contract, which carries no `answer_confidence` (`laya/serve.py`, and the flag's row
+    in docs/http-api.md), so a report run over recorded strict responses calibrates the entropy
+    number and is not comparable to one run over full payloads. `tests/test_evals.py` pins both paths
+    and the gap between them; `docs/evals.md` says so where an operator reads the metrics.
     """
     confidence = answer.get("answer_confidence")
     if isinstance(confidence, (int, float)):
