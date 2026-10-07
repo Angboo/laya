@@ -1303,6 +1303,66 @@ for _fn in (test_page40_helpers_are_live_defer_to_core, test_scale_for_replays_c
         FAIL.append("page-40/%s raised %s: %s" % (_fn.__name__, type(e).__name__, e))
     else:
         PASS.append("page-40/%s" % _fn.__name__)
+# Gate: the two predict_long call sites' comments must describe the None-min_confidence
+# contract truthfully. The pre-fix wording claimed every answer "reports that it ran ungated"
+# / "say so on every answer"; confidence.py:196-197 documents and :211-212 implements the
+# opposite -- the gate writes nothing at all, so the payload carries no `abstention` field.
+import ast as _gate_ast  # noqa: E402
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _gate_gate_comment(rel_path):
+    """Return the run of comment lines that immediately precede the
+    apply_confidence_gate([result], None) call inside predict_long."""
+    with open(os.path.join(_REPO, rel_path)) as f:
+        lines = f.readlines()
+    tree = _gate_ast.parse("".join(lines))
+    for node in _gate_ast.walk(tree):
+        if isinstance(node, _gate_ast.FunctionDef) and node.name == "predict_long":
+            call_line = None
+            for sub in _gate_ast.walk(node):
+                if (isinstance(sub, _gate_ast.Call)
+                        and getattr(sub.func, "id", getattr(sub.func, "attr", None)) == "apply_confidence_gate"
+                        and len(sub.args) == 2
+                        and isinstance(sub.args[1], _gate_ast.Constant)
+                        and sub.args[1].value is None):
+                    call_line = sub.lineno - 1
+                    break
+            if call_line is None:
+                continue
+            out = []
+            i = call_line - 1
+            while i >= 0 and lines[i].lstrip().startswith("#"):
+                out.insert(0, lines[i].strip().lstrip("#").strip())
+                i -= 1
+            return " ".join(out)
+    return ""
+
+
+_agent_comment = _gate_gate_comment(os.path.join("laya", "agent.py"))
+_onnx_comment = _gate_gate_comment(os.path.join("laya", "onnx_agent.py"))
+
+for _label, _comment in (("agent.py", _agent_comment), ("onnx_agent.py", _onnx_comment)):
+    check_true("gate/comment/%s exists" % _label, len(_comment) > 0, "no comment found")
+    check_true("gate/comment/%s drops the ungated-reports claim" % _label,
+               "reports that it ran ungated" not in _comment
+               and "say so on every answer" not in _comment,
+               "pre-fix wording still on the call site: %r" % _comment)
+    check_true("gate/comment/%s names writes nothing" % _label,
+               "writes nothing" in _comment,
+               "gate comment must name the None-contract: %r" % _comment)
+    check_true("gate/comment/%s names the min_confidence argument" % _label,
+               "min_confidence" in _comment,
+               "gate comment must refer to the argument it is about: %r" % _comment)
+
+# Live witness: apply_confidence_gate([payload], None) leaves the payload byte-identical,
+# so the corrected comment is not itself a claim the code contradicts.
+_witness = {"model": "w", "answers": {"q": {"choice": "a", "confidence": 0.42}}, "usage": {}}
+_witness_before = copy.deepcopy(_witness)
+apply_confidence_gate([_witness], None)
+check("gate/live None writes nothing", _witness, _witness_before)
+check("gate/live None adds no abstention key", "abstention" in _witness["answers"]["q"], False)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

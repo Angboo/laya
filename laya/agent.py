@@ -1872,7 +1872,9 @@ class Agent(HookRegistry):
         usage["windows"] = len(results)
         result = {"model": "laya-rl-agent", "answers": answers, "usage": usage}
         # `predict_long` accepts no `min_confidence` -- the window loop has no single confidence to
-        # gate on -- so every answer reports that it ran ungated rather than reporting nothing.
+        # gate on. The gate is still called, per its contract in laya/confidence.py: with
+        # `min_confidence` None it writes nothing, so the payload comes back exactly as the
+        # windows built it -- no `abstention`, no `abstention_threshold`, no flag.
         apply_confidence_gate([result], None)
         return result
 

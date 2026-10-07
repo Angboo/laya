@@ -610,7 +610,8 @@ class ONNXAgent(HookRegistry):
         usage["output_tokens"] = 0
         usage["windows"] = len(results)
         result = {"model": "laya-rl-agent-onnx", "answers": answers, "usage": usage}
-        # As in `Agent.predict_long`: no `min_confidence` here, so say so on every answer.
+        # As in `Agent.predict_long`: no `min_confidence` here, and the gate called with None
+        # writes nothing -- the payload comes back with no `abstention` field at all.
         apply_confidence_gate([result], None)
         return result
 
