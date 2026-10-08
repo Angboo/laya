@@ -471,6 +471,22 @@ describe("structured/decideBatch", () => {
     expect((results[0].answers.urgency as any).low_confidence).toBe(true);
   });
 
+  it("accepts python parity alias min_confidence in decideBatch", async () => {
+    const answersWithLowConf = {
+      department: { type: "choice", choice: "billing", confidence: 0.9, answer_confidence: 0.95 },
+      urgency: { type: "score", score: 2.0, confidence: 0.4, answer_confidence: 0.4 },
+    };
+    const runner = fakeBatchRunner([answersWithLowConf]);
+    const results = await decideBatch(runner, ["s1"], SCHEMA, {
+      min_confidence: 0.85,
+      returnDetails: true,
+    });
+
+    expect(results[0].values.department).toBe("billing");
+    expect(results[0].values.urgency).toBeNull();
+    expect((results[0].answers.urgency as any).low_confidence).toBe(true);
+  });
+
   it("handles empty states array cleanly", async () => {
     const runner = fakeBatchRunner([ANSWERS]);
     const results = await decideBatch(runner, [], SCHEMA);
