@@ -100,6 +100,8 @@ export interface DecideBatchOptions {
   returnDetails?: boolean;
   /** Minimum confidence threshold in [0.0, 1.0]. Low confidence answers project to null. */
   minConfidence?: number | null;
+  /** Python-parity alias for minConfidence. */
+  min_confidence?: number | null;
   /** Batch size forwarded to runner.predictBatch. */
   batchSize?: number | null;
   /** Anything else is forwarded to runner.predictBatch (hooks, model, ...). */
