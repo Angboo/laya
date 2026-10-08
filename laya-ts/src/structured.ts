@@ -429,6 +429,7 @@ export async function decideBatch(
     questions,
     returnDetails = false,
     minConfidence,
+    min_confidence,
     ...predictOpts
   } = opts;
   if ((schema == null) === (questions == null)) {
@@ -438,7 +439,8 @@ export async function decideBatch(
     throw new TypeError(`states must be an array of states, not ${pyType(states)}`);
   }
 
-  const mc = minConfidence !== undefined && minConfidence !== null ? checkMinConfidence(minConfidence) : null;
+  const mcOpt = minConfidence ?? min_confidence;
+  const mc = mcOpt !== undefined && mcOpt !== null ? checkMinConfidence(mcOpt) : null;
 
   let fields: PlannedField[] | null = null;
   let qs = questions;
